@@ -1,0 +1,26 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  background: #f5f6f8;
+  color: #1c1f24;
+}
+.page { max-width: 480px; margin: 0 auto; padding: 24px 16px; }
+.page-wide { max-width: 1100px; margin: 0 auto; padding: 24px; }
+.card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 16px; }
+h1 { font-size: 20px; }
+h2 { font-size: 16px; margin-top: 0; }
+button {
+  border: none; border-radius: 8px; padding: 12px 16px; font-size: 14px;
+  background: #2f6feb; color: #fff; cursor: pointer; width: 100%; margin-bottom: 8px;
+}
+button.secondary { background: #eef1f6; color: #1c1f24; }
+input {
+  width: 100%; padding: 10px; border: 1px solid #d7dbe0; border-radius: 8px; margin-bottom: 12px; font-size: 14px;
+}
+.status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.status-badge { padding: 8px; border-radius: 8px; background: #eef1f6; text-align: center; font-size: 13px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-size: 13px; }
+.error { color: #c0392b; font-size: 13px; margin-bottom: 8px; }
+.status-tag { padding: 2px 8px; border-radius: 999px; font-size: 12px; color: #fff; display: inline-block; }

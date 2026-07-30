@@ -1,0 +1,399 @@
+// Prisma schema — 전직원 상황판 및 근로시간 통합관리 시스템 (MVP)
+// 상세 설명은 /docs/DB_SCHEMA.md 참조
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DepartmentType {
+  HQ_SALES
+  HQ_ENGINEER
+  HQ_ETC
+  RESIDENT
+}
+
+enum WorkType {
+  HQ_FLEX
+  HQ_FIXED
+  RESIDENT
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  ON_LEAVE
+  TERMINATED
+}
+
+enum RoleCode {
+  EMPLOYEE
+  TEAM_LEAD
+  HR_ADMIN
+  SYSTEM_ADMIN
+  PILOT_MANAGER
+}
+
+enum AttendanceStatus {
+  HQ_WORKING
+  RESIDENT_ONSITE
+  OFFSITE
+  MEETING
+  MOVING
+  REMOTE
+  NIGHT_WORK
+  ALT_DAY_OFF
+  ON_LEAVE
+}
+
+enum StatusSource {
+  WEB
+  MOBILE
+  SYSTEM
+}
+
+enum NightWorkStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum LeaveConversionStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ApprovalType {
+  OVERTIME
+  NIGHT_WORK
+  LEAVE_CONVERSION
+  ATTENDANCE_CORRECTION
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PolicyValueType {
+  BOOLEAN
+  NUMBER
+  STRING
+  JSON
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum FeedbackCategory {
+  BUG
+  UX
+  POLICY
+  OTHER
+}
+
+enum AuditActionType {
+  VIEW
+  STATUS_CHANGE
+  APPROVE
+  REJECT
+  CORRECT
+  POLICY_CHANGE
+  LOCATION_DETAIL_VIEW
+}
+
+model Department {
+  id        String         @id @default(uuid())
+  name      String
+  type      DepartmentType
+  parentId  String?
+  parent    Department?    @relation("DeptHierarchy", fields: [parentId], references: [id])
+  children  Department[]   @relation("DeptHierarchy")
+  users     User[]
+  policyOverrides PolicySetting[]
+
+  @@map("departments")
+}
+
+model Client {
+  id      String @id @default(uuid())
+  name    String
+  address String
+
+  users            User[]
+  residentCheckins ResidentCheckin[]
+
+  @@map("clients")
+}
+
+model User {
+  id                String           @id @default(uuid())
+  employeeNo        String           @unique @map("employee_no")
+  name              String
+  email             String           @unique
+  passwordHash      String           @map("password_hash")
+  departmentId      String           @map("department_id")
+  department        Department       @relation(fields: [departmentId], references: [id])
+  assignedClientId  String?          @map("assigned_client_id")
+  assignedClient    Client?          @relation(fields: [assignedClientId], references: [id])
+  workType          WorkType         @map("work_type")
+  employmentStatus  EmploymentStatus @default(ACTIVE) @map("employment_status")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  userRoles              UserRole[]
+  attendanceRecords      AttendanceRecord[]
+  statusChangeLogs       StatusChangeLog[]
+  residentCheckins       ResidentCheckin[]
+  nightWorkSessions      NightWorkSession[]
+  leaveBalances          LeaveBalance[]
+  leaveConversionRequests LeaveConversionRequest[]
+  pilotGroupMembers      PilotGroupMember[]
+  pilotFeedback          PilotFeedback[]
+  approvalRequestsMade   ApprovalRequest[] @relation("Requester")
+  approvalRequestsDecided ApprovalRequest[] @relation("Approver")
+
+  @@map("users")
+}
+
+model Role {
+  id    String     @id @default(uuid())
+  code  RoleCode   @unique
+  name  String
+  userRoles UserRole[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  id                  String   @id @default(uuid())
+  userId              String   @map("user_id")
+  user                User     @relation(fields: [userId], references: [id])
+  roleId              String   @map("role_id")
+  role                Role     @relation(fields: [roleId], references: [id])
+  scopeDepartmentId   String?  @map("scope_department_id")
+
+  @@unique([userId, roleId, scopeDepartmentId])
+  @@map("user_roles")
+}
+
+model AttendanceRecord {
+  id                  String    @id @default(uuid())
+  userId              String    @map("user_id")
+  user                User      @relation(fields: [userId], references: [id])
+  workDate            DateTime  @map("work_date") @db.Date
+  clockInAt           DateTime? @map("clock_in_at")
+  clockOutAt          DateTime? @map("clock_out_at")
+  totalWorkedMinutes  Int?      @map("total_worked_minutes")
+  isCorrected         Boolean   @default(false) @map("is_corrected")
+  correctionReason    String?   @map("correction_reason")
+
+  breakSessions BreakSession[]
+
+  @@unique([userId, workDate])
+  @@map("attendance_records")
+}
+
+model BreakSession {
+  id                 String           @id @default(uuid())
+  attendanceRecordId String           @map("attendance_record_id")
+  attendanceRecord   AttendanceRecord @relation(fields: [attendanceRecordId], references: [id])
+  startAt            DateTime         @map("start_at")
+  endAt              DateTime?        @map("end_at")
+
+  @@map("break_sessions")
+}
+
+model StatusChangeLog {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")
+  user      User             @relation(fields: [userId], references: [id])
+  status    AttendanceStatus
+  changedAt DateTime         @default(now()) @map("changed_at")
+  note      String?
+  source    StatusSource     @default(WEB)
+
+  @@map("status_change_logs")
+}
+
+model ResidentCheckin {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  user            User      @relation(fields: [userId], references: [id])
+  clientId        String    @map("client_id")
+  client          Client    @relation(fields: [clientId], references: [id])
+  checkinAt       DateTime  @default(now()) @map("checkin_at")
+  lastConfirmedAt DateTime  @default(now()) @map("last_confirmed_at")
+
+  @@map("resident_checkins")
+}
+
+model NightWorkSession {
+  id            String          @id @default(uuid())
+  userId        String          @map("user_id")
+  user          User            @relation(fields: [userId], references: [id])
+  startedAt     DateTime        @map("started_at")
+  endedAt       DateTime?       @map("ended_at")
+  workedMinutes Int?            @map("worked_minutes")
+  status        NightWorkStatus @default(IN_PROGRESS)
+  note          String?
+
+  leaveConversionRequest LeaveConversionRequest?
+
+  @@map("night_work_sessions")
+}
+
+model LeaveType {
+  id   String @id @default(uuid())
+  code String @unique // ALT_DAY_OFF, COMP_LEAVE, ANNUAL ...
+  name String
+
+  leaveBalances LeaveBalance[]
+  leaveConversionRequests LeaveConversionRequest[]
+
+  @@map("leave_types")
+}
+
+model LeaveBalance {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  user           User      @relation(fields: [userId], references: [id])
+  leaveTypeId    String    @map("leave_type_id")
+  leaveType      LeaveType @relation(fields: [leaveTypeId], references: [id])
+  balanceMinutes Int       @default(0) @map("balance_minutes")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@unique([userId, leaveTypeId])
+  @@map("leave_balances")
+}
+
+model LeaveConversionRequest {
+  id                     String                @id @default(uuid())
+  userId                 String                @map("user_id")
+  user                   User                  @relation(fields: [userId], references: [id])
+  sourceNightWorkSessionId String?             @unique @map("source_night_work_session_id")
+  sourceNightWorkSession NightWorkSession?     @relation(fields: [sourceNightWorkSessionId], references: [id])
+  requestedLeaveTypeId   String                @map("requested_leave_type_id")
+  requestedLeaveType     LeaveType             @relation(fields: [requestedLeaveTypeId], references: [id])
+  convertedMinutes       Int                   @map("converted_minutes")
+  status                 LeaveConversionStatus @default(DRAFT)
+  createdAt              DateTime              @default(now()) @map("created_at")
+
+  approvalRequest ApprovalRequest?
+
+  @@map("leave_conversion_requests")
+}
+
+model ApprovalRequest {
+  id          String         @id @default(uuid())
+  type        ApprovalType
+  referenceId String         @map("reference_id")
+  requesterId String         @map("requester_id")
+  requester   User           @relation("Requester", fields: [requesterId], references: [id])
+  approverId  String?        @map("approver_id")
+  approver    User?          @relation("Approver", fields: [approverId], references: [id])
+  status      ApprovalStatus @default(PENDING)
+  requestedAt DateTime       @default(now()) @map("requested_at")
+  decidedAt   DateTime?      @map("decided_at")
+  comment     String?
+
+  leaveConversionRequestId String?                 @unique @map("leave_conversion_request_id")
+  leaveConversionRequest   LeaveConversionRequest?  @relation(fields: [leaveConversionRequestId], references: [id])
+
+  @@map("approval_requests")
+}
+
+model PolicySetting {
+  id                 String          @id @default(uuid())
+  key                String
+  value              String
+  valueType          PolicyValueType @map("value_type")
+  scopeDepartmentId  String?         @map("scope_department_id")
+  scopeDepartment    Department?     @relation(fields: [scopeDepartmentId], references: [id])
+  description        String?
+  updatedBy          String?         @map("updated_by")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+
+  @@unique([key, scopeDepartmentId])
+  @@map("policy_settings")
+}
+
+model AlertRule {
+  id      String  @id @default(uuid())
+  code    String  @unique // NO_CLOCK_IN / LONG_WORKING / NIGHT_WORK_NOT_CONVERTED / STATUS_NOT_CONFIRMED
+  enabled Boolean @default(true)
+
+  @@map("alert_rules")
+}
+
+model Alert {
+  id         String        @id @default(uuid())
+  ruleCode   String        @map("rule_code")
+  userId     String        @map("user_id")
+  relatedId  String?       @map("related_id")
+  severity   AlertSeverity @default(WARNING)
+  createdAt  DateTime      @default(now()) @map("created_at")
+  resolvedAt DateTime?     @map("resolved_at")
+
+  @@map("alerts")
+}
+
+model PilotGroup {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  startDate   DateTime @map("start_date") @db.Date
+  endDate     DateTime @map("end_date") @db.Date
+
+  members  PilotGroupMember[]
+  feedback PilotFeedback[]
+
+  @@map("pilot_groups")
+}
+
+model PilotGroupMember {
+  id           String     @id @default(uuid())
+  pilotGroupId String     @map("pilot_group_id")
+  pilotGroup   PilotGroup @relation(fields: [pilotGroupId], references: [id])
+  userId       String     @map("user_id")
+  user         User       @relation(fields: [userId], references: [id])
+
+  @@unique([pilotGroupId, userId])
+  @@map("pilot_group_members")
+}
+
+model PilotFeedback {
+  id           String           @id @default(uuid())
+  pilotGroupId String           @map("pilot_group_id")
+  pilotGroup   PilotGroup       @relation(fields: [pilotGroupId], references: [id])
+  userId       String           @map("user_id")
+  user         User             @relation(fields: [userId], references: [id])
+  category     FeedbackCategory
+  content      String
+  createdAt    DateTime         @default(now()) @map("created_at")
+
+  @@map("pilot_feedback")
+}
+
+// 감사로그: 논리적으로 분리된 관심사 — append-only, 애플리케이션에서 UPDATE/DELETE 미제공
+model AuditLog {
+  id           String          @id @default(uuid())
+  actorUserId  String?         @map("actor_user_id")
+  actionType   AuditActionType @map("action_type")
+  targetType   String          @map("target_type")
+  targetId     String?         @map("target_id")
+  beforeValue  Json?           @map("before_value")
+  afterValue   Json?           @map("after_value")
+  ipAddress    String?         @map("ip_address")
+  createdAt    DateTime        @default(now()) @map("created_at")
+
+  @@map("audit_logs")
+}
