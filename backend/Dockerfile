@@ -1,6 +1,9 @@
 FROM node:20-slim AS base
 WORKDIR /app
 
+# Prisma 스키마 엔진 실행에 필요한 OpenSSL 설치 (node:20-slim에는 기본 포함되어 있지 않음)
+RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json* ./
 RUN npm install --no-audit --no-fund
 
