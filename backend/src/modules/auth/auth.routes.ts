@@ -7,7 +7,8 @@ import { requireAuth, signAccessToken } from '../../common/guards/auth';
 export const authRouter = Router();
 
 const loginSchema = z.object({
-  email: z.string().email(),
+  // 이메일이 있는 계정은 이메일로, 다우오피스 동기화 계정(이메일 없음)은 사번/다우오피스 로그인ID로 로그인한다.
+  identifier: z.string().min(1),
   password: z.string().min(1),
 });
 
@@ -16,18 +17,18 @@ authRouter.post('/login', async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '입력값을 확인하세요.' } });
   }
-  const { email, password } = parsed.data;
+  const { identifier, password } = parsed.data;
 
-  const user = await prisma.user.findUnique({
-    where: { email },
+  const user = await prisma.user.findFirst({
+    where: { OR: [{ email: identifier }, { employeeNo: identifier }] },
     include: { userRoles: { include: { role: true } } },
   });
   if (!user) {
-    return res.status(401).json({ success: false, error: { code: 'INVALID_CREDENTIALS', message: '이메일 또는 비밀번호가 올바르지 않습니다.' } });
+    return res.status(401).json({ success: false, error: { code: 'INVALID_CREDENTIALS', message: '아이디 또는 비밀번호가 올바르지 않습니다.' } });
   }
   const valid = await bcrypt.compare(password, user.passwordHash);
   if (!valid) {
-    return res.status(401).json({ success: false, error: { code: 'INVALID_CREDENTIALS', message: '이메일 또는 비밀번호가 올바르지 않습니다.' } });
+    return res.status(401).json({ success: false, error: { code: 'INVALID_CREDENTIALS', message: '아이디 또는 비밀번호가 올바르지 않습니다.' } });
   }
 
   const roles = user.userRoles.map((ur) => ur.role.code);
@@ -37,7 +38,7 @@ authRouter.post('/login', async (req, res) => {
     success: true,
     data: {
       accessToken: token,
-      user: { id: user.id, name: user.name, email: user.email, roles, workType: user.workType },
+      user: { id: user.id, name: user.name, email: user.email, employeeNo: user.employeeNo, roles, workType: user.workType },
     },
   });
 });

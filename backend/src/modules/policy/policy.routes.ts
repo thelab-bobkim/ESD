@@ -31,16 +31,20 @@ policyRouter.put('/settings', async (req, res) => {
   }
   const actorUserId = req.authUser!.userId;
   const { key, value, valueType, scopeDepartmentId, description } = parsed.data;
+  const scopeId = scopeDepartmentId ?? null;
 
-  const before = await prisma.policySetting.findUnique({
-    where: { key_scopeDepartmentId: { key, scopeDepartmentId: scopeDepartmentId ?? null } },
-  });
+  // 참고: Prisma는 복합 유니크 키(key+scopeDepartmentId)에 null을 타입상 허용하지 않으므로
+  // upsert 대신 findFirst + create/update로 처리한다(기능적으로 동일).
+  const before = await prisma.policySetting.findFirst({ where: { key, scopeDepartmentId: scopeId } });
 
-  const updated = await prisma.policySetting.upsert({
-    where: { key_scopeDepartmentId: { key, scopeDepartmentId: scopeDepartmentId ?? null } },
-    update: { value, valueType, description, updatedBy: actorUserId },
-    create: { key, value, valueType, description, scopeDepartmentId: scopeDepartmentId ?? null, updatedBy: actorUserId },
-  });
+  const updated = before
+    ? await prisma.policySetting.update({
+        where: { id: before.id },
+        data: { value, valueType, description, updatedBy: actorUserId },
+      })
+    : await prisma.policySetting.create({
+        data: { key, value, valueType, description, scopeDepartmentId: scopeId, updatedBy: actorUserId },
+      });
 
   invalidatePolicyCache();
 

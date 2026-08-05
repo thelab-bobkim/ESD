@@ -37,7 +37,7 @@ usersRouter.get('/:id', async (req, res) => {
     assignedClient: target.assignedClient?.name ?? null,
     roles: target.userRoles.map((ur) => ur.role.code),
   };
-  // TEAM_LEAD는 이메일(연락처에 준하는 개인정보) 마스킹
+  // TEAM_LEAD는 이메일(연락처에 준하는 개인정보) 마스킹. 다우오피스 동기화 계정은 이메일이 없을 수 있음.
   base.email = isTeamLeadOnly ? maskEmail(target.email) : target.email;
 
   await recordAuditLog({
@@ -50,7 +50,8 @@ usersRouter.get('/:id', async (req, res) => {
   return res.json({ success: true, data: base });
 });
 
-function maskEmail(email: string): string {
+function maskEmail(email: string | null): string | null {
+  if (!email) return null;
   const [localPart, domain] = email.split('@');
   if (!domain) return '***';
   const visible = localPart.slice(0, 2);

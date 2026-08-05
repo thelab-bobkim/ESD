@@ -3,7 +3,8 @@
 대상 환경(첨부 스크린샷 기준):
 - Lightsail Ubuntu 인스턴스, Public IPv4 `3.39.255.201`, ap-northeast-2a(서울)
 - 방화벽에 80(HTTP), 443(HTTPS), 22(SSH)가 이미 열려 있음
-- 도메인 없음 → **HTTP + Public IP**로 운영 (`docker-compose.prod.yml` + nginx 리버스 프록시로 80포트 하나만 사용)
+- 도메인 없음 → **HTTP + Public IP**로 운영 (`docker-compose.prod.yml` + nginx 리버스 프록시)
+- ⚠️ 이 서버는 80번 포트를 이미 다른 서비스(`maintenance_system-web`)가 쓰고 있어서, 이 시스템은 **8001번 포트**로 노출한다(방화벽에 이미 열려 있는 8000-8001 규칙 범위).
 - 배포 방식: **GitHub 리포지토리 push → 서버에서 clone**
 
 ---
@@ -109,7 +110,7 @@ docker compose -f docker-compose.prod.yml logs -f backend
 ## 5. DB 마이그레이션 + 시드 데이터 생성 (최초 1회)
 
 ```bash
-docker compose -f docker-compose.prod.yml exec backend npx prisma migrate deploy
+# 스키마 동기화(prisma db push)는 backend 컨테이너 시작 시 자동으로 실행됩니다. 시드만 별도 실행하세요.
 docker compose -f docker-compose.prod.yml exec backend npm run seed
 ```
 
@@ -130,19 +131,19 @@ docker compose -f docker-compose.prod.yml exec backend npm run seed
 
 브라우저에서:
 ```
-http://3.39.255.201/login
+http://3.39.255.201:8001/login
 ```
 
 API 헬스체크:
 ```
-http://3.39.255.201/api/v1/health
+http://3.39.255.201:8001/api/v1/health
 ```
 
 ---
 
 ## 7. 방화벽/보안 체크리스트
 
-- [x] 80(HTTP)만 이 서비스에 필요 — 스크린샷 기준 이미 열려 있음, 추가 작업 불필요
+- [x] 8001(HTTP)만 이 서비스에 필요 — 방화벽에 이미 열려 있는 8000-8001 규칙 범위에 포함되어 추가 작업 불필요 (80은 기존 서비스가 사용 중이라 피함)
 - [ ] **정적 IP 연결 권장**: 현재 `3.39.255.201`은 인스턴스를 정지/시작하면 바뀔 수 있습니다(화면의 "Attach static IP" 버튼). Lightsail 콘솔에서 **Attach static IP**를 눌러 고정하는 것을 권장합니다(파일럿 도중 주소가 바뀌면 접속이 끊깁니다).
 - [ ] 이 앱은 3000/4000 포트를 외부에 열 필요가 없습니다. 방화벽에 그 포트들이 열려있지 않다면 그대로 두세요.
 - [ ] 스크린샷의 5432(PostgreSQL), 8000-8001, 5678-5679, 8501-8502, 5000-5002 규칙은 이 앱과 무관한 것으로 보입니다(다른 서비스용이라면 그대로 두고, 안 쓰는 규칙이면 최소 노출 원칙상 정리 권장).
@@ -171,6 +172,6 @@ docker compose -f docker-compose.prod.yml down
 
 | 증상 | 확인할 것 |
 |---|---|
-| 브라우저에서 접속 안 됨 | `docker compose -f docker-compose.prod.yml ps`로 nginx 컨테이너 Running 여부, Lightsail 방화벽 80 규칙 |
+| 브라우저에서 접속 안 됨 | `docker compose -f docker-compose.prod.yml ps`로 nginx 컨테이너 Running 여부, Lightsail 방화벽 8001 규칙 |
 | 로그인 후 API 오류 | `docker compose -f docker-compose.prod.yml logs backend`, `.env.prod`의 DATABASE_URL 값(자동 조합되므로 DB_PASSWORD만 맞으면 됨) |
 | DB 관련 오류 | `docker compose -f docker-compose.prod.yml exec db psql -U app_user -d employee_status`로 직접 접속 확인 |

@@ -1,5 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import fs from 'fs';
+import path from 'path';
 
 const prisma = new PrismaClient();
 
@@ -19,10 +21,10 @@ async function main() {
   }
 
   // 2) 부서
-  const salesDept = await prisma.department.create({ data: { name: 'SAMPLE_영업팀', type: 'HQ_SALES' } });
-  const engDept = await prisma.department.create({ data: { name: 'SAMPLE_엔지니어팀', type: 'HQ_ENGINEER' } });
-  const etcDept = await prisma.department.create({ data: { name: 'SAMPLE_경영지원팀', type: 'HQ_ETC' } });
-  const residentDept = await prisma.department.create({ data: { name: 'SAMPLE_고객사상주팀', type: 'RESIDENT' } });
+  const salesDept = await prisma.department.upsert({ where: { name: 'SAMPLE_영업팀' }, update: {}, create: { name: 'SAMPLE_영업팀', type: 'HQ_SALES' } });
+  const engDept = await prisma.department.upsert({ where: { name: 'SAMPLE_엔지니어팀' }, update: {}, create: { name: 'SAMPLE_엔지니어팀', type: 'HQ_ENGINEER' } });
+  const etcDept = await prisma.department.upsert({ where: { name: 'SAMPLE_경영지원팀' }, update: {}, create: { name: 'SAMPLE_경영지원팀', type: 'HQ_ETC' } });
+  const residentDept = await prisma.department.upsert({ where: { name: 'SAMPLE_고객사상주팀' }, update: {}, create: { name: 'SAMPLE_고객사상주팀', type: 'RESIDENT' } });
 
   // 3) 고객사
   const clientA = await prisma.client.create({ data: { name: 'SAMPLE_A고객사', address: 'SAMPLE_서울시 강남구' } });
@@ -47,13 +49,44 @@ async function main() {
     { key: 'UNCONFIRMED_STATUS_ALERT_MINUTES', value: '120', valueType: 'NUMBER', description: '상태 미확인 경고 기준(분)' },
     { key: 'DATA_RETENTION_MONTHS', value: '36', valueType: 'NUMBER', description: '근태 로그 보관기간(개월)' },
     { key: 'ENABLE_GPS_TRACKING', value: 'false', valueType: 'BOOLEAN', description: '실시간 GPS 추적 여부(기본 비활성화)' },
+    // 다우오피스 연동 관련 정책값 (DAUOFFICE_INTEGRATION.md 참조)
+    { key: 'DAUOFFICE_AUTO_SYNC_ENABLED', value: 'false', valueType: 'BOOLEAN', description: '다우오피스 자동 동기화 사용 여부(기본 꺼짐 — 수동 검증 후 관리자가 켤 것)' },
+    { key: 'DAUOFFICE_SYNC_INTERVAL_HOURS', value: '6', valueType: 'NUMBER', description: '다우오피스 자동 동기화 주기(시간)' },
+    { key: 'DAUOFFICE_SYNCED_DEFAULT_PASSWORD', value: 'CONFIGURABLE_change_me_1234', valueType: 'STRING', description: '다우오피스로 신규 동기화된 계정의 초기 비밀번호(반드시 변경 권장)' },
+    { key: 'DAUOFFICE_AUTO_DEACTIVATE_MANUAL_DUPLICATES', value: 'false', valueType: 'BOOLEAN', description: '수동입력 직원과 이름이 같은 다우오피스 동기화 직원이 있으면 수동입력 쪽을 자동 비활성화할지 여부' },
+    { key: 'DEFAULT_SYNCED_WORK_TYPE', value: 'HQ_FIXED', valueType: 'STRING', description: '부서명 패턴에 안 걸리는 동기화 직원의 기본 근무유형' },
+    {
+      key: 'DEPARTMENT_WORKTYPE_RULES',
+      value: JSON.stringify([
+        { pattern: '상주', workType: 'RESIDENT' },
+        { pattern: 'CS', workType: 'HQ_FLEX' },
+        { pattern: '영업', workType: 'HQ_FLEX' },
+        { pattern: '사업부', workType: 'HQ_FLEX' },
+        { pattern: '기술지원', workType: 'HQ_FLEX' },
+      ]),
+      valueType: 'JSON',
+      description: '부서명 패턴 → 근무유형(HQ_FLEX/HQ_FIXED/RESIDENT) 자동 매핑 규칙(위에서부터 순서대로 첫 일치 적용)',
+    },
   ];
   for (const p of policies) {
-    await prisma.policySetting.upsert({
-      where: { key_scopeDepartmentId: { key: p.key, scopeDepartmentId: null } },
-      update: {},
-      create: { ...p, scopeDepartmentId: null },
-    });
+    const existing = await prisma.policySetting.findFirst({ where: { key: p.key, scopeDepartmentId: null } });
+    if (!existing) {
+      await prisma.policySetting.create({ data: { ...p, scopeDepartmentId: null } });
+    }
+  }
+
+  // 5-1) 다우오피스 부서명 수동 보정값 (조직도 API가 부서를 못 내려주는 계정 보정용)
+  const overridesPath = path.join(__dirname, 'seed-data', 'dauoffice-department-overrides.json');
+  if (fs.existsSync(overridesPath)) {
+    const overrides: Record<string, string> = JSON.parse(fs.readFileSync(overridesPath, 'utf-8'));
+    for (const [loginId, departmentName] of Object.entries(overrides)) {
+      await prisma.dauofficeDepartmentOverride.upsert({
+        where: { dauofficeLoginId: loginId },
+        update: { departmentName },
+        create: { dauofficeLoginId: loginId, departmentName },
+      });
+    }
+    console.log(`다우오피스 부서 보정값 ${Object.keys(overrides).length}건 시드 완료`);
   }
 
   // 6) 알림 규칙

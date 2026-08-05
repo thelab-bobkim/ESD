@@ -15,6 +15,7 @@
 | `docs/PILOT_PLAN.md` | 파일럿 운영 계획 |
 | `docs/TEST_PLAN.md` | 테스트 계획(시나리오별 테스트케이스) |
 | `DEPLOY.md` | **AWS Lightsail(Ubuntu, 도메인 없음, GitHub 배포) 실제 배포 가이드** — 처음 서버에 올릴 때는 이 문서부터 보세요 |
+| `docs/DAUOFFICE_INTEGRATION.md` | 다우오피스(기존 AMS 시스템) 연동 설계 — 직원/근태 자동 동기화 |
 
 ## 2. 폴더 구조
 

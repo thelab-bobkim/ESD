@@ -17,6 +17,12 @@ enum DepartmentType {
   RESIDENT
 }
 
+// 데이터 출처 — 수동입력 vs 다우오피스 자동동기화 (User, AttendanceRecord 공용)
+enum DataSource {
+  MANUAL
+  DAUOFFICE
+}
+
 enum WorkType {
   HQ_FLEX
   HQ_FIXED
@@ -111,9 +117,11 @@ enum AuditActionType {
 }
 
 model Department {
-  id        String         @id @default(uuid())
-  name      String
-  type      DepartmentType
+  id        String          @id @default(uuid())
+  name      String          @unique
+  // 실제 회사 조직은 90여개 팀명을 그대로 쓰므로, type은 고정 필수값이 아니라
+  // "본사/상주" 같은 정책 판단용 참고 태그로만 사용한다(선택값).
+  type      DepartmentType?
   parentId  String?
   parent    Department?    @relation("DeptHierarchy", fields: [parentId], references: [id])
   children  Department[]   @relation("DeptHierarchy")
@@ -138,7 +146,9 @@ model User {
   id                String           @id @default(uuid())
   employeeNo        String           @unique @map("employee_no")
   name              String
-  email             String           @unique
+  // 다우오피스 동기화 계정은 이메일 정보가 없으므로 선택값으로 변경.
+  // 로그인은 email 또는 employeeNo(=다우오피스 loginId) 중 하나로 가능하다.
+  email             String?          @unique
   passwordHash      String           @map("password_hash")
   departmentId      String           @map("department_id")
   department        Department       @relation(fields: [departmentId], references: [id])
@@ -146,6 +156,9 @@ model User {
   assignedClient    Client?          @relation(fields: [assignedClientId], references: [id])
   workType          WorkType         @map("work_type")
   employmentStatus  EmploymentStatus @default(ACTIVE) @map("employment_status")
+  // 다우오피스 연동 관련 필드
+  dauofficeUserId   String?          @unique @map("dauoffice_user_id")
+  dataSource        DataSource       @default(MANUAL) @map("data_source")
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 
@@ -195,6 +208,8 @@ model AttendanceRecord {
   totalWorkedMinutes  Int?      @map("total_worked_minutes")
   isCorrected         Boolean   @default(false) @map("is_corrected")
   correctionReason    String?   @map("correction_reason")
+  // 다우오피스 동기화로 채워진 값인지 여부. 수동 정정본(MANUAL)은 동기화가 덮어쓰지 않는다.
+  dataSource          DataSource @default(MANUAL) @map("data_source")
 
   breakSessions BreakSession[]
 
@@ -396,4 +411,28 @@ model AuditLog {
   createdAt    DateTime        @default(now()) @map("created_at")
 
   @@map("audit_logs")
+}
+
+// ===== 다우오피스(Daou Office) 연동 =====
+
+// OAuth2 client_credentials 액세스 토큰 캐시 (AMS의 DauofficeToken과 동일한 목적)
+model DauofficeToken {
+  id          String   @id @default(uuid())
+  accessToken String   @map("access_token")
+  expiresAt   DateTime @map("expires_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("dauoffice_tokens")
+}
+
+// 다우오피스 조직도 API가 부서를 정확히 안 내려주는 계정에 대한 수동 보정값.
+// (AMS의 하드코딩된 DEPT_MAP을 정책값 분리 원칙에 따라 DB 테이블로 이전한 것 — 관리자가
+// 화면에서 수정 가능하도록 하기 위함이며, 코드에 하드코딩하지 않는다.)
+model DauofficeDepartmentOverride {
+  id             String   @id @default(uuid())
+  dauofficeLoginId String @unique @map("dauoffice_login_id")
+  departmentName String   @map("department_name")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("dauoffice_department_overrides")
 }
