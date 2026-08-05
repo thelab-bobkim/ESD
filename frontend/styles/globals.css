@@ -24,3 +24,55 @@ table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-size: 13px; }
 .error { color: #c0392b; font-size: 13px; margin-bottom: 8px; }
 .status-tag { padding: 2px 8px; border-radius: 999px; font-size: 12px; color: #fff; display: inline-block; }
+
+/* ===== 직원 화면: PC에서는 2단 레이아웃 ===== */
+.employee-shell { max-width: 480px; margin: 0 auto; padding: 24px 16px; }
+.employee-grid { display: block; }
+@media (min-width: 860px) {
+  .employee-shell { max-width: 980px; padding: 32px 24px; }
+  .employee-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+  .employee-grid .col-full { grid-column: 1 / -1; }
+}
+
+/* ===== 관리자 상황판: 상태별 칸반 보드 ===== */
+.admin-shell { max-width: 1400px; margin: 0 auto; padding: 24px; }
+.toolbar {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  background: #fff; border-radius: 12px; padding: 12px 16px; margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.toolbar select, .toolbar input[type="text"] {
+  padding: 8px 10px; border: 1px solid #d7dbe0; border-radius: 8px; font-size: 13px; width: auto; margin: 0;
+}
+.toolbar .spacer { flex: 1; }
+.toolbar .refresh-info { font-size: 12px; color: #868e96; white-space: nowrap; }
+.toolbar button { width: auto; margin: 0; padding: 8px 14px; }
+.board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px;
+}
+.board-column {
+  background: #fff; border-radius: 12px; padding: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08); min-height: 90px;
+  border-top: 4px solid #ccc;
+}
+.board-column-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 10px; font-weight: 700; font-size: 14px;
+}
+.board-column-header .count {
+  background: #f1f3f5; border-radius: 999px; padding: 1px 9px; font-size: 12px; font-weight: 700; color: #495057;
+}
+.employee-chip {
+  background: #f8f9fb; border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; font-size: 13px;
+}
+.employee-chip .name { font-weight: 600; }
+.employee-chip .meta { color: #868e96; font-size: 11px; margin-top: 2px; }
+.board-empty { color: #adb5bd; font-size: 12px; padding: 8px 2px; }
+

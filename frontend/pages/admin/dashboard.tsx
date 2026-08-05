@@ -1,50 +1,113 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch, clearToken } from '@/lib/api';
 
-const STATUS_LABELS: Record<string, string> = {
-  HQ_WORKING: '본사근무', RESIDENT_ONSITE: '고객사상주', OFFSITE: '외근', MEETING: '회의',
-  MOVING: '이동', REMOTE: '재택', NIGHT_WORK: '야간작업', ALT_DAY_OFF: '대체휴무', ON_LEAVE: '휴가', UNKNOWN: '미확인',
+// 상태별 표시 정보(라벨/아이콘/색상) — "지금 이 사람이 어디서 뭘 하고 있는지"를
+// 위치정보 없이도 직관적으로 보여주기 위한 매핑이다. 실제 좌표는 수집하지 않는다(core_principles).
+const STATUS_META: Record<string, { label: string; icon: string; color: string }> = {
+  HQ_WORKING: { label: '본사근무', icon: '🏢', color: '#2f9e44' },
+  RESIDENT_ONSITE: { label: '고객사상주', icon: '🏬', color: '#2f9e44' },
+  OFFSITE: { label: '외근', icon: '🚗', color: '#1c7ed6' },
+  MOVING: { label: '이동중', icon: '🚙', color: '#1c7ed6' },
+  MEETING: { label: '회의중', icon: '👥', color: '#1c7ed6' },
+  REMOTE: { label: '재택(집)', icon: '🏠', color: '#6741d9' },
+  NIGHT_WORK: { label: '야간작업', icon: '🌙', color: '#f08c00' },
+  ALT_DAY_OFF: { label: '대체휴무', icon: '🌴', color: '#868e96' },
+  ON_LEAVE: { label: '휴가', icon: '🌴', color: '#868e96' },
+  UNKNOWN: { label: '상태 미확인', icon: '❔', color: '#e03131' },
 };
 
-const STATUS_COLORS: Record<string, string> = {
-  HQ_WORKING: '#2f9e44', RESIDENT_ONSITE: '#2f9e44', OFFSITE: '#1c7ed6', MEETING: '#1c7ed6', MOVING: '#1c7ed6',
-  REMOTE: '#868e96', ALT_DAY_OFF: '#868e96', ON_LEAVE: '#868e96', NIGHT_WORK: '#f08c00', UNKNOWN: '#e03131',
+const STATUS_ORDER = [
+  'HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'MOVING', 'MEETING',
+  'REMOTE', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'UNKNOWN',
+];
+
+const ALERT_LABELS: Record<string, string> = {
+  NO_CLOCK_IN: '미출근', LONG_WORKING: '장시간근무', NIGHT_WORK_NOT_CONVERTED: '야간근무 후 미전환', STATUS_NOT_CONFIRMED: '상태 미확인',
 };
+
+const REFRESH_INTERVAL_MS = 15000; // 15초마다 자동 갱신 (실시간에 가까운 폴링)
 
 interface EmployeeRow {
   userId: string; name: string; department: string; client: string | null; workType: string;
   status: string | null; statusChangedAt: string | null; lastConfirmedAt: string | null;
 }
-
 interface CompanyBoard { summary: Record<string, number>; employees: EmployeeRow[]; }
-
 interface AlertRow { ruleCode: string; userId: string; relatedId?: string; severity: string; }
 
-const ALERT_LABELS: Record<string, string> = {
-  NO_CLOCK_IN: '미출근', LONG_WORKING: '장시간근무', NIGHT_WORK_NOT_CONVERTED: '야간근무 후 미전환', STATUS_NOT_CONFIRMED: '상태 미확인',
-};
+function timeAgo(iso: string | null): string {
+  if (!iso) return '-';
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diffMs / 60000);
+  if (min < 1) return '방금 전';
+  if (min < 60) return `${min}분 전`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}시간 전`;
+  return new Date(iso).toLocaleDateString('ko-KR');
+}
 
 export default function AdminDashboard() {
   const router = useRouter();
   const [board, setBoard] = useState<CompanyBoard | null>(null);
   const [alerts, setAlerts] = useState<AlertRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [deptFilter, setDeptFilter] = useState('ALL');
+  const [search, setSearch] = useState('');
+
+  async function load() {
+    try {
+      const [b, a] = await Promise.all([
+        apiFetch<CompanyBoard>('/dashboard/company'),
+        apiFetch<AlertRow[]>('/alerts'),
+      ]);
+      setBoard(b);
+      setAlerts(a);
+      setLastUpdated(new Date());
+      setError(null);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('로그인')) router.push('/login');
+      setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
+    }
+  }
 
   useEffect(() => {
-    Promise.all([
-      apiFetch<CompanyBoard>('/dashboard/company'),
-      apiFetch<AlertRow[]>('/alerts'),
-    ])
-      .then(([b, a]) => {
-        setBoard(b);
-        setAlerts(a);
-      })
-      .catch((err) => {
-        if (err instanceof Error && err.message.includes('로그인')) router.push('/login');
-        setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
-      });
-  }, [router]);
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const id = setInterval(load, REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefresh]);
+
+  const departments = useMemo(() => {
+    const set = new Set((board?.employees ?? []).map((e) => e.department));
+    return Array.from(set).sort();
+  }, [board]);
+
+  const filteredEmployees = useMemo(() => {
+    let list = board?.employees ?? [];
+    if (deptFilter !== 'ALL') list = list.filter((e) => e.department === deptFilter);
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter((e) => e.name.toLowerCase().includes(q));
+    }
+    return list;
+  }, [board, deptFilter, search]);
+
+  const grouped = useMemo(() => {
+    const map: Record<string, EmployeeRow[]> = {};
+    for (const code of STATUS_ORDER) map[code] = [];
+    for (const e of filteredEmployees) {
+      const key = e.status && STATUS_META[e.status] ? e.status : 'UNKNOWN';
+      map[key].push(e);
+    }
+    return map;
+  }, [filteredEmployees]);
 
   function logout() {
     clearToken();
@@ -52,28 +115,36 @@ export default function AdminDashboard() {
   }
 
   return (
-    <div className="page-wide">
+    <div className="admin-shell">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>전사 상황판</h1>
+        <h1>전사 상황판 — 지금 누가 어디서 뭘 하고 있나</h1>
         <button className="secondary" style={{ width: 'auto' }} onClick={logout}>로그아웃</button>
       </div>
       {error && <div className="error">{error}</div>}
 
-      {board && (
-        <div className="card">
-          <h2>상태별 인원 요약</h2>
-          <div className="status-grid" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
-            {Object.entries(board.summary).map(([status, count]) => (
-              <div key={status} className="status-badge">
-                <span className="status-tag" style={{ background: STATUS_COLORS[status] || '#868e96' }}>
-                  {STATUS_LABELS[status] || status}
-                </span>
-                <div style={{ marginTop: 6, fontSize: 18, fontWeight: 700 }}>{count}명</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <div className="toolbar">
+        <select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}>
+          <option value="ALL">전체 부서</option>
+          {departments.map((d) => (
+            <option key={d} value={d}>{d}</option>
+          ))}
+        </select>
+        <input
+          type="text"
+          placeholder="이름 검색"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <div className="spacer" />
+        <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <input type="checkbox" style={{ width: 'auto', margin: 0 }} checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
+          자동 갱신(15초)
+        </label>
+        <button onClick={load}>지금 새로고침</button>
+        <span className="refresh-info">
+          마지막 업데이트: {lastUpdated ? lastUpdated.toLocaleTimeString('ko-KR') : '-'} · 전체 {filteredEmployees.length}명
+        </span>
+      </div>
 
       {alerts && alerts.length > 0 && (
         <div className="card">
@@ -93,32 +164,31 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {board && (
-        <div className="card">
-          <h2>전직원 현황</h2>
-          <table>
-            <thead>
-              <tr><th>이름</th><th>소속</th><th>고객사</th><th>근무유형</th><th>현재 상태</th><th>상태변경시각</th></tr>
-            </thead>
-            <tbody>
-              {board.employees.map((e) => (
-                <tr key={e.userId}>
-                  <td>{e.name}</td>
-                  <td>{e.department}</td>
-                  <td>{e.client ?? '-'}</td>
-                  <td>{e.workType}</td>
-                  <td>
-                    <span className="status-tag" style={{ background: STATUS_COLORS[e.status || 'UNKNOWN'] || '#868e96' }}>
-                      {STATUS_LABELS[e.status || 'UNKNOWN']}
-                    </span>
-                  </td>
-                  <td>{e.statusChangedAt ? new Date(e.statusChangedAt).toLocaleString('ko-KR') : '-'}</td>
-                </tr>
+      <div className="board">
+        {STATUS_ORDER.map((code) => {
+          const meta = STATUS_META[code];
+          const employees = grouped[code];
+          return (
+            <div className="board-column" key={code} style={{ borderTopColor: meta.color }}>
+              <div className="board-column-header">
+                <span>{meta.icon} {meta.label}</span>
+                <span className="count">{employees.length}</span>
+              </div>
+              {employees.length === 0 && <div className="board-empty">해당 없음</div>}
+              {employees.map((e) => (
+                <div className="employee-chip" key={e.userId}>
+                  <div className="name">{e.name}</div>
+                  <div className="meta">
+                    {e.department}
+                    {code === 'RESIDENT_ONSITE' && e.client ? ` · ${e.client}` : ''}
+                  </div>
+                  <div className="meta">{timeAgo(e.statusChangedAt)}</div>
+                </div>
               ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
