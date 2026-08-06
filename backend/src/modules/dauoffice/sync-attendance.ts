@@ -62,7 +62,11 @@ export async function syncAttendanceFromDauoffice(
       }
       if (!userId) continue;
 
-      const workDate = new Date(`${att.accrualDate}T00:00:00+09:00`);
+      // 주의: workDate는 DATE 컬럼이라 "그 날짜"만 의미가 있어야 한다.
+      // KST(+09:00)로 변환한 자정을 그대로 Date로 넣으면 UTC 기준으로는 전날로 저장되는 버그가 있었다.
+      // attendance.routes.ts의 todayDateOnly()와 동일하게 UTC 자정 기준으로 날짜만 계산한다.
+      const [y, m, d] = att.accrualDate.split('-').map(Number);
+      const workDate = new Date(Date.UTC(y, m - 1, d));
       const clockInAt = new Date(`${att.accrualDate}T${att.startWorkTime.split(' ')[1] ?? att.startWorkTime}+09:00`);
       if (Number.isNaN(clockInAt.getTime())) continue;
 
