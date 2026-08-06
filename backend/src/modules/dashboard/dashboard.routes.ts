@@ -24,6 +24,7 @@ async function buildStatusBoard(userIds?: string[]) {
         workType: u.workType,
         status: latestStatus?.status ?? null,
         statusChangedAt: latestStatus?.changedAt ?? null,
+        statusSource: latestStatus?.source ?? null,
         lastConfirmedAt: latestCheckin?.lastConfirmedAt ?? null,
       };
     })

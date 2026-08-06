@@ -36,7 +36,7 @@ const DEPT_BAR_LIMIT = 10; // 부서별 막대그래프에 표시할 최대 부�
 
 interface EmployeeRow {
   userId: string; name: string; department: string; client: string | null; workType: string;
-  status: string | null; statusChangedAt: string | null; lastConfirmedAt: string | null;
+  status: string | null; statusChangedAt: string | null; statusSource: string | null; lastConfirmedAt: string | null;
 }
 interface CompanyBoard { summary: Record<string, number>; employees: EmployeeRow[]; }
 interface AlertRow { ruleCode: string; userId: string; relatedId?: string; severity: string; }
@@ -170,12 +170,12 @@ export default function AdminDashboard() {
     setSyncMessage(null);
     try {
       const now = new Date();
-      const result = await apiFetch<{ syncedCount: number; errors: string[] }>('/dauoffice/sync/attendance', {
+      const result = await apiFetch<{ syncedCount: number; statusInferredCount: number; errors: string[] }>('/dauoffice/sync/attendance', {
         method: 'POST',
         body: JSON.stringify({ year: now.getFullYear(), month: now.getMonth() + 1 }),
       });
       setSyncMessage(
-        `근태 동기화 완료 — 반영 ${result.syncedCount}건` +
+        `근태 동기화 완료 — 반영 ${result.syncedCount}건, 잠정 상태 자동추정 ${result.statusInferredCount}명` +
           (result.errors.length > 0 ? ` (오류 ${result.errors.length}건, 예: ${result.errors[0]})` : '')
       );
       await load();
@@ -287,7 +287,12 @@ export default function AdminDashboard() {
                   {employees.length === 0 && <div className="board-empty">해당 없음</div>}
                   {employees.map((e) => (
                     <div className="employee-chip" key={e.userId}>
-                      <div className="name">{e.name}</div>
+                      <div className="name">
+                        {e.name}
+                        {e.statusSource === 'SYSTEM' && (
+                          <span style={{ marginLeft: 6, fontSize: 10, color: '#868e96', fontWeight: 400 }}>(자동추정)</span>
+                        )}
+                      </div>
                       <div className="meta">
                         {e.department}
                         {code === 'RESIDENT_ONSITE' && e.client ? ` · ${e.client}` : ''}

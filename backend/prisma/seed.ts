@@ -54,6 +54,7 @@ async function main() {
     { key: 'DAUOFFICE_SYNC_INTERVAL_HOURS', value: '6', valueType: 'NUMBER', description: '다우오피스 자동 동기화 주기(시간)' },
     { key: 'DAUOFFICE_SYNCED_DEFAULT_PASSWORD', value: 'CONFIGURABLE_change_me_1234', valueType: 'STRING', description: '다우오피스로 신규 동기화된 계정의 초기 비밀번호(반드시 변경 권장)' },
     { key: 'DAUOFFICE_AUTO_DEACTIVATE_MANUAL_DUPLICATES', value: 'false', valueType: 'BOOLEAN', description: '수동입력 직원과 이름이 같은 다우오피스 동기화 직원이 있으면 수동입력 쪽을 자동 비활성화할지 여부' },
+    { key: 'DAUOFFICE_INFER_STATUS_FROM_ATTENDANCE', value: 'true', valueType: 'BOOLEAN', description: '다우오피스 출근기록이 있는데 오늘 ESD에서 상태변경이 없는 직원에게 잠정 상태(본사근무/고객사상주)를 자동으로 채울지 여부. 직원이 실제로 상태를 바꾸면 항상 그 값이 우선함' },
     { key: 'DEFAULT_SYNCED_WORK_TYPE', value: 'HQ_FIXED', valueType: 'STRING', description: '부서명 패턴에 안 걸리는 동기화 직원의 기본 근무유형' },
     {
       key: 'DEPARTMENT_WORKTYPE_RULES',
