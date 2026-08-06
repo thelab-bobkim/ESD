@@ -142,6 +142,50 @@ export default function AdminDashboard() {
     return { rows: rows.slice(0, DEPT_BAR_LIMIT), max, totalDepts: rows.length };
   }, [filteredEmployees]);
 
+  const [syncing, setSyncing] = useState<'employees' | 'attendance' | null>(null);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+
+  async function runSyncEmployees() {
+    setSyncing('employees');
+    setSyncMessage(null);
+    try {
+      const result = await apiFetch<{ synced: number; skippedDeptNodes: number; deactivated: number; errors: string[] }>(
+        '/dauoffice/sync/employees',
+        { method: 'POST' }
+      );
+      setSyncMessage(
+        `직원 동기화 완료 — 반영 ${result.synced}명, 부서노드 제외 ${result.skippedDeptNodes}명, 퇴사처리 ${result.deactivated}명` +
+          (result.errors.length > 0 ? ` (오류 ${result.errors.length}건, 예: ${result.errors[0]})` : '')
+      );
+      await load();
+    } catch (err) {
+      setSyncMessage(err instanceof Error ? `직원 동기화 실패: ${err.message}` : '직원 동기화 실패');
+    } finally {
+      setSyncing(null);
+    }
+  }
+
+  async function runSyncAttendance() {
+    setSyncing('attendance');
+    setSyncMessage(null);
+    try {
+      const now = new Date();
+      const result = await apiFetch<{ syncedCount: number; errors: string[] }>('/dauoffice/sync/attendance', {
+        method: 'POST',
+        body: JSON.stringify({ year: now.getFullYear(), month: now.getMonth() + 1 }),
+      });
+      setSyncMessage(
+        `근태 동기화 완료 — 반영 ${result.syncedCount}건` +
+          (result.errors.length > 0 ? ` (오류 ${result.errors.length}건, 예: ${result.errors[0]})` : '')
+      );
+      await load();
+    } catch (err) {
+      setSyncMessage(err instanceof Error ? `근태 동기화 실패: ${err.message}` : '근태 동기화 실패');
+    } finally {
+      setSyncing(null);
+    }
+  }
+
   function logout() {
     clearToken();
     router.push('/login');
@@ -154,6 +198,16 @@ export default function AdminDashboard() {
         <button className="secondary" style={{ width: 'auto' }} onClick={logout}>로그아웃</button>
       </div>
       {error && <div className="error">{error}</div>}
+
+      <div className="toolbar">
+        <button style={{ width: 'auto' }} disabled={syncing !== null} onClick={runSyncEmployees}>
+          {syncing === 'employees' ? '직원 동기화 중...' : '👤 다우오피스 직원 동기화'}
+        </button>
+        <button style={{ width: 'auto' }} className="secondary" disabled={syncing !== null} onClick={runSyncAttendance}>
+          {syncing === 'attendance' ? '근태 동기화 중...' : '🕒 다우오피스 근태 동기화(이번달)'}
+        </button>
+        {syncMessage && <span className="refresh-info">{syncMessage}</span>}
+      </div>
 
       <div className="toolbar">
         <select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}>
