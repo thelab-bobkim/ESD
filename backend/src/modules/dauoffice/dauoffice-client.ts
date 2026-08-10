@@ -26,13 +26,21 @@ export interface DauofficeEmployee {
 
 export interface DauofficeAttendanceElement {
   loginId?: string;
+  name?: string;
   accrualDate?: string; // 'YYYY-MM-DD'
   startWorkTime?: string; // 'YYYY-MM-DD HH:MM:SS'
+  endWorkTime?: string | null;
+  dayWorkStatusCode?: string | null; // 정상출근/휴가/외근 등 근태유형 코드로 추정 — 값 확인 중
+  workGroupCode?: string | null;
+  shiftWorkPolicyCode?: string | null;
+  isWorkingDay?: boolean;
+  sumWorkingHours?: string;
 }
 
 interface RawResponse {
   status: number;
   json: any;
+  raw: string;
 }
 
 function requestJson(
@@ -42,13 +50,18 @@ function requestJson(
 ): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     const url = new URL(urlStr);
+    const bodyBuffer = opts.body ? Buffer.from(opts.body, 'utf-8') : undefined;
+    const headers = { ...opts.headers };
+    if (bodyBuffer) {
+      headers['Content-Length'] = String(bodyBuffer.length);
+    }
     const req = https.request(
       {
         method,
         hostname: url.hostname,
         path: url.pathname + url.search,
         port: url.port || 443,
-        headers: opts.headers,
+        headers,
         // AMS 원본(Python requests)은 verify=False로 TLS 검증을 껐다.
         // ESD는 기본값을 안전하게(검증 ON) 두고, 필요할 때만 DAUOFFICE_TLS_INSECURE=true로 끄도록 한다.
         rejectUnauthorized: !opts.insecureTls,
@@ -59,16 +72,16 @@ function requestJson(
         res.on('data', (chunk) => (data += chunk));
         res.on('end', () => {
           try {
-            resolve({ status: res.statusCode || 0, json: data ? JSON.parse(data) : null });
+            resolve({ status: res.statusCode || 0, json: data ? JSON.parse(data) : null, raw: data });
           } catch {
-            resolve({ status: res.statusCode || 0, json: null });
+            resolve({ status: res.statusCode || 0, json: null, raw: data });
           }
         });
       }
     );
     req.on('error', reject);
     req.on('timeout', () => req.destroy(new Error('DauofficeAPI 요청 타임아웃')));
-    if (opts.body) req.write(opts.body);
+    if (bodyBuffer) req.write(bodyBuffer);
     req.end();
   });
 }
@@ -142,7 +155,7 @@ export class DauofficeClient {
       return this.accessToken;
     }
     // eslint-disable-next-line no-console
-    console.warn(`[DauofficeClient] 토큰 발급 실패: status=${res.status}`);
+    console.warn(`[DauofficeClient] 토큰 발급 실패: status=${res.status}, raw=${res.raw?.slice(0, 500)}`);
     return null;
   }
 

@@ -66,7 +66,9 @@ export async function syncAttendanceFromDauoffice(
 
   let page = 0;
   const pageSize = 50;
-  let loggedSample = false; // 다우오피스 응답의 실제 필드를 1건만 로그로 확인하기 위한 플래그(진단용)
+  // 진단용: dayWorkStatusCode/workGroupCode/shiftWorkPolicyCode 값별로 대표 사례를 하나씩만 모아서
+  // 마지막에 로그로 남긴다(실제 근무유형 코드가 뭘로 채워지는지 확인하기 위함).
+  const seenCodeSamples = new Map<string, unknown>();
 
   // 이번 배치에서 사용할 유저 캐시(다우오피스 loginId -> 유저 정보)
   const userCache = new Map<string, CachedUser | null>();
@@ -75,10 +77,11 @@ export async function syncAttendanceFromDauoffice(
     const pageResult = await client.getAttendanceRecords(startDate, endDate, page, pageSize);
     if (pageResult.elements.length === 0) break;
 
-    if (!loggedSample && pageResult.elements.length > 0) {
-      // eslint-disable-next-line no-console
-      console.log('[DauofficeAttendance] 원본 응답 샘플(진단용, 1건):', JSON.stringify(pageResult.elements[0]));
-      loggedSample = true;
+    for (const raw of pageResult.elements) {
+      const key = `status=${raw.dayWorkStatusCode ?? 'null'}|group=${raw.workGroupCode ?? 'null'}|shift=${raw.shiftWorkPolicyCode ?? 'null'}|hasStart=${Boolean(raw.startWorkTime)}`;
+      if (!seenCodeSamples.has(key)) {
+        seenCodeSamples.set(key, raw);
+      }
     }
 
     for (const att of pageResult.elements) {
@@ -147,6 +150,13 @@ export async function syncAttendanceFromDauoffice(
 
     page += 1;
     if (page >= pageResult.totalPages) break;
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`[DauofficeAttendance] 코드값 조합 ${seenCodeSamples.size}종류 발견. 사례:`);
+  for (const [key, sample] of seenCodeSamples) {
+    // eslint-disable-next-line no-console
+    console.log(`[DauofficeAttendance]   ${key} => ${JSON.stringify(sample)}`);
   }
 
   await recordAuditLog({
