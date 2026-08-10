@@ -186,6 +186,11 @@ export default function AdminDashboard() {
     }
   }
 
+  const [expandedColumns, setExpandedColumns] = useState<Record<string, boolean>>({});
+  function toggleColumn(code: string) {
+    setExpandedColumns((prev) => ({ ...prev, [code]: !prev[code] }));
+  }
+
   function logout() {
     clearToken();
     router.push('/login');
@@ -278,14 +283,27 @@ export default function AdminDashboard() {
             {STATUS_ORDER.map((code) => {
               const meta = STATUS_META[code];
               const employees = grouped[code];
+              const isExpanded = expandedColumns[code] ?? employees.length <= 5;
               return (
                 <div className="board-column" key={code} style={{ borderTopColor: meta.color }}>
-                  <div className="board-column-header">
-                    <span>{meta.icon} {meta.label}</span>
+                  <div
+                    className="board-column-header"
+                    style={{ cursor: employees.length > 0 ? 'pointer' : 'default' }}
+                    onClick={() => employees.length > 0 && toggleColumn(code)}
+                  >
+                    <span>
+                      {employees.length > 0 && <span style={{ display: 'inline-block', width: 12, transform: isExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▸</span>}
+                      {' '}{meta.icon} {meta.label}
+                    </span>
                     <span className="count">{employees.length}</span>
                   </div>
                   {employees.length === 0 && <div className="board-empty">해당 없음</div>}
-                  {employees.map((e) => (
+                  {employees.length > 0 && !isExpanded && (
+                    <div className="board-empty" style={{ cursor: 'pointer' }} onClick={() => toggleColumn(code)}>
+                      {employees.length}명 — 클릭하여 펼치기
+                    </div>
+                  )}
+                  {isExpanded && employees.map((e) => (
                     <div className="employee-chip" key={e.userId}>
                       <div className="name">
                         {e.name}
