@@ -19,7 +19,7 @@ declare global {
 const JWT_SECRET = process.env.JWT_SECRET || 'CONFIGURABLE_change_me_in_env';
 
 export function signAccessToken(payload: AuthUser): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 }
 
 /** 로그인 필수 미들웨어 */

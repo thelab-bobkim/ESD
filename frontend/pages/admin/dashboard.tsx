@@ -73,7 +73,7 @@ export default function AdminDashboard() {
       setLastUpdated(new Date());
       setError(null);
     } catch (err) {
-      if (err instanceof Error && err.message.includes('로그인')) router.push('/login');
+      if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰'))) router.push('/login');
       setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
     }
   }

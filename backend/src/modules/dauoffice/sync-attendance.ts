@@ -66,6 +66,7 @@ export async function syncAttendanceFromDauoffice(
 
   let page = 0;
   const pageSize = 50;
+  let loggedSample = false; // 다우오피스 응답의 실제 필드를 1건만 로그로 확인하기 위한 플래그(진단용)
 
   // 이번 배치에서 사용할 유저 캐시(다우오피스 loginId -> 유저 정보)
   const userCache = new Map<string, CachedUser | null>();
@@ -73,6 +74,12 @@ export async function syncAttendanceFromDauoffice(
   while (true) {
     const pageResult = await client.getAttendanceRecords(startDate, endDate, page, pageSize);
     if (pageResult.elements.length === 0) break;
+
+    if (!loggedSample && pageResult.elements.length > 0) {
+      // eslint-disable-next-line no-console
+      console.log('[DauofficeAttendance] 원본 응답 샘플(진단용, 1건):', JSON.stringify(pageResult.elements[0]));
+      loggedSample = true;
+    }
 
     for (const att of pageResult.elements) {
       const loginId = att.loginId;
