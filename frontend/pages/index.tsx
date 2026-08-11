@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
+import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 
 // 관리자 상황판(admin/dashboard.tsx)과 동일한 아이콘/라벨을 써서 화면 간 일관성을 유지한다.
@@ -16,11 +17,13 @@ const STATUS_META: Record<string, { label: string; icon: string }> = {
   ON_LEAVE: { label: '휴가', icon: '🌴' },
 };
 
-// 이 상태를 선택하면 내용(메모)을 반드시 입력받는다.
-const NOTE_REQUIRED_STATUSES = new Set(['CLIENT_MEETING']);
-
 interface MeResponse {
   name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null;
+}
+
+function nowHHMM(): string {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 export default function EmployeeHome() {
@@ -28,8 +31,13 @@ export default function EmployeeHome() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [nightWorkSessionId, setNightWorkSessionId] = useState<string | null>(null);
-  const [noteInputStatus, setNoteInputStatus] = useState<string | null>(null);
-  const [noteText, setNoteText] = useState('');
+
+  // 고객사 미팅/작업 상세입력 폼 상태
+  const [showClientForm, setShowClientForm] = useState(false);
+  const [clientName, setClientName] = useState('');
+  const [meetingStart, setMeetingStart] = useState(nowHHMM());
+  const [meetingEnd, setMeetingEnd] = useState('');
+  const [workDetail, setWorkDetail] = useState('');
 
   useEffect(() => {
     apiFetch<MeResponse>('/auth/me').then(setMe).catch(() => router.push('/login'));
@@ -46,9 +54,12 @@ export default function EmployeeHome() {
   }
 
   function changeStatus(code: string) {
-    if (NOTE_REQUIRED_STATUSES.has(code)) {
-      setNoteInputStatus(code);
-      setNoteText('');
+    if (code === 'CLIENT_MEETING') {
+      setShowClientForm(true);
+      setClientName('');
+      setMeetingStart(nowHHMM());
+      setMeetingEnd('');
+      setWorkDetail('');
       return;
     }
     run(
@@ -57,15 +68,13 @@ export default function EmployeeHome() {
     );
   }
 
-  function submitNoteStatus() {
-    if (!noteInputStatus) return;
-    const code = noteInputStatus;
+  function submitClientForm() {
+    const note = `고객사: ${clientName} | 시작 ${meetingStart}${meetingEnd ? ` | 완료 ${meetingEnd}` : ' | 진행중'} | 내용: ${workDetail}`;
     run(
-      () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: code, note: noteText }) }),
-      `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다.`
+      () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: 'CLIENT_MEETING', note }) }),
+      "상태가 '고객사 미팅/작업'(으)로 변경되었습니다."
     );
-    setNoteInputStatus(null);
-    setNoteText('');
+    setShowClientForm(false);
   }
 
   function logout() {
@@ -77,6 +86,10 @@ export default function EmployeeHome() {
 
   return (
     <div className="employee-shell">
+      <Head>
+        <title>기술부 현황 등록</title>
+      </Head>
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <h1 style={{ marginBottom: 0 }}>안녕하세요, {me.name}님</h1>
@@ -88,7 +101,7 @@ export default function EmployeeHome() {
       {message && <div className="card col-full" style={{ background: '#eef7ee' }}>{message}</div>}
 
       <div className="employee-grid">
-        {/* 왼쪽 열: 자주 쓰는 핵심 동작 */}
+        {/* 왼쪽 열 */}
         <div>
           <div className="card">
             <h2>출퇴근</h2>
@@ -105,26 +118,43 @@ export default function EmployeeHome() {
                   <div className="status-icon-label">{meta.label}</div>
                 </div>
               ))}
-            </div>
 
-            {noteInputStatus && (
-              <div className="note-input-box">
-                <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>
-                  {STATUS_META[noteInputStatus].icon} {STATUS_META[noteInputStatus].label} — 어디서 무슨 일인지 간단히 적어주세요
-                </div>
-                <textarea
-                  autoFocus
-                  rows={3}
-                  placeholder="예: OO고객사 방문, 서버 점검 작업"
-                  value={noteText}
-                  onChange={(e) => setNoteText(e.target.value)}
-                />
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button style={{ margin: 0 }} disabled={!noteText.trim()} onClick={submitNoteStatus}>확인</button>
-                  <button style={{ margin: 0 }} className="secondary" onClick={() => setNoteInputStatus(null)}>취소</button>
-                </div>
+              {/* 휴게/야간근무도 같은 아이콘 스타일로 통합 */}
+              <div className="status-icon-btn" onClick={() => run(() => apiFetch('/attendance/break/start', { method: 'POST' }), '휴게를 시작합니다.')}>
+                <div className="status-icon-emoji">⏸️</div>
+                <div className="status-icon-label">휴게 시작</div>
               </div>
-            )}
+              <div className="status-icon-btn" onClick={() => run(() => apiFetch('/attendance/break/end', { method: 'POST' }), '휴게를 종료합니다.')}>
+                <div className="status-icon-emoji">▶️</div>
+                <div className="status-icon-label">휴게 종료</div>
+              </div>
+              <div
+                className="status-icon-btn"
+                onClick={() =>
+                  run(async () => {
+                    const session = await apiFetch<{ id: string }>('/night-work/start', { method: 'POST', body: JSON.stringify({}) });
+                    setNightWorkSessionId(session.id);
+                  }, '야간근무를 시작합니다.')
+                }
+              >
+                <div className="status-icon-emoji">🌜</div>
+                <div className="status-icon-label">야간근무 시작</div>
+              </div>
+              <div
+                className="status-icon-btn"
+                style={{ opacity: nightWorkSessionId ? 1 : 0.4, cursor: nightWorkSessionId ? 'pointer' : 'not-allowed' }}
+                onClick={() => {
+                  if (!nightWorkSessionId) return;
+                  run(async () => {
+                    await apiFetch('/night-work/end', { method: 'POST', body: JSON.stringify({ sessionId: nightWorkSessionId }) });
+                    setNightWorkSessionId(null);
+                  }, '야간근무를 종료했습니다. 대체휴무 전환 후보가 생성되었을 수 있습니다 — 대체휴무 신청 화면에서 확인하세요.');
+                }}
+              >
+                <div className="status-icon-emoji">🌅</div>
+                <div className="status-icon-label">야간근무 종료</div>
+              </div>
+            </div>
           </div>
 
           {me.assignedClient && (
@@ -136,39 +166,34 @@ export default function EmployeeHome() {
           )}
         </div>
 
-        {/* 오른쪽 열(PC): 부가 동작 */}
+        {/* 오른쪽 열: 고객사 미팅/작업 상세입력 폼 */}
         <div>
-          <div className="card">
-            <h2>휴게</h2>
-            <button onClick={() => run(() => apiFetch('/attendance/break/start', { method: 'POST' }), '휴게를 시작합니다.')}>휴게 시작</button>
-            <button className="secondary" onClick={() => run(() => apiFetch('/attendance/break/end', { method: 'POST' }), '휴게를 종료합니다.')}>휴게 종료</button>
-          </div>
-
-          <div className="card">
-            <h2>야간근무</h2>
-            <button
-              onClick={() =>
-                run(async () => {
-                  const session = await apiFetch<{ id: string }>('/night-work/start', { method: 'POST', body: JSON.stringify({}) });
-                  setNightWorkSessionId(session.id);
-                }, '야간근무를 시작합니다.')
-              }
-            >
-              야간근무 시작
-            </button>
-            <button
-              className="secondary"
-              disabled={!nightWorkSessionId}
-              onClick={() =>
-                run(async () => {
-                  await apiFetch('/night-work/end', { method: 'POST', body: JSON.stringify({ sessionId: nightWorkSessionId }) });
-                  setNightWorkSessionId(null);
-                }, '야간근무를 종료했습니다. 대체휴무 전환 후보가 생성되었을 수 있습니다 — 대체휴무 신청 화면에서 확인하세요.')
-              }
-            >
-              야간근무 종료
-            </button>
-          </div>
+          {showClientForm && (
+            <div className="card">
+              <h2>🤝 고객사 미팅/작업 내역</h2>
+              <label className="field-label">고객사명</label>
+              <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <label className="field-label">시작시간</label>
+                  <input type="time" value={meetingStart} onChange={(e) => setMeetingStart(e.target.value)} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label className="field-label">완료시간(선택)</label>
+                  <input type="time" value={meetingEnd} onChange={(e) => setMeetingEnd(e.target.value)} />
+                </div>
+              </div>
+              <label className="field-label">작업 내역</label>
+              <textarea
+                rows={3}
+                placeholder="예: 서버 점검 및 백업 정책 협의"
+                value={workDetail}
+                onChange={(e) => setWorkDetail(e.target.value)}
+              />
+              <button disabled={!clientName.trim() || !workDetail.trim()} onClick={submitClientForm}>등록</button>
+              <button className="secondary" onClick={() => setShowClientForm(false)}>취소</button>
+            </div>
+          )}
         </div>
       </div>
     </div>
