@@ -3,19 +3,24 @@ import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 
-// 관리자 상황판(admin/dashboard.tsx)과 동일한 아이콘/라벨을 써서 화면 간 일관성을 유지한다.
+// 요청하신 배열: 재택/본사근무/고객사상주, 이동중/고객사미팅/고객사작업, 야간작업/대체휴무/휴가 (총 9개)
 const STATUS_META: Record<string, { label: string; icon: string }> = {
+  REMOTE: { label: '재택(집)', icon: '🏠' },
   HQ_WORKING: { label: '본사근무', icon: '🏢' },
   RESIDENT_ONSITE: { label: '고객사상주', icon: '🏬' },
-  OFFSITE: { label: '외근', icon: '🚗' },
-  CLIENT_MEETING: { label: '고객사 미팅/작업', icon: '🤝' },
   MOVING: { label: '이동중', icon: '🚙' },
-  MEETING: { label: '회의중', icon: '👥' },
-  REMOTE: { label: '재택(집)', icon: '🏠' },
+  CLIENT_MEETING: { label: '고객사미팅', icon: '🤝' },
+  CLIENT_WORK: { label: '고객사작업', icon: '🛠️' },
   NIGHT_WORK: { label: '야간작업', icon: '🌙' },
-  ALT_DAY_OFF: { label: '대체휴무', icon: '🌴' },
+  ALT_DAY_OFF: { label: '대체휴무', icon: '🏖️' },
   ON_LEAVE: { label: '휴가', icon: '🌴' },
 };
+const STATUS_ORDER = ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE'];
+
+// 이 상태들은 클릭 시 오른쪽에 상세입력 폼을 띄운다.
+const DETAIL_FORM_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+
+const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 
 interface MeResponse {
   name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null;
@@ -32,11 +37,12 @@ export default function EmployeeHome() {
   const [message, setMessage] = useState<string | null>(null);
   const [nightWorkSessionId, setNightWorkSessionId] = useState<string | null>(null);
 
-  // 고객사 미팅/작업 상세입력 폼 상태
-  const [showClientForm, setShowClientForm] = useState(false);
+  // 고객사미팅/고객사작업/야간작업 공용 상세입력 폼 상태
+  const [detailStatus, setDetailStatus] = useState<string | null>(null);
   const [clientName, setClientName] = useState('');
-  const [meetingStart, setMeetingStart] = useState(nowHHMM());
-  const [meetingEnd, setMeetingEnd] = useState('');
+  const [workStart, setWorkStart] = useState(nowHHMM());
+  const [workEnd, setWorkEnd] = useState('');
+  const [workType, setWorkType] = useState(WORK_TYPE_OPTIONS[0]);
   const [workDetail, setWorkDetail] = useState('');
 
   useEffect(() => {
@@ -54,11 +60,12 @@ export default function EmployeeHome() {
   }
 
   function changeStatus(code: string) {
-    if (code === 'CLIENT_MEETING') {
-      setShowClientForm(true);
+    if (DETAIL_FORM_STATUSES.has(code)) {
+      setDetailStatus(code);
       setClientName('');
-      setMeetingStart(nowHHMM());
-      setMeetingEnd('');
+      setWorkStart(nowHHMM());
+      setWorkEnd('');
+      setWorkType(WORK_TYPE_OPTIONS[0]);
       setWorkDetail('');
       return;
     }
@@ -68,13 +75,15 @@ export default function EmployeeHome() {
     );
   }
 
-  function submitClientForm() {
-    const note = `고객사: ${clientName} | 시작 ${meetingStart}${meetingEnd ? ` | 완료 ${meetingEnd}` : ' | 진행중'} | 내용: ${workDetail}`;
+  function submitDetailForm() {
+    if (!detailStatus) return;
+    const code = detailStatus;
+    const note = `유형: ${workType} | 고객사: ${clientName || '-'} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail}`;
     run(
-      () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: 'CLIENT_MEETING', note }) }),
-      "상태가 '고객사 미팅/작업'(으)로 변경되었습니다."
+      () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: code, note }) }),
+      `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다.`
     );
-    setShowClientForm(false);
+    setDetailStatus(null);
   }
 
   function logout() {
@@ -93,9 +102,6 @@ export default function EmployeeHome() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <h1 style={{ marginBottom: 0 }}>Tech Status Board</h1>
-          <p style={{ color: '#666', marginTop: 4 }}>
-            {me.name}님 · {me.department} · {me.workType}{me.assignedClient ? ` · ${me.assignedClient}` : ''}
-          </p>
         </div>
         <button className="secondary" style={{ width: 'auto', margin: 0, whiteSpace: 'nowrap' }} onClick={logout}>로그아웃</button>
       </div>
@@ -114,48 +120,12 @@ export default function EmployeeHome() {
           <div className="card">
             <h2>지금 뭐 하고 계세요?</h2>
             <div className="status-icon-grid">
-              {Object.entries(STATUS_META).map(([code, meta]) => (
+              {STATUS_ORDER.map((code) => (
                 <div key={code} className="status-icon-btn" onClick={() => changeStatus(code)}>
-                  <div className="status-icon-emoji">{meta.icon}</div>
-                  <div className="status-icon-label">{meta.label}</div>
+                  <div className="status-icon-emoji">{STATUS_META[code].icon}</div>
+                  <div className="status-icon-label">{STATUS_META[code].label}</div>
                 </div>
               ))}
-
-              {/* 휴게/야간근무도 같은 아이콘 스타일로 통합 */}
-              <div className="status-icon-btn" onClick={() => run(() => apiFetch('/attendance/break/start', { method: 'POST' }), '휴게를 시작합니다.')}>
-                <div className="status-icon-emoji">⏸️</div>
-                <div className="status-icon-label">휴게 시작</div>
-              </div>
-              <div className="status-icon-btn" onClick={() => run(() => apiFetch('/attendance/break/end', { method: 'POST' }), '휴게를 종료합니다.')}>
-                <div className="status-icon-emoji">▶️</div>
-                <div className="status-icon-label">휴게 종료</div>
-              </div>
-              <div
-                className="status-icon-btn"
-                onClick={() =>
-                  run(async () => {
-                    const session = await apiFetch<{ id: string }>('/night-work/start', { method: 'POST', body: JSON.stringify({}) });
-                    setNightWorkSessionId(session.id);
-                  }, '야간근무를 시작합니다.')
-                }
-              >
-                <div className="status-icon-emoji">🌜</div>
-                <div className="status-icon-label">야간근무 시작</div>
-              </div>
-              <div
-                className="status-icon-btn"
-                style={{ opacity: nightWorkSessionId ? 1 : 0.4, cursor: nightWorkSessionId ? 'pointer' : 'not-allowed' }}
-                onClick={() => {
-                  if (!nightWorkSessionId) return;
-                  run(async () => {
-                    await apiFetch('/night-work/end', { method: 'POST', body: JSON.stringify({ sessionId: nightWorkSessionId }) });
-                    setNightWorkSessionId(null);
-                  }, '야간근무를 종료했습니다. 대체휴무 전환 후보가 생성되었을 수 있습니다 — 대체휴무 신청 화면에서 확인하세요.');
-                }}
-              >
-                <div className="status-icon-emoji">🌅</div>
-                <div className="status-icon-label">야간근무 종료</div>
-              </div>
             </div>
           </div>
 
@@ -166,35 +136,81 @@ export default function EmployeeHome() {
               <button className="secondary" onClick={() => run(() => apiFetch('/resident/confirm', { method: 'POST' }), '현재 상태를 재확인했습니다.')}>상태 재확인</button>
             </div>
           )}
+
+          <div className="card">
+            <h2>휴게 / 야간근무 기록</h2>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <button style={{ margin: 0 }} onClick={() => run(() => apiFetch('/attendance/break/start', { method: 'POST' }), '휴게를 시작합니다.')}>휴게 시작</button>
+              <button style={{ margin: 0 }} className="secondary" onClick={() => run(() => apiFetch('/attendance/break/end', { method: 'POST' }), '휴게를 종료합니다.')}>휴게 종료</button>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                style={{ margin: 0 }}
+                onClick={() =>
+                  run(async () => {
+                    const session = await apiFetch<{ id: string }>('/night-work/start', { method: 'POST', body: JSON.stringify({}) });
+                    setNightWorkSessionId(session.id);
+                  }, '야간근무 근태기록을 시작합니다.')
+                }
+              >
+                야간근무 시작(근태)
+              </button>
+              <button
+                style={{ margin: 0 }}
+                className="secondary"
+                disabled={!nightWorkSessionId}
+                onClick={() =>
+                  run(async () => {
+                    await apiFetch('/night-work/end', { method: 'POST', body: JSON.stringify({ sessionId: nightWorkSessionId }) });
+                    setNightWorkSessionId(null);
+                  }, '야간근무를 종료했습니다. 대체휴무 전환 후보가 생성되었을 수 있습니다.')
+                }
+              >
+                야간근무 종료(근태)
+              </button>
+            </div>
+            <p style={{ fontSize: 11, color: '#adb5bd', marginTop: 8, marginBottom: 0 }}>
+              * 위 "야간작업" 아이콘은 지금 상태 표시용이고, 여기는 대체휴무 전환용 실제 근무시간 기록입니다.
+            </p>
+          </div>
         </div>
 
-        {/* 오른쪽 열: 고객사 미팅/작업 상세입력 폼 */}
-        <div>
-          {showClientForm && (
-            <div className="card">
-              <h2>🤝 고객사 미팅/작업 내역</h2>
-              <label className="field-label">고객사명</label>
+        {/* 오른쪽 열: 고객사미팅/고객사작업/야간작업 상세입력 폼 (왼쪽 열과 높이를 맞춤) */}
+        <div className="right-col-fill">
+          {detailStatus && (
+            <div className="card right-col-card">
+              <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 상세입력</h2>
+              <label className="field-label">고객사명{detailStatus === 'NIGHT_WORK' ? '(내부 작업이면 비워두세요)' : ''}</label>
               <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
+
+              <label className="field-label">작업 유형</label>
+              <select className="field-select" value={workType} onChange={(e) => setWorkType(e.target.value)}>
+                {WORK_TYPE_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+
               <div style={{ display: 'flex', gap: 8 }}>
                 <div style={{ flex: 1 }}>
-                  <label className="field-label">시작시간</label>
-                  <input type="time" value={meetingStart} onChange={(e) => setMeetingStart(e.target.value)} />
+                  <label className="field-label">작업시작</label>
+                  <input type="time" value={workStart} onChange={(e) => setWorkStart(e.target.value)} />
                 </div>
                 <div style={{ flex: 1 }}>
-                  <label className="field-label">완료시간(선택)</label>
-                  <input type="time" value={meetingEnd} onChange={(e) => setMeetingEnd(e.target.value)} />
+                  <label className="field-label">작업완료(선택)</label>
+                  <input type="time" value={workEnd} onChange={(e) => setWorkEnd(e.target.value)} />
                 </div>
               </div>
-              <label className="field-label">작업 내역</label>
+
+              <label className="field-label">작업내용</label>
               <textarea
-                className="detail-textarea"
+                className="detail-textarea right-col-textarea"
                 rows={3}
                 placeholder="예: 서버 점검 및 백업 정책 협의"
                 value={workDetail}
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
-              <button disabled={!clientName.trim() || !workDetail.trim()} onClick={submitClientForm}>등록</button>
-              <button className="secondary" onClick={() => setShowClientForm(false)}>취소</button>
+              <button disabled={!workDetail.trim()} onClick={submitDetailForm}>등록</button>
+              <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
             </div>
           )}
         </div>

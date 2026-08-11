@@ -54,6 +54,7 @@ enum AttendanceStatus {
   ALT_DAY_OFF
   ON_LEAVE
   CLIENT_MEETING
+  CLIENT_WORK
 }
 
 enum StatusSource {
