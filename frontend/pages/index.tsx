@@ -92,8 +92,10 @@ export default function EmployeeHome() {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
-          <h1 style={{ marginBottom: 0 }}>안녕하세요, {me.name}님</h1>
-          <p style={{ color: '#666', marginTop: 4 }}>{me.department} · {me.workType}{me.assignedClient ? ` · ${me.assignedClient}` : ''}</p>
+          <h1 style={{ marginBottom: 0 }}>Tech Status Board</h1>
+          <p style={{ color: '#666', marginTop: 4 }}>
+            {me.name}님 · {me.department} · {me.workType}{me.assignedClient ? ` · ${me.assignedClient}` : ''}
+          </p>
         </div>
         <button className="secondary" style={{ width: 'auto', margin: 0, whiteSpace: 'nowrap' }} onClick={logout}>로그아웃</button>
       </div>
@@ -185,6 +187,7 @@ export default function EmployeeHome() {
               </div>
               <label className="field-label">작업 내역</label>
               <textarea
+                className="detail-textarea"
                 rows={3}
                 placeholder="예: 서버 점검 및 백업 정책 협의"
                 value={workDetail}
