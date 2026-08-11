@@ -53,6 +53,7 @@ enum AttendanceStatus {
   NIGHT_WORK
   ALT_DAY_OFF
   ON_LEAVE
+  CLIENT_MEETING
 }
 
 enum StatusSource {

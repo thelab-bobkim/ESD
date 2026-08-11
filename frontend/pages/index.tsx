@@ -2,10 +2,22 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch, clearToken } from '@/lib/api';
 
-const STATUS_LABELS: Record<string, string> = {
-  HQ_WORKING: '본사근무', RESIDENT_ONSITE: '고객사상주', OFFSITE: '외근', MEETING: '회의',
-  MOVING: '이동', REMOTE: '재택', NIGHT_WORK: '야간작업', ALT_DAY_OFF: '대체휴무', ON_LEAVE: '휴가',
+// 관리자 상황판(admin/dashboard.tsx)과 동일한 아이콘/라벨을 써서 화면 간 일관성을 유지한다.
+const STATUS_META: Record<string, { label: string; icon: string }> = {
+  HQ_WORKING: { label: '본사근무', icon: '🏢' },
+  RESIDENT_ONSITE: { label: '고객사상주', icon: '🏬' },
+  OFFSITE: { label: '외근', icon: '🚗' },
+  CLIENT_MEETING: { label: '고객사 미팅/작업', icon: '🤝' },
+  MOVING: { label: '이동중', icon: '🚙' },
+  MEETING: { label: '회의중', icon: '👥' },
+  REMOTE: { label: '재택(집)', icon: '🏠' },
+  NIGHT_WORK: { label: '야간작업', icon: '🌙' },
+  ALT_DAY_OFF: { label: '대체휴무', icon: '🌴' },
+  ON_LEAVE: { label: '휴가', icon: '🌴' },
 };
+
+// 이 상태를 선택하면 내용(메모)을 반드시 입력받는다.
+const NOTE_REQUIRED_STATUSES = new Set(['CLIENT_MEETING']);
 
 interface MeResponse {
   name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null;
@@ -16,6 +28,8 @@ export default function EmployeeHome() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [nightWorkSessionId, setNightWorkSessionId] = useState<string | null>(null);
+  const [noteInputStatus, setNoteInputStatus] = useState<string | null>(null);
+  const [noteText, setNoteText] = useState('');
 
   useEffect(() => {
     apiFetch<MeResponse>('/auth/me').then(setMe).catch(() => router.push('/login'));
@@ -29,6 +43,29 @@ export default function EmployeeHome() {
     } catch (err) {
       setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
     }
+  }
+
+  function changeStatus(code: string) {
+    if (NOTE_REQUIRED_STATUSES.has(code)) {
+      setNoteInputStatus(code);
+      setNoteText('');
+      return;
+    }
+    run(
+      () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: code }) }),
+      `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다.`
+    );
+  }
+
+  function submitNoteStatus() {
+    if (!noteInputStatus) return;
+    const code = noteInputStatus;
+    run(
+      () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: code, note: noteText }) }),
+      `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다.`
+    );
+    setNoteInputStatus(null);
+    setNoteText('');
   }
 
   function logout() {
@@ -55,19 +92,34 @@ export default function EmployeeHome() {
           </div>
 
           <div className="card">
-            <h2>현재 상태 변경</h2>
-            <div className="status-grid">
-              {Object.entries(STATUS_LABELS).map(([code, label]) => (
-                <div
-                  key={code}
-                  className="status-badge"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => run(() => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: code }) }), `상태가 '${label}'(으)로 변경되었습니다.`)}
-                >
-                  {label}
+            <h2>지금 뭐 하고 계세요?</h2>
+            <div className="status-icon-grid">
+              {Object.entries(STATUS_META).map(([code, meta]) => (
+                <div key={code} className="status-icon-btn" onClick={() => changeStatus(code)}>
+                  <div className="status-icon-emoji">{meta.icon}</div>
+                  <div className="status-icon-label">{meta.label}</div>
                 </div>
               ))}
             </div>
+
+            {noteInputStatus && (
+              <div className="note-input-box">
+                <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>
+                  {STATUS_META[noteInputStatus].icon} {STATUS_META[noteInputStatus].label} — 어디서 무슨 일인지 간단히 적어주세요
+                </div>
+                <textarea
+                  autoFocus
+                  rows={3}
+                  placeholder="예: OO고객사 방문, 서버 점검 작업"
+                  value={noteText}
+                  onChange={(e) => setNoteText(e.target.value)}
+                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button style={{ margin: 0 }} disabled={!noteText.trim()} onClick={submitNoteStatus}>확인</button>
+                  <button style={{ margin: 0 }} className="secondary" onClick={() => setNoteInputStatus(null)}>취소</button>
+                </div>
+              </div>
+            )}
           </div>
 
           {me.assignedClient && (

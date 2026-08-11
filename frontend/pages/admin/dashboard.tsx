@@ -8,6 +8,7 @@ const STATUS_META: Record<string, { label: string; icon: string; color: string }
   HQ_WORKING: { label: '본사근무', icon: '🏢', color: '#2f9e44' },
   RESIDENT_ONSITE: { label: '고객사상주', icon: '🏬', color: '#2f9e44' },
   OFFSITE: { label: '외근', icon: '🚗', color: '#1c7ed6' },
+  CLIENT_MEETING: { label: '고객사 미팅/작업', icon: '🤝', color: '#1c7ed6' },
   MOVING: { label: '이동중', icon: '🚙', color: '#1c7ed6' },
   MEETING: { label: '회의중', icon: '👥', color: '#1c7ed6' },
   REMOTE: { label: '재택(집)', icon: '🏠', color: '#6741d9' },
@@ -18,12 +19,12 @@ const STATUS_META: Record<string, { label: string; icon: string; color: string }
 };
 
 const STATUS_ORDER = [
-  'HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'MOVING', 'MEETING',
+  'HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'MOVING', 'MEETING',
   'REMOTE', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'UNKNOWN',
 ];
 
 // "근무중"으로 집계할 상태 — 요약 통계의 근무중 비율 계산에 사용
-const WORKING_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'MOVING', 'MEETING', 'NIGHT_WORK']);
+const WORKING_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'MOVING', 'MEETING', 'NIGHT_WORK']);
 const OFF_STATUSES = new Set(['ALT_DAY_OFF', 'ON_LEAVE']);
 
 const ALERT_LABELS: Record<string, string> = {
@@ -36,7 +37,7 @@ const DEPT_BAR_LIMIT = 10; // 부서별 막대그래프에 표시할 최대 부�
 
 interface EmployeeRow {
   userId: string; name: string; department: string; client: string | null; workType: string;
-  status: string | null; statusChangedAt: string | null; statusSource: string | null; lastConfirmedAt: string | null;
+  status: string | null; statusChangedAt: string | null; statusSource: string | null; statusNote: string | null; lastConfirmedAt: string | null;
 }
 interface CompanyBoard { summary: Record<string, number>; employees: EmployeeRow[]; }
 interface AlertRow { ruleCode: string; userId: string; relatedId?: string; severity: string; }
@@ -315,6 +316,7 @@ export default function AdminDashboard() {
                         {e.department}
                         {code === 'RESIDENT_ONSITE' && e.client ? ` · ${e.client}` : ''}
                       </div>
+                      {e.statusNote && <div className="meta" style={{ color: '#1c1f24', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
                       <div className="meta">{timeAgo(e.statusChangedAt)}</div>
                     </div>
                   ))}

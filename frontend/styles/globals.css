@@ -20,6 +20,22 @@ input {
 }
 .status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .status-badge { padding: 8px; border-radius: 8px; background: #eef1f6; text-align: center; font-size: 13px; }
+
+/* 직원 화면: 아이콘 기반 상태 버튼 (엔지니어가 한눈에 보고 바로 누르기 쉽게) */
+.status-icon-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.status-icon-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; padding: 14px 6px; border-radius: 12px; background: #f5f6f8; cursor: pointer;
+  border: 2px solid transparent; transition: background 0.15s, border-color 0.15s;
+}
+.status-icon-btn:hover, .status-icon-btn:active { background: #eaf1ff; border-color: #2f6feb; }
+.status-icon-emoji { font-size: 26px; }
+.status-icon-label { font-size: 12px; text-align: center; color: #1c1f24; font-weight: 500; }
+.note-input-box { margin-top: 12px; padding: 12px; border-radius: 10px; background: #f8f9fb; border: 1px solid #d7dbe0; }
+.note-input-box textarea {
+  width: 100%; padding: 10px; border: 1px solid #d7dbe0; border-radius: 8px; margin-bottom: 10px;
+  font-size: 14px; font-family: inherit; resize: vertical;
+}
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-size: 13px; }
 .error { color: #c0392b; font-size: 13px; margin-bottom: 8px; }
