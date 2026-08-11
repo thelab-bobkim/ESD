@@ -20,7 +20,9 @@ alertsRouter.get('/', async (req, res) => {
 
   // 1) 미출근: 오늘 근무일인데 출근 기록이 없는 활성 직원 (RESIDENT/HQ_FIXED 대상, 정오 이후 기준 예시)
   const workDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const activeUsers = await prisma.user.findMany({ where: { employmentStatus: 'ACTIVE' } });
+  const activeUsers = await prisma.user.findMany({
+    where: { employmentStatus: 'ACTIVE', name: { not: { startsWith: 'SAMPLE_' } } },
+  });
   const todayRecords = await prisma.attendanceRecord.findMany({ where: { workDate } });
   const clockedInIds = new Set(todayRecords.filter((r) => r.clockInAt).map((r) => r.userId));
   if (now.getUTCHours() >= 3) { // 대략 정오(KST) 이후로 가정한 단순 규칙, 실제 기준은 정책화 가능

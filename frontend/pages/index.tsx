@@ -77,8 +77,13 @@ export default function EmployeeHome() {
 
   return (
     <div className="employee-shell">
-      <h1>안녕하세요, {me.name}님</h1>
-      <p style={{ color: '#666', marginTop: -8 }}>{me.department} · {me.workType}{me.assignedClient ? ` · ${me.assignedClient}` : ''}</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <h1 style={{ marginBottom: 0 }}>안녕하세요, {me.name}님</h1>
+          <p style={{ color: '#666', marginTop: 4 }}>{me.department} · {me.workType}{me.assignedClient ? ` · ${me.assignedClient}` : ''}</p>
+        </div>
+        <button className="secondary" style={{ width: 'auto', margin: 0, whiteSpace: 'nowrap' }} onClick={logout}>로그아웃</button>
+      </div>
 
       {message && <div className="card col-full" style={{ background: '#eef7ee' }}>{message}</div>}
 
@@ -163,10 +168,6 @@ export default function EmployeeHome() {
             >
               야간근무 종료
             </button>
-          </div>
-
-          <div className="card">
-            <button className="secondary" onClick={logout}>로그아웃</button>
           </div>
         </div>
       </div>

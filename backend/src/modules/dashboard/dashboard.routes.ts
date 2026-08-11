@@ -8,7 +8,11 @@ dashboardRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_AD
 /** 사용자별 "가장 최근" 상태 변경 로그를 모아 상황판을 만든다 (간단한 MVP 집계 방식). */
 async function buildStatusBoard(userIds?: string[]) {
   const users = await prisma.user.findMany({
-    where: userIds ? { id: { in: userIds } } : undefined,
+    where: {
+      ...(userIds ? { id: { in: userIds } } : {}),
+      // 파일럿 초기 세팅용 SAMPLE_ 테스트 계정은 실제 상황판에서 제외한다.
+      name: { not: { startsWith: 'SAMPLE_' } },
+    },
     include: { department: true, assignedClient: true },
   });
 
