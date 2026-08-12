@@ -23,7 +23,7 @@ const DETAIL_FORM_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WO
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 
 interface MeResponse {
-  name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null;
+  name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null; mustChangePassword: boolean;
 }
 
 function nowHHMM(): string {
@@ -46,7 +46,15 @@ export default function EmployeeHome() {
   const [workDetail, setWorkDetail] = useState('');
 
   useEffect(() => {
-    apiFetch<MeResponse>('/auth/me').then(setMe).catch(() => router.push('/login'));
+    apiFetch<MeResponse>('/auth/me')
+      .then((data) => {
+        if (data.mustChangePassword) {
+          router.push('/change-password');
+          return;
+        }
+        setMe(data);
+      })
+      .catch(() => router.push('/login'));
   }, [router]);
 
   async function run(action: () => Promise<unknown>, successMsg: string) {
@@ -103,7 +111,16 @@ export default function EmployeeHome() {
         <div>
           <h1 style={{ marginBottom: 0 }}>Tech Status Board</h1>
         </div>
-        <button className="secondary" style={{ width: 'auto', margin: 0, whiteSpace: 'nowrap' }} onClick={logout}>로그아웃</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            className="secondary"
+            style={{ width: 'auto', margin: 0, whiteSpace: 'nowrap' }}
+            onClick={() => router.push('/change-password')}
+          >
+            비밀번호 변경
+          </button>
+          <button className="secondary" style={{ width: 'auto', margin: 0, whiteSpace: 'nowrap' }} onClick={logout}>로그아웃</button>
+        </div>
       </div>
 
       {message && <div className="card col-full" style={{ background: '#eef7ee' }}>{message}</div>}

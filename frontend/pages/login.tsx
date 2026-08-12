@@ -4,7 +4,7 @@ import { apiFetch, setToken } from '@/lib/api';
 
 interface LoginResponse {
   accessToken: string;
-  user: { id: string; name: string; roles: string[] };
+  user: { id: string; name: string; roles: string[]; mustChangePassword: boolean };
 }
 
 export default function LoginPage() {
@@ -24,6 +24,10 @@ export default function LoginPage() {
         body: JSON.stringify({ identifier, password }),
       });
       setToken(data.accessToken);
+      if (data.user.mustChangePassword) {
+        router.push('/change-password');
+        return;
+      }
       const isAdmin = data.user.roles.some((r) => ['HR_ADMIN', 'SYSTEM_ADMIN', 'TEAM_LEAD', 'PILOT_MANAGER'].includes(r));
       router.push(isAdmin ? '/admin/dashboard' : '/');
     } catch (err) {

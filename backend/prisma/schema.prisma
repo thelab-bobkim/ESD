@@ -161,6 +161,8 @@ model User {
   // 다우오피스 연동 관련 필드
   dauofficeUserId   String?          @unique @map("dauoffice_user_id")
   dataSource        DataSource       @default(MANUAL) @map("data_source")
+  // 다우오피스 동기화로 새로 생성된 계정은 true로 시작 — 최초 로그인 시 비밀번호 변경을 강제한다.
+  mustChangePassword Boolean         @default(false) @map("must_change_password")
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 

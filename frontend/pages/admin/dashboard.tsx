@@ -202,7 +202,10 @@ export default function AdminDashboard() {
     <div className="admin-shell">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>전사 상황판 — 지금 누가 어디서 뭘 하고 있나</h1>
-        <button className="secondary" style={{ width: 'auto' }} onClick={logout}>로그아웃</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/change-password')}>비밀번호 변경</button>
+          <button className="secondary" style={{ width: 'auto' }} onClick={logout}>로그아웃</button>
+        </div>
       </div>
       {error && <div className="error">{error}</div>}
 

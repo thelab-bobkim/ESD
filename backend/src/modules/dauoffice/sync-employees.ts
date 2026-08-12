@@ -100,6 +100,7 @@ export async function syncEmployeesFromDauoffice(actorUserId: string | null): Pr
             employmentStatus: 'ACTIVE',
             dauofficeUserId: loginId,
             dataSource: 'DAUOFFICE',
+            mustChangePassword: true,
           },
         });
         if (employeeRole) {
