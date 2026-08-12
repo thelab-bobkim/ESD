@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useRouter } from 'next/router';
+import Head from 'next/head';
 import { apiFetch, setToken } from '@/lib/api';
 
 interface LoginResponse {
@@ -9,8 +10,8 @@ interface LoginResponse {
 
 export default function LoginPage() {
   const router = useRouter();
-  const [identifier, setIdentifier] = useState('sales1@sample.local');
-  const [password, setPassword] = useState('SAMPLE_pass1234');
+  const [identifier, setIdentifier] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -39,21 +40,35 @@ export default function LoginPage() {
 
   return (
     <div className="page">
-      <h1>전직원 상황판 시스템</h1>
+      <Head>
+        <title>Tech Status Board</title>
+      </Head>
+      <h1>Tech Status Board</h1>
       <div className="card">
         <h2>로그인</h2>
         {error && <div className="error">{error}</div>}
         <form onSubmit={handleSubmit}>
-          <input value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="이메일 또는 사번" />
-          <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="비밀번호" />
+          <input
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
+            placeholder="이메일 또는 사번"
+            autoFocus
+            autoComplete="username"
+          />
+          <input
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            type="password"
+            placeholder="비밀번호"
+            autoComplete="current-password"
+          />
           <button type="submit" disabled={loading}>{loading ? '로그인 중...' : '로그인'}</button>
         </form>
         <p style={{ fontSize: 12, color: '#666' }}>
-          이메일이 없는 다우오피스 연동 계정은 <strong>사번(로그인ID)</strong>으로 로그인하세요.<br />
-          시드 계정 예시(비밀번호 공통: SAMPLE_pass1234): sales1@sample.local, eng1@sample.local,
-          resident1@sample.local, teamlead1@sample.local, hr1@sample.local, admin1@sample.local
+          이메일이 없는 계정은 <strong>사번(로그인ID)</strong>으로 로그인하세요.
         </p>
       </div>
     </div>
   );
 }
+
