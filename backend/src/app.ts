@@ -45,6 +45,7 @@ export function createApp() {
     message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.' } },
   });
   app.use('/api/v1/auth/login', loginLimiter);
+  app.use('/api/v1/auth/register-password', loginLimiter);
 
   app.get('/api/v1/health', (_req, res) => res.json({ success: true, data: { status: 'ok' } }));
 

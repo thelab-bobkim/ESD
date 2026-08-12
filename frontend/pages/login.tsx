@@ -67,6 +67,9 @@ export default function LoginPage() {
         <p style={{ fontSize: 12, color: '#666' }}>
           이메일이 없는 계정은 <strong>사번(로그인ID)</strong>으로 로그인하세요.
         </p>
+        <p style={{ fontSize: 12, color: '#999', marginTop: 8 }}>
+          처음 오셨나요? <a href="/register">계정 등록하기</a>
+        </p>
       </div>
     </div>
   );

@@ -6,6 +6,63 @@ import { requireAuth, signAccessToken } from '../../common/guards/auth';
 
 export const authRouter = Router();
 
+const registerSchema = z.object({
+  employeeNo: z.string().min(1),
+  name: z.string().min(1),
+  newPassword: z.string().min(8, '비밀번호는 8자 이상이어야 합니다.'),
+});
+
+/**
+ * 최초 계정 등록: 관리자가 임시 비밀번호를 일일이 안 알려줘도, 직원 본인이 사번+이름으로
+ * 본인 확인 후 원하는 비밀번호를 직접 설정한다. mustChangePassword=true인 계정만 가능하며,
+ * 한 번 설정하면 다시 이 API로는 못 바꾼다(로그인 후 /auth/change-password를 써야 함).
+ * 사번+이름은 비밀글이 아니라서 완전한 신원확인은 아니다 — 사내망 대상 파일럿 수준의 가벼운 확인이다.
+ */
+authRouter.post('/register-password', async (req, res) => {
+  const parsed = registerSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'INVALID_INPUT', message: parsed.error.issues[0]?.message || '입력값을 확인하세요.' },
+    });
+  }
+  const { employeeNo, name, newPassword } = parsed.data;
+
+  const user = await prisma.user.findUnique({
+    where: { employeeNo },
+    include: { userRoles: { include: { role: true } } },
+  });
+  if (!user) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '사번을 찾을 수 없습니다. 사번을 다시 확인해주세요.' } });
+  }
+  if (user.name.trim() !== name.trim()) {
+    return res.status(401).json({ success: false, error: { code: 'MISMATCH', message: '사번과 이름이 일치하지 않습니다.' } });
+  }
+  if (!user.mustChangePassword) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'ALREADY_REGISTERED', message: '이미 비밀번호가 등록된 계정입니다. 로그인 화면에서 로그인해주세요.' },
+    });
+  }
+
+  const newHash = await bcrypt.hash(newPassword, 10);
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { passwordHash: newHash, mustChangePassword: false },
+  });
+
+  const roles = user.userRoles.map((ur) => ur.role.code);
+  const token = signAccessToken({ userId: user.id, roles, departmentId: user.departmentId });
+
+  return res.json({
+    success: true,
+    data: {
+      accessToken: token,
+      user: { id: user.id, name: user.name, email: user.email, employeeNo: user.employeeNo, roles, workType: user.workType, mustChangePassword: false },
+    },
+  });
+});
+
 const loginSchema = z.object({
   // 이메일이 있는 계정은 이메일로, 다우오피스 동기화 계정(이메일 없음)은 사번/다우오피스 로그인ID로 로그인한다.
   identifier: z.string().min(1),
