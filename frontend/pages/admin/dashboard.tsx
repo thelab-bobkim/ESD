@@ -63,8 +63,11 @@ export default function AdminDashboard() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [deptFilter, setDeptFilter] = useState('ALL');
   const [search, setSearch] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [justRefreshed, setJustRefreshed] = useState(false);
 
   async function load() {
+    setRefreshing(true);
     try {
       const [b, a] = await Promise.all([
         apiFetch<CompanyBoard>('/dashboard/company'),
@@ -74,9 +77,13 @@ export default function AdminDashboard() {
       setAlerts(a);
       setLastUpdated(new Date());
       setError(null);
+      setJustRefreshed(true);
+      setTimeout(() => setJustRefreshed(false), 1500);
     } catch (err) {
       if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰'))) router.push('/login');
       setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -237,9 +244,10 @@ export default function AdminDashboard() {
           <input type="checkbox" style={{ width: 'auto', margin: 0 }} checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
           자동 갱신(15초)
         </label>
-        <button onClick={load}>지금 새로고침</button>
+        <button onClick={load} disabled={refreshing}>{refreshing ? '새로고침 중...' : '지금 새로고침'}</button>
         <span className="refresh-info">
           마지막 업데이트: {lastUpdated ? lastUpdated.toLocaleTimeString('ko-KR') : '-'}
+          {justRefreshed && <span style={{ color: '#2f9e44', marginLeft: 6 }}>✓ 갱신됨</span>}
         </span>
       </div>
 
