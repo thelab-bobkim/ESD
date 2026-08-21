@@ -21,6 +21,10 @@ import { pushRouter } from './modules/push/push.routes';
 export function createApp() {
   const app = express();
 
+  // nginx가 앞단에서 리버스 프록시로 동작하므로, X-Forwarded-For 헤더의 첫 번째 홉(nginx)만
+  // 신뢰하도록 설정한다. 이게 없으면 express-rate-limit이 실제 접속자 IP를 못 믿어 에러를 낸다.
+  app.set('trust proxy', 1);
+
   // 보안 HTTP 헤더 (클릭재킹/MIME스니핑 방지 등)
   app.use(helmet());
 
