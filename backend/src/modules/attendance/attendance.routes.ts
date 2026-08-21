@@ -4,6 +4,7 @@ import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime } from '../../common/attendance-helpers';
+import { recordNightWork } from '../../common/night-work-helpers';
 
 export const attendanceRouter = Router();
 attendanceRouter.use(requireAuth);
@@ -121,8 +122,16 @@ attendanceRouter.post('/status', async (req, res) => {
     });
   }
 
-  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'status_change_log', targetId: log.id, afterValue: { log, effortLog } });
-  return res.json({ success: true, data: { statusLog: log, effortLog } });
+  let nightWork = null;
+  if (status === 'NIGHT_WORK' && effort) {
+    const workDate = todayDateOnly();
+    const startTime = effort.startTime ? combineDateTime(workDate, effort.startTime) : new Date();
+    const endTime = effort.endTime ? combineDateTime(workDate, effort.endTime) : null;
+    nightWork = await recordNightWork(userId, startTime, endTime, effort.description);
+  }
+
+  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'status_change_log', targetId: log.id, afterValue: { log, effortLog, nightWork } });
+  return res.json({ success: true, data: { statusLog: log, effortLog, nightWork } });
 });
 
 /** 본인 오늘 근태 조회 */

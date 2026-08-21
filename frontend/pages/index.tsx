@@ -38,7 +38,6 @@ export default function EmployeeHome() {
   const router = useRouter();
   const [me, setMe] = useState<MeResponse | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [nightWorkSessionId, setNightWorkSessionId] = useState<string | null>(null);
 
   // 고객사미팅/고객사작업/야간작업 공용 상세입력 폼 상태
   const [detailStatus, setDetailStatus] = useState<string | null>(null);
@@ -118,8 +117,9 @@ export default function EmployeeHome() {
     const code = detailStatus;
     const note = `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail}`;
     const body: Record<string, unknown> = { status: code, note };
-    // 고객사미팅/고객사작업은 프로젝트별 공수(工數) 기록 대상이라 구조화된 데이터도 같이 보낸다.
-    if (EFFORT_STATUSES.has(code)) {
+    // 고객사미팅/고객사작업/야간작업은 시작·종료시간을 구조화된 데이터로도 같이 보낸다
+    // (공수 집계 또는 야간근무 세션/대체휴무 전환 계산에 쓰인다).
+    if (DETAIL_FORM_STATUSES.has(code)) {
       body.effort = {
         clientName,
         projectName,
@@ -201,43 +201,6 @@ export default function EmployeeHome() {
               <button className="secondary" onClick={() => run(() => apiFetch('/resident/confirm', { method: 'POST' }), '현재 상태를 재확인했습니다.')}>상태 재확인</button>
             </div>
           )}
-
-          <div className="card">
-            <h2>휴게 / 야간근무 기록</h2>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-              <button style={{ margin: 0 }} onClick={() => run(() => apiFetch('/attendance/break/start', { method: 'POST' }), '휴게를 시작합니다.')}>휴게 시작</button>
-              <button style={{ margin: 0 }} className="secondary" onClick={() => run(() => apiFetch('/attendance/break/end', { method: 'POST' }), '휴게를 종료합니다.')}>휴게 종료</button>
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                style={{ margin: 0 }}
-                onClick={() =>
-                  run(async () => {
-                    const session = await apiFetch<{ id: string }>('/night-work/start', { method: 'POST', body: JSON.stringify({}) });
-                    setNightWorkSessionId(session.id);
-                  }, '야간근무 근태기록을 시작합니다.')
-                }
-              >
-                야간근무 시작(근태)
-              </button>
-              <button
-                style={{ margin: 0 }}
-                className="secondary"
-                disabled={!nightWorkSessionId}
-                onClick={() =>
-                  run(async () => {
-                    await apiFetch('/night-work/end', { method: 'POST', body: JSON.stringify({ sessionId: nightWorkSessionId }) });
-                    setNightWorkSessionId(null);
-                  }, '야간근무를 종료했습니다. 대체휴무 전환 후보가 생성되었을 수 있습니다.')
-                }
-              >
-                야간근무 종료(근태)
-              </button>
-            </div>
-            <p style={{ fontSize: 11, color: '#adb5bd', marginTop: 8, marginBottom: 0 }}>
-              * 위 "야간작업" 아이콘은 지금 상태 표시용이고, 여기는 대체휴무 전환용 실제 근무시간 기록입니다.
-            </p>
-          </div>
         </div>
 
         {/* 오른쪽 열: 고객사미팅/고객사작업/야간작업 상세입력 폼 (왼쪽 열과 높이를 맞춤) */}
