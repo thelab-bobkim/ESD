@@ -134,16 +134,49 @@ attendanceRouter.post('/status', async (req, res) => {
   return res.json({ success: true, data: { statusLog: log, effortLog, nightWork } });
 });
 
-/** 본인 오늘 근태 조회 */
+/** 본인 오늘 근태 조회 (상태는 "오늘" 것만 — 며칠 지난 상태를 현재처럼 보여주지 않는다) */
 attendanceRouter.get('/me', async (req, res) => {
   const userId = req.authUser!.userId;
   const workDate = todayDateOnly();
+  const dayEnd = new Date(workDate.getTime() + 24 * 60 * 60 * 1000);
   const record = await prisma.attendanceRecord.findUnique({
     where: { userId_workDate: { userId, workDate } },
     include: { breakSessions: true },
   });
-  const latestStatus = await prisma.statusChangeLog.findFirst({ where: { userId }, orderBy: { changedAt: 'desc' } });
+  const latestStatus = await prisma.statusChangeLog.findFirst({
+    where: { userId, changedAt: { gte: workDate, lt: dayEnd } },
+    orderBy: { changedAt: 'desc' },
+  });
   return res.json({ success: true, data: { record, latestStatus } });
+});
+
+/**
+ * 본인의 이번 주(월~일) 누적 근무시간 — 주52시간제를 본인이 스스로 챙길 수 있게 보여준다.
+ * (관리자 리포트와 달리 본인 것만, 아무 권한이나 조회 가능)
+ */
+attendanceRouter.get('/me/weekly', async (req, res) => {
+  const userId = req.authUser!.userId;
+  const today = todayDateOnly();
+  const jsDay = today.getUTCDay(); // 0=일요일
+  const diffToMonday = jsDay === 0 ? 6 : jsDay - 1;
+  const monday = new Date(today.getTime() - diffToMonday * 24 * 60 * 60 * 1000);
+  const nextMonday = new Date(monday.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  const records = await prisma.attendanceRecord.findMany({
+    where: { userId, workDate: { gte: monday, lt: nextMonday } },
+  });
+  const totalMinutes = records.reduce((sum, r) => sum + (r.totalWorkedMinutes ?? 0), 0);
+  const days = records.filter((r) => r.totalWorkedMinutes != null).length;
+
+  return res.json({
+    success: true,
+    data: {
+      from: monday.toISOString().slice(0, 10),
+      to: new Date(nextMonday.getTime() - 1).toISOString().slice(0, 10),
+      totalMinutes,
+      days,
+    },
+  });
 });
 
 /** 본인 이력 조회 */

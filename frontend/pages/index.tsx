@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
@@ -24,20 +24,51 @@ const DETAIL_FORM_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WO
 const EFFORT_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
+const WEEKLY_LIMIT_MINUTES = 52 * 60;
 
 interface MeResponse {
   name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null; mustChangePassword: boolean;
 }
+interface StatusLog { status: string; changedAt: string; source: string; note: string | null; }
+interface MeAttendance { record: { clockInAt: string | null; clockOutAt: string | null } | null; latestStatus: StatusLog | null; }
+interface WeeklySummary { from: string; to: string; totalMinutes: number; days: number; }
 
 function nowHHMM(): string {
   const d = new Date();
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+function greetingByHour(): string {
+  const h = new Date().getHours();
+  if (h < 6) return '늦은 시간까지 고생 많으세요';
+  if (h < 12) return '좋은 아침이에요';
+  if (h < 14) return '점심은 맛있게 드셨나요';
+  if (h < 19) return '오늘도 수고 많으세요';
+  return '오늘 하루도 고생하셨어요';
+}
+
+function timeAgoShort(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diffMs / 60000);
+  if (min < 1) return '방금 전';
+  if (min < 60) return `${min}분 전`;
+  const hr = Math.floor(min / 60);
+  const remMin = min % 60;
+  return remMin > 0 ? `${hr}시간 ${remMin}분 전` : `${hr}시간 전`;
+}
+
+function hoursLabel(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${h}시간 ${m}분`;
+}
+
 export default function EmployeeHome() {
   const router = useRouter();
   const [me, setMe] = useState<MeResponse | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [myStatus, setMyStatus] = useState<MeAttendance | null>(null);
+  const [weekly, setWeekly] = useState<WeeklySummary | null>(null);
 
   // 고객사미팅/고객사작업/야간작업 공용 상세입력 폼 상태
   const [detailStatus, setDetailStatus] = useState<string | null>(null);
@@ -49,6 +80,11 @@ export default function EmployeeHome() {
   const [workDetail, setWorkDetail] = useState('');
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
+
+  function refreshMyStatus() {
+    apiFetch<MeAttendance>('/attendance/me').then(setMyStatus).catch(() => {});
+    apiFetch<WeeklySummary>('/attendance/me/weekly').then(setWeekly).catch(() => {});
+  }
 
   useEffect(() => {
     isPushSubscribed().then(setPushSubscribed).catch(() => {});
@@ -81,8 +117,10 @@ export default function EmployeeHome() {
           return;
         }
         setMe(data);
+        refreshMyStatus();
       })
       .catch(() => router.push('/login'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   async function run(action: () => Promise<unknown>, successMsg: string) {
@@ -90,6 +128,7 @@ export default function EmployeeHome() {
     try {
       await action();
       setMessage(successMsg);
+      refreshMyStatus();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
     }
@@ -108,7 +147,7 @@ export default function EmployeeHome() {
     }
     run(
       () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: code }) }),
-      `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다.`
+      `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`
     );
   }
 
@@ -117,8 +156,6 @@ export default function EmployeeHome() {
     const code = detailStatus;
     const note = `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail}`;
     const body: Record<string, unknown> = { status: code, note };
-    // 고객사미팅/고객사작업/야간작업은 시작·종료시간을 구조화된 데이터로도 같이 보낸다
-    // (공수 집계 또는 야간근무 세션/대체휴무 전환 계산에 쓰인다).
     if (DETAIL_FORM_STATUSES.has(code)) {
       body.effort = {
         clientName,
@@ -131,7 +168,7 @@ export default function EmployeeHome() {
     }
     run(
       () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-      `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다.`
+      `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`
     );
     setDetailStatus(null);
   }
@@ -141,7 +178,15 @@ export default function EmployeeHome() {
     router.push('/login');
   }
 
+  const weeklyPct = useMemo(() => {
+    if (!weekly) return 0;
+    return Math.min(100, Math.round((weekly.totalMinutes / WEEKLY_LIMIT_MINUTES) * 100));
+  }, [weekly]);
+  const weeklyOver = weekly ? weekly.totalMinutes > WEEKLY_LIMIT_MINUTES : false;
+
   if (!me) return <div className="page">불러오는 중...</div>;
+
+  const currentStatus = myStatus?.latestStatus;
 
   return (
     <div className="employee-shell">
@@ -165,6 +210,39 @@ export default function EmployeeHome() {
         </div>
       </div>
 
+      {/* 히어로: 인사말 + 지금 내 상태 크게 보여주기 */}
+      <div className="hero-card">
+        <div className="hero-greeting">{me.name}님, {greetingByHour()}! 👋</div>
+        {currentStatus ? (
+          <div className="hero-status">
+            <span className="hero-status-icon">{STATUS_META[currentStatus.status]?.icon ?? '❔'}</span>
+            <div>
+              <div className="hero-status-label">지금 상태: {STATUS_META[currentStatus.status]?.label ?? currentStatus.status}</div>
+              <div className="hero-status-time">{timeAgoShort(currentStatus.changedAt)}에 등록됨</div>
+            </div>
+          </div>
+        ) : (
+          <div className="hero-nudge">
+            🌤️ 아직 오늘 상태를 등록 안 하셨네요! 아래에서 지금 상태를 눌러주세요 — 10초면 끝나요.
+          </div>
+        )}
+
+        {weekly && (
+          <div className="weekly-gauge">
+            <div className="weekly-gauge-label">
+              <span>이번주 내 근무시간</span>
+              <span style={{ color: weeklyOver ? '#e03131' : '#2f9e44', fontWeight: 700 }}>{hoursLabel(weekly.totalMinutes)}</span>
+            </div>
+            <div className="weekly-gauge-track">
+              <div className="weekly-gauge-fill" style={{ width: `${weeklyPct}%`, background: weeklyOver ? '#e03131' : '#2f6feb' }} />
+            </div>
+            <div className="weekly-gauge-sub">
+              {weeklyOver ? '⚠ 주 52시간을 넘었어요, 컨디션 챙기세요' : `주 52시간 중 ${weeklyPct}% — 스스로 페이스를 확인해보세요`}
+            </div>
+          </div>
+        )}
+      </div>
+
       {message && <div className="card col-full" style={{ background: '#eef7ee' }}>{message}</div>}
 
       <div className="employee-grid">
@@ -173,7 +251,7 @@ export default function EmployeeHome() {
           <div className="card">
             <h2>출퇴근</h2>
             <button onClick={() => run(() => apiFetch('/attendance/clock-in', { method: 'POST' }), '출근 처리되었습니다.')}>출근</button>
-            <button className="secondary" onClick={() => run(() => apiFetch('/attendance/clock-out', { method: 'POST' }), '퇴근 처리되었습니다.')}>퇴근</button>
+            <button className="secondary" onClick={() => run(() => apiFetch('/attendance/clock-out', { method: 'POST' }), '퇴근 처리되었습니다. 오늘도 수고하셨어요!')}>퇴근</button>
             <p style={{ fontSize: 11, color: '#adb5bd', marginTop: 4, marginBottom: 8 }}>
               * "본사근무/고객사상주/고객사미팅/고객사작업" 상태로 바꾸거나 도착체크를 하면 출근시각이 자동으로 기록됩니다. 퇴근 버튼을 눌러야 그날 근무가 확정됩니다.
             </p>
@@ -186,9 +264,14 @@ export default function EmployeeHome() {
             <h2>지금 뭐 하고 계세요?</h2>
             <div className="status-icon-grid">
               {STATUS_ORDER.map((code) => (
-                <div key={code} className="status-icon-btn" onClick={() => changeStatus(code)}>
+                <div
+                  key={code}
+                  className={`status-icon-btn${currentStatus?.status === code ? ' active' : ''}`}
+                  onClick={() => changeStatus(code)}
+                >
                   <div className="status-icon-emoji">{STATUS_META[code].icon}</div>
                   <div className="status-icon-label">{STATUS_META[code].label}</div>
+                  {currentStatus?.status === code && <div className="status-icon-check">✓</div>}
                 </div>
               ))}
             </div>

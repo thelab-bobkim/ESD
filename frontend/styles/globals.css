@@ -29,8 +29,35 @@ input {
   border: 2px solid transparent; transition: background 0.15s, border-color 0.15s;
 }
 .status-icon-btn:hover, .status-icon-btn:active { background: #eaf1ff; border-color: #2f6feb; }
+.status-icon-btn.active { background: #e7f5ec; border-color: #2f9e44; position: relative; }
+.status-icon-btn.active .status-icon-label { color: #2f9e44; font-weight: 700; }
+.status-icon-check {
+  position: absolute; top: 4px; right: 6px; font-size: 11px; color: #fff;
+  background: #2f9e44; border-radius: 999px; width: 16px; height: 16px;
+  display: flex; align-items: center; justify-content: center;
+}
 .status-icon-emoji { font-size: 26px; }
 .status-icon-label { font-size: 12px; text-align: center; color: #1c1f24; font-weight: 500; }
+
+/* 히어로 카드: 인사말 + 지금 상태 + 이번주 근무시간 게이지 */
+.hero-card {
+  background: linear-gradient(135deg, #eef4ff 0%, #f7f4ff 100%);
+  border-radius: 16px; padding: 20px 24px; margin-bottom: 16px;
+}
+.hero-greeting { font-size: 15px; color: #495057; margin-bottom: 12px; }
+.hero-status { display: flex; align-items: center; gap: 14px; margin-bottom: 4px; }
+.hero-status-icon { font-size: 40px; line-height: 1; }
+.hero-status-label { font-size: 18px; font-weight: 700; color: #1c1f24; }
+.hero-status-time { font-size: 12px; color: #868e96; margin-top: 2px; }
+.hero-nudge {
+  background: #fff8e6; border: 1px solid #ffe08a; border-radius: 10px; padding: 12px 14px;
+  font-size: 14px; color: #7a5c00;
+}
+.weekly-gauge { margin-top: 16px; }
+.weekly-gauge-label { display: flex; justify-content: space-between; font-size: 13px; color: #495057; margin-bottom: 6px; }
+.weekly-gauge-track { background: #e9ecef; border-radius: 999px; height: 10px; overflow: hidden; }
+.weekly-gauge-fill { height: 100%; border-radius: 999px; transition: width 0.3s; }
+.weekly-gauge-sub { font-size: 11px; color: #868e96; margin-top: 6px; }
 .note-input-box { margin-top: 12px; padding: 12px; border-radius: 10px; background: #f8f9fb; border: 1px solid #d7dbe0; }
 .note-input-box textarea {
   width: 100%; padding: 10px; border: 1px solid #d7dbe0; border-radius: 8px; margin-bottom: 10px;
