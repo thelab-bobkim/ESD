@@ -117,7 +117,15 @@
 - append-only, 애플리케이션 레벨에서 UPDATE/DELETE 금지 (DB 권한으로도 REVOKE 권장)
 - 보관기간은 `policy_settings.DATA_RETENTION_MONTHS`로 관리, 만료분은 배치로만 삭제
 
-## 8. 관계 요약 (텍스트 ERD)
+## 8. 공수(工數) 관리
+
+### effort_logs
+| id, user_id FK, work_date, client_name, project_name, work_type, start_time, end_time(nullable, 진행중이면 null), minutes(nullable), description, created_at |
+
+고객사 미팅/작업 상태를 등록할 때(`POST /attendance/status`의 `effort` 필드) 생성된다.
+`status_change_logs.note`는 사람이 읽는 요약 문자열이고, 실제 주/월별·프로젝트별 집계는 이 테이블 기준.
+
+## 9. 관계 요약 (텍스트 ERD)
 
 ```
 departments 1---N users N---1 clients(assigned_client_id, optional)
@@ -125,6 +133,7 @@ users N---N roles (through user_roles)
 users 1---N attendance_records 1---N break_sessions
 users 1---N status_change_logs
 users 1---N resident_checkins
+users 1---N effort_logs
 users 1---N night_work_sessions 1---1 leave_conversion_requests(optional)
 users 1---N leave_balances N---1 leave_types
 approval_requests -> (polymorphic reference_id) attendance_records / night_work_sessions / leave_conversion_requests

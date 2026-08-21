@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
+import { ensureClockIn } from '../../common/attendance-helpers';
 
 export const residentRouter = Router();
 residentRouter.use(requireAuth);
@@ -9,6 +10,7 @@ residentRouter.use(requireAuth);
 /**
  * 고객사 상주 도착 체크.
  * 좌표(lat/lng)는 저장하지 않는다 — "도착 여부 / 현재 상태 / 마지막 확인 시각" 원칙(core_principles).
+ * 주52시간제 대응: 고객사 도착을 "실제 업무 시작"으로 보고 그날 출근시각을 자동 인식한다.
  */
 residentRouter.post('/checkin', async (req, res) => {
   const userId = req.authUser!.userId;
@@ -21,6 +23,7 @@ residentRouter.post('/checkin', async (req, res) => {
     data: { userId, clientId: user.assignedClientId, checkinAt: new Date(), lastConfirmedAt: new Date() },
   });
   await prisma.statusChangeLog.create({ data: { userId, status: 'RESIDENT_ONSITE', source: 'WEB' } });
+  await ensureClockIn(userId);
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'resident_checkin', targetId: checkin.id, afterValue: checkin });
 
   return res.json({ success: true, data: checkin });

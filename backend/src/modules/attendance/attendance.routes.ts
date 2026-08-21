@@ -3,16 +3,17 @@ import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
+import { todayDateOnly, ensureClockIn, combineDateTime } from '../../common/attendance-helpers';
 
 export const attendanceRouter = Router();
 attendanceRouter.use(requireAuth);
 
-function todayDateOnly(): Date {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-}
+// 이 상태로 바뀌면 "실제 업무 시작"으로 보고 출근시각을 자동 인식한다(주52시간제 대응).
+const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK']);
+// 이 상태는 프로젝트별 공수(工數) 기록 대상이다.
+const EFFORT_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 
-/** 출근 처리 */
+/** 출근 처리(수동) — 위 자동인식 대상이 아닌 경우를 위한 수동 버튼 */
 attendanceRouter.post('/clock-in', async (req, res) => {
   const userId = req.authUser!.userId;
   const workDate = todayDateOnly();
@@ -31,7 +32,7 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   return res.json({ success: true, data: record });
 });
 
-/** 퇴근 처리 */
+/** 퇴근 처리 — 그날의 "실질 근무"를 확정한다(주52시간 집계의 기준이 되는 실근무시간 계산) */
 attendanceRouter.post('/clock-out', async (req, res) => {
   const userId = req.authUser!.userId;
   const workDate = todayDateOnly();
@@ -65,25 +66,63 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   return res.json({ success: true, data: record });
 });
 
+const effortSchema = z.object({
+  clientName: z.string().optional(),
+  projectName: z.string().optional(),
+  workType: z.string().optional(),
+  startTime: z.string().optional(), // "HH:MM" (KST)
+  endTime: z.string().optional(), // "HH:MM" (KST), 없으면 진행중
+  description: z.string().optional(),
+});
+
 const statusSchema = z.object({
   status: z.enum([
     'HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'MEETING', 'MOVING', 'REMOTE', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'CLIENT_MEETING', 'CLIENT_WORK',
   ]),
   note: z.string().optional(),
+  effort: effortSchema.optional(),
 });
 
-/** 현재 상태 변경 */
+/** 현재 상태 변경. 업무 시작류 상태면 출근시각을 자동 인식하고, 고객사미팅/작업이면 공수기록도 남긴다. */
 attendanceRouter.post('/status', async (req, res) => {
   const parsed = statusSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '상태값을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
+  const { status, note, effort } = parsed.data;
+
   const log = await prisma.statusChangeLog.create({
-    data: { userId, status: parsed.data.status, note: parsed.data.note, source: 'WEB' },
+    data: { userId, status, note, source: 'WEB' },
   });
-  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'status_change_log', targetId: log.id, afterValue: log });
-  return res.json({ success: true, data: log });
+
+  if (WORK_START_STATUSES.has(status)) {
+    await ensureClockIn(userId);
+  }
+
+  let effortLog = null;
+  if (EFFORT_STATUSES.has(status) && effort) {
+    const workDate = todayDateOnly();
+    const startTime = effort.startTime ? combineDateTime(workDate, effort.startTime) : new Date();
+    const endTime = effort.endTime ? combineDateTime(workDate, effort.endTime) : null;
+    const minutes = endTime ? Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 60000)) : null;
+    effortLog = await prisma.effortLog.create({
+      data: {
+        userId,
+        workDate,
+        clientName: effort.clientName || '',
+        projectName: effort.projectName || '',
+        workType: effort.workType || '기타',
+        startTime,
+        endTime,
+        minutes,
+        description: effort.description,
+      },
+    });
+  }
+
+  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'status_change_log', targetId: log.id, afterValue: { log, effortLog } });
+  return res.json({ success: true, data: { statusLog: log, effortLog } });
 });
 
 /** 본인 오늘 근태 조회 */

@@ -175,6 +175,7 @@ model User {
   leaveConversionRequests LeaveConversionRequest[]
   pilotGroupMembers      PilotGroupMember[]
   pilotFeedback          PilotFeedback[]
+  effortLogs             EffortLog[]
   approvalRequestsMade   ApprovalRequest[] @relation("Requester")
   approvalRequestsDecided ApprovalRequest[] @relation("Approver")
 
@@ -440,3 +441,25 @@ model DauofficeDepartmentOverride {
 
   @@map("dauoffice_department_overrides")
 }
+
+// ===== 공수(工數) 관리 =====
+// 고객사 미팅/작업 상태를 등록할 때, "무슨 프로젝트에 얼마나 시간을 썼는지"를 구조화된 데이터로
+// 남긴다. status_change_logs.note는 사람이 읽기 좋은 요약 문자열일 뿐이고, 실제 집계(주/월별,
+// 프로젝트별 공수)는 이 테이블을 기준으로 한다.
+model EffortLog {
+  id          String    @id @default(uuid())
+  userId      String    @map("user_id")
+  user        User      @relation(fields: [userId], references: [id])
+  workDate    DateTime  @map("work_date") @db.Date
+  clientName  String    @map("client_name")
+  projectName String    @map("project_name")
+  workType    String    @map("work_type") // 정기점검/신규설치/장애대응/미팅/기타
+  startTime   DateTime  @map("start_time")
+  endTime     DateTime? @map("end_time")
+  minutes     Int?      // endTime이 없으면(진행중) null
+  description String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@map("effort_logs")
+}
+

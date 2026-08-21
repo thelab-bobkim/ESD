@@ -46,3 +46,23 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
   }
   return json.data as T;
 }
+
+/** CSV 등 파일 다운로드 — 일반 JSON 응답이 아니라 브라우저에서 바로 파일로 저장한다(인증 헤더 포함). */
+export async function apiDownload(path: string, filename: string): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  });
+  if (!res.ok) {
+    throw new Error('파일을 받아오지 못했습니다.');
+  }
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}

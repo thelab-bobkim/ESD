@@ -19,6 +19,8 @@ const STATUS_ORDER = ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIE
 
 // 이 상태들은 클릭 시 오른쪽에 상세입력 폼을 띄운다.
 const DETAIL_FORM_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+// 이 상태는 프로젝트별 공수(工數) 기록 대상이라 프로젝트명 필드가 필요하다.
+const EFFORT_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 
@@ -40,6 +42,7 @@ export default function EmployeeHome() {
   // 고객사미팅/고객사작업/야간작업 공용 상세입력 폼 상태
   const [detailStatus, setDetailStatus] = useState<string | null>(null);
   const [clientName, setClientName] = useState('');
+  const [projectName, setProjectName] = useState('');
   const [workStart, setWorkStart] = useState(nowHHMM());
   const [workEnd, setWorkEnd] = useState('');
   const [workType, setWorkType] = useState(WORK_TYPE_OPTIONS[0]);
@@ -71,6 +74,7 @@ export default function EmployeeHome() {
     if (DETAIL_FORM_STATUSES.has(code)) {
       setDetailStatus(code);
       setClientName('');
+      setProjectName('');
       setWorkStart(nowHHMM());
       setWorkEnd('');
       setWorkType(WORK_TYPE_OPTIONS[0]);
@@ -86,9 +90,21 @@ export default function EmployeeHome() {
   function submitDetailForm() {
     if (!detailStatus) return;
     const code = detailStatus;
-    const note = `유형: ${workType} | 고객사: ${clientName || '-'} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail}`;
+    const note = `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail}`;
+    const body: Record<string, unknown> = { status: code, note };
+    // 고객사미팅/고객사작업은 프로젝트별 공수(工數) 기록 대상이라 구조화된 데이터도 같이 보낸다.
+    if (EFFORT_STATUSES.has(code)) {
+      body.effort = {
+        clientName,
+        projectName,
+        workType,
+        startTime: workStart,
+        endTime: workEnd || undefined,
+        description: workDetail,
+      };
+    }
     run(
-      () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: code, note }) }),
+      () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
       `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다.`
     );
     setDetailStatus(null);
@@ -132,6 +148,9 @@ export default function EmployeeHome() {
             <h2>출퇴근</h2>
             <button onClick={() => run(() => apiFetch('/attendance/clock-in', { method: 'POST' }), '출근 처리되었습니다.')}>출근</button>
             <button className="secondary" onClick={() => run(() => apiFetch('/attendance/clock-out', { method: 'POST' }), '퇴근 처리되었습니다.')}>퇴근</button>
+            <p style={{ fontSize: 11, color: '#adb5bd', marginTop: 4, marginBottom: 0 }}>
+              * "본사근무/고객사상주/고객사미팅/고객사작업" 상태로 바꾸거나 도착체크를 하면 출근시각이 자동으로 기록됩니다. 퇴근 버튼을 눌러야 그날 근무가 확정됩니다.
+            </p>
           </div>
 
           <div className="card">
@@ -199,6 +218,13 @@ export default function EmployeeHome() {
               <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 상세입력</h2>
               <label className="field-label">고객사명{detailStatus === 'NIGHT_WORK' ? '(내부 작업이면 비워두세요)' : ''}</label>
               <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
+
+              {EFFORT_STATUSES.has(detailStatus) && (
+                <>
+                  <label className="field-label">프로젝트명</label>
+                  <input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="예: 백업시스템 구축 2차" />
+                </>
+              )}
 
               <label className="field-label">작업 유형</label>
               <select className="field-select" value={workType} onChange={(e) => setWorkType(e.target.value)}>
