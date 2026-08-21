@@ -31,7 +31,7 @@ export async function subscribeToPush(): Promise<void> {
   const reg = await navigator.serviceWorker.ready;
   const sub = await reg.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(publicKey),
+    applicationServerKey: urlBase64ToUint8Array(publicKey) as BufferSource,
   });
   const json = sub.toJSON();
   await apiFetch('/push/subscribe', {
