@@ -16,6 +16,7 @@ import { pilotRouter } from './modules/pilot/pilot.routes';
 import { auditRouter } from './modules/audit/audit.routes';
 import { reportsRouter } from './modules/reports/reports.routes';
 import { dauofficeRouter } from './modules/dauoffice/dauoffice.routes';
+import { pushRouter } from './modules/push/push.routes';
 
 export function createApp() {
   const app = express();
@@ -63,6 +64,7 @@ export function createApp() {
   app.use('/api/v1/audit', auditRouter);
   app.use('/api/v1/reports', reportsRouter);
   app.use('/api/v1/dauoffice', dauofficeRouter);
+  app.use('/api/v1/push', pushRouter);
 
   // 공통 에러 핸들러
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

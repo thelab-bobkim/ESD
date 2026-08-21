@@ -48,6 +48,28 @@ input {
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-size: 13px; }
 .error { color: #c0392b; font-size: 13px; margin-bottom: 8px; }
+
+.install-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: #2f6feb; color: #fff; padding: 10px 16px; font-size: 13px;
+  position: sticky; top: 0; z-index: 100;
+}
+.install-banner button { width: auto; margin: 0; }
+.install-banner button.secondary { background: transparent; border: 1px solid #fff; color: #fff; }
+
+/* 상황판 캘린더 */
+.calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.calendar-weekday { text-align: center; font-size: 12px; color: #868e96; padding: 4px 0; }
+.calendar-cell {
+  min-height: 64px; border-radius: 8px; padding: 6px; background: #f5f6f8; cursor: pointer;
+  border: 2px solid transparent; font-size: 12px;
+}
+.calendar-cell:hover { border-color: #2f6feb; }
+.calendar-cell.selected { border-color: #2f6feb; background: #eaf1ff; }
+.calendar-cell.empty { background: transparent; cursor: default; }
+.calendar-cell .day-num { font-weight: 600; margin-bottom: 4px; }
+.calendar-cell .day-count { color: #2f9e44; }
+.calendar-cell.today .day-num { color: #2f6feb; }
 .status-tag { padding: 2px 8px; border-radius: 999px; font-size: 12px; color: #fff; display: inline-block; }
 
 /* ===== 직원 화면: PC에서는 2단 레이아웃 ===== */

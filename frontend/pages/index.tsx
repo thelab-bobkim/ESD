@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
+import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
 
 // 요청하신 배열: 재택/본사근무/고객사상주, 이동중/고객사미팅/고객사작업, 야간작업/대체휴무/휴가 (총 9개)
 const STATUS_META: Record<string, { label: string; icon: string }> = {
@@ -47,6 +48,31 @@ export default function EmployeeHome() {
   const [workEnd, setWorkEnd] = useState('');
   const [workType, setWorkType] = useState(WORK_TYPE_OPTIONS[0]);
   const [workDetail, setWorkDetail] = useState('');
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [pushLoading, setPushLoading] = useState(false);
+
+  useEffect(() => {
+    isPushSubscribed().then(setPushSubscribed).catch(() => {});
+  }, []);
+
+  async function togglePush() {
+    setPushLoading(true);
+    try {
+      if (pushSubscribed) {
+        await unsubscribeFromPush();
+        setPushSubscribed(false);
+        setMessage('출근 알림을 껐습니다.');
+      } else {
+        await subscribeToPush();
+        setPushSubscribed(true);
+        setMessage('출근 알림을 켰습니다. 매일 오전 9시까지 상태를 등록하지 않으면 알려드립니다.');
+      }
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '알림 설정에 실패했습니다.');
+    } finally {
+      setPushLoading(false);
+    }
+  }
 
   useEffect(() => {
     apiFetch<MeResponse>('/auth/me')
@@ -148,9 +174,12 @@ export default function EmployeeHome() {
             <h2>출퇴근</h2>
             <button onClick={() => run(() => apiFetch('/attendance/clock-in', { method: 'POST' }), '출근 처리되었습니다.')}>출근</button>
             <button className="secondary" onClick={() => run(() => apiFetch('/attendance/clock-out', { method: 'POST' }), '퇴근 처리되었습니다.')}>퇴근</button>
-            <p style={{ fontSize: 11, color: '#adb5bd', marginTop: 4, marginBottom: 0 }}>
+            <p style={{ fontSize: 11, color: '#adb5bd', marginTop: 4, marginBottom: 8 }}>
               * "본사근무/고객사상주/고객사미팅/고객사작업" 상태로 바꾸거나 도착체크를 하면 출근시각이 자동으로 기록됩니다. 퇴근 버튼을 눌러야 그날 근무가 확정됩니다.
             </p>
+            <button className="secondary" disabled={pushLoading} onClick={togglePush}>
+              {pushLoading ? '처리 중...' : pushSubscribed ? '🔔 출근 알림 끄기' : '🔕 출근 알림 켜기(오전 9시)'}
+            </button>
           </div>
 
           <div className="card">

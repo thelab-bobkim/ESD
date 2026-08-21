@@ -176,6 +176,7 @@ model User {
   pilotGroupMembers      PilotGroupMember[]
   pilotFeedback          PilotFeedback[]
   effortLogs             EffortLog[]
+  pushSubscriptions      PushSubscription[]
   approvalRequestsMade   ApprovalRequest[] @relation("Requester")
   approvalRequestsDecided ApprovalRequest[] @relation("Approver")
 
@@ -461,5 +462,21 @@ model EffortLog {
   createdAt   DateTime  @default(now()) @map("created_at")
 
   @@map("effort_logs")
+}
+
+// ===== 브라우저 푸시 알림 =====
+// "오전 9시까지 출근/재택 등록 안 하면 알림" 기능을 위한 구독 정보.
+// 웹 표준 Push API(VAPID) 방식이라 안드로이드는 브라우저에서 바로, iOS는 PWA로 홈화면에
+// 추가한 뒤에만 동작한다(애플 정책).
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id])
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("push_subscriptions")
 }
 
