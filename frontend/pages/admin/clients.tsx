@@ -33,12 +33,12 @@ export default function AdminClientsPage() {
 
   useEffect(load, []);
 
-  async function saveCoordsValue(id: string, lat: number, lng: number) {
+  async function saveCoordsValue(id: string, lat: number, lng: number, address?: string) {
     setSaving(id);
     try {
       await apiFetch(`/clients/${id}/coordinates`, {
         method: 'PUT',
-        body: JSON.stringify({ latitude: lat, longitude: lng }),
+        body: JSON.stringify({ latitude: lat, longitude: lng, ...(address ? { address } : {}) }),
       });
       load();
     } catch (err) {
@@ -133,8 +133,8 @@ export default function AdminClientsPage() {
         <MapPickerModal
           initialAddress={mapTargetClient.address}
           onClose={() => setMapTargetId(null)}
-          onSelect={async (lat, lng) => {
-            await saveCoordsValue(mapTargetClient.id, lat, lng);
+          onSelect={async (lat, lng, address) => {
+            await saveCoordsValue(mapTargetClient.id, lat, lng, address);
             setMapTargetId(null);
           }}
         />

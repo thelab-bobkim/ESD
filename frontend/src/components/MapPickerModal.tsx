@@ -8,7 +8,7 @@ declare global {
 
 interface Props {
   initialAddress?: string;
-  onSelect: (lat: number, lng: number) => void;
+  onSelect: (lat: number, lng: number, address?: string) => void;
   onClose: () => void;
 }
 
@@ -32,8 +32,9 @@ export default function MapPickerModal({ initialAddress, onSelect, onClose }: Pr
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
+  const geocoderRef = useRef<any>(null);
   const [search, setSearch] = useState(initialAddress ?? '');
-  const [selected, setSelected] = useState<{ lat: number; lng: number } | null>(null);
+  const [selected, setSelected] = useState<{ lat: number; lng: number; address?: string; placeName?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -51,11 +52,18 @@ export default function MapPickerModal({ initialAddress, onSelect, onClose }: Pr
           level: 4,
         });
         mapRef.current = map;
+        geocoderRef.current = new window.kakao.maps.services.Geocoder();
 
         window.kakao.maps.event.addListener(map, 'click', (e: any) => {
           const lat = e.latLng.getLat();
           const lng = e.latLng.getLng();
-          placeMarker(lat, lng);
+          // 직접 클릭한 지점은 장소명이 없으니, 역지오코딩으로 주소만 찾아서 같이 저장한다.
+          geocoderRef.current.coord2Address(lng, lat, (result: any[], status: string) => {
+            const address = status === window.kakao.maps.services.Status.OK
+              ? result[0]?.road_address?.address_name || result[0]?.address?.address_name
+              : undefined;
+            placeMarker(lat, lng, address);
+          });
         });
 
         setLoading(false);
@@ -68,7 +76,7 @@ export default function MapPickerModal({ initialAddress, onSelect, onClose }: Pr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function placeMarker(lat: number, lng: number) {
+  function placeMarker(lat: number, lng: number, address?: string, placeName?: string) {
     const map = mapRef.current;
     if (!map) return;
     const position = new window.kakao.maps.LatLng(lat, lng);
@@ -78,7 +86,7 @@ export default function MapPickerModal({ initialAddress, onSelect, onClose }: Pr
       markerRef.current = new window.kakao.maps.Marker({ position, map });
     }
     map.setCenter(position);
-    setSelected({ lat, lng });
+    setSelected({ lat, lng, address, placeName });
   }
 
   function doSearch(keyword?: string, mapOverride?: any) {
@@ -88,8 +96,8 @@ export default function MapPickerModal({ initialAddress, onSelect, onClose }: Pr
     const places = new window.kakao.maps.services.Places();
     places.keywordSearch(q, (data: any[], status: string) => {
       if (status === window.kakao.maps.services.Status.OK && data.length > 0) {
-        const { y, x } = data[0];
-        placeMarker(Number(y), Number(x));
+        const { y, x, place_name: placeName, road_address_name: roadAddress, address_name: address } = data[0];
+        placeMarker(Number(y), Number(x), roadAddress || address, placeName);
         map?.setLevel(3);
       } else {
         setError('검색 결과가 없습니다. 지도를 클릭해서 직접 위치를 찍어주세요.');
@@ -114,11 +122,18 @@ export default function MapPickerModal({ initialAddress, onSelect, onClose }: Pr
         </div>
         {loading && <div className="board-empty">지도를 불러오는 중...</div>}
         <div ref={mapContainerRef} style={{ width: '100%', height: 360, borderRadius: 10, background: '#eee' }} />
+        {selected && (
+          <div style={{ fontSize: 13, color: '#1c1f24', marginTop: 8, padding: '8px 10px', background: '#f5f6f8', borderRadius: 8 }}>
+            📍 {selected.placeName && <strong>{selected.placeName}</strong>}
+            {selected.placeName && selected.address ? ' · ' : ''}
+            {selected.address || (!selected.placeName ? '주소를 찾지 못했습니다(좌표만 저장됩니다)' : '')}
+          </div>
+        )}
         <p style={{ fontSize: 12, color: '#868e96', marginTop: 8 }}>
           검색 후 정확한 위치가 아니면 지도를 클릭해서 직접 위치를 찍어주세요.
         </p>
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-          <button disabled={!selected} onClick={() => selected && onSelect(selected.lat, selected.lng)}>
+          <button disabled={!selected} onClick={() => selected && onSelect(selected.lat, selected.lng, selected.address)}>
             이 위치로 저장
           </button>
           <button className="secondary" onClick={onClose}>취소</button>

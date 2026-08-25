@@ -25,6 +25,8 @@ clientsRouter.get('/', async (_req, res) => {
 const updateCoordsSchema = z.object({
   latitude: z.number().min(-90).max(90).nullable(),
   longitude: z.number().min(-180).max(180).nullable(),
+  // 지도에서 검색해서 찾은 주소가 있으면 같이 갱신한다(선택값 — 직접입력 저장 시엔 안 넘어옴).
+  address: z.string().optional(),
 });
 
 /** 고객사 좌표 등록/수정 — 위치대조에 쓸 기준 좌표. 지도(구글맵 등)에서 조회한 값을 그대로 입력하면 된다. */
@@ -39,7 +41,11 @@ clientsRouter.put('/:id/coordinates', async (req, res) => {
   }
   const updated = await prisma.client.update({
     where: { id: req.params.id },
-    data: { latitude: parsed.data.latitude, longitude: parsed.data.longitude },
+    data: {
+      latitude: parsed.data.latitude,
+      longitude: parsed.data.longitude,
+      ...(parsed.data.address ? { address: parsed.data.address } : {}),
+    },
   });
   return res.json({ success: true, data: updated });
 });
