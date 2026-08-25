@@ -47,9 +47,9 @@ export default function RegisterPage() {
   return (
     <div className="page">
       <Head>
-        <title>Tech Status Board - 계정 등록</title>
+        <title>DSTI-TSB - 계정 등록</title>
       </Head>
-      <h1>Tech Status Board</h1>
+      <h1>DSTI-TSB</h1>
       <div className="card">
         <h2>최초 계정 등록</h2>
         <p style={{ fontSize: 13, color: '#666', marginTop: 0 }}>

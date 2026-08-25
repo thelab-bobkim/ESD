@@ -219,7 +219,7 @@ export default function EmployeeHome() {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
-          <h1 style={{ marginBottom: 0 }}>Tech Status Board</h1>
+          <h1 style={{ marginBottom: 0 }}>DSTI-TSB</h1>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
@@ -344,6 +344,9 @@ export default function EmployeeHome() {
           {detailStatus && (
             <div className="card right-col-card">
               <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 상세입력</h2>
+              <p style={{ fontSize: 12, color: '#e8590c', marginTop: -4, marginBottom: 10 }}>
+                * 작업시작·작업완료 시간은 필수입니다. 둘 다 입력해야 등록됩니다.
+              </p>
               <label className="field-label">고객사명{detailStatus === 'NIGHT_WORK' ? '(내부 작업이면 비워두세요)' : ''}</label>
               <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
 
@@ -367,7 +370,7 @@ export default function EmployeeHome() {
                   <input type="time" value={workStart} onChange={(e) => setWorkStart(e.target.value)} />
                 </div>
                 <div style={{ flex: 1 }}>
-                  <label className="field-label">작업완료(선택)</label>
+                  <label className="field-label">작업완료</label>
                   <input type="time" value={workEnd} onChange={(e) => setWorkEnd(e.target.value)} />
                 </div>
               </div>
@@ -380,7 +383,7 @@ export default function EmployeeHome() {
                 value={workDetail}
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
-              <button disabled={!workDetail.trim()} onClick={submitDetailForm}>등록</button>
+              <button disabled={!workDetail.trim() || !workStart || !workEnd} onClick={submitDetailForm}>등록</button>
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
             </div>
           )}

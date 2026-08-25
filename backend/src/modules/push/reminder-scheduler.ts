@@ -43,7 +43,7 @@ export function startClockInReminderScheduler() {
 
       for (const u of targets) {
         await sendPushToUser(u.id, {
-          title: 'Tech Status Board',
+          title: 'DSTI-TSB',
           body: '아직 출근/재택 등 오늘 상태를 등록하지 않으셨어요. 지금 등록해주세요!',
           url: '/',
         });

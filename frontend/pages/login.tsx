@@ -41,9 +41,9 @@ export default function LoginPage() {
   return (
     <div className="page">
       <Head>
-        <title>Tech Status Board</title>
+        <title>DSTI-TSB</title>
       </Head>
-      <h1>Tech Status Board</h1>
+      <h1>DSTI-TSB</h1>
       <div className="card">
         <h2>로그인</h2>
         {error && <div className="error">{error}</div>}

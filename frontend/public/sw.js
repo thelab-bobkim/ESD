@@ -15,7 +15,7 @@ self.addEventListener('fetch', (event) => {
 
 // 오전 9시 미출근 알림 등 서버가 보내는 푸시 메시지를 화면에 띄운다.
 self.addEventListener('push', (event) => {
-  let payload = { title: 'Tech Status Board', body: '알림이 도착했습니다.', url: '/' };
+  let payload = { title: 'DSTI-TSB', body: '알림이 도착했습니다.', url: '/' };
   try {
     if (event.data) payload = { ...payload, ...event.data.json() };
   } catch (e) {
