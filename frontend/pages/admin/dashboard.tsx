@@ -46,6 +46,7 @@ interface ActivityRow {
 interface EmployeeRow {
   userId: string; name: string; department: string; client: string | null; workType: string;
   status: string | null; statusChangedAt: string | null; statusSource: string | null; statusNote: string | null; lastConfirmedAt: string | null;
+  locationMatch: boolean | null; locationDistanceMeters: number | null;
 }
 interface CompanyBoard { summary: Record<string, number>; employees: EmployeeRow[]; }
 
@@ -229,6 +230,7 @@ export default function AdminDashboard() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>전사 상황판 — 지금 누가 어디서 뭘 하고 있나</h1>
         <div style={{ display: 'flex', gap: 8 }}>
+          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/clients')}>고객사 위치관리</button>
           <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/calendar')}>캘린더</button>
           <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/reports')}>출퇴근·근로시간·공수</button>
           <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/change-password')}>비밀번호 변경</button>
@@ -342,6 +344,11 @@ export default function AdminDashboard() {
                         </div>
                       </div>
                       {e.statusNote && <div className="meta" style={{ color: '#1c1f24', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
+                      {e.locationMatch !== null && (
+                        <div className="meta" style={{ color: e.locationMatch ? '#2f9e44' : '#e03131', fontWeight: 600 }}>
+                          {e.locationMatch ? '📍 위치 확인됨' : `📍 위치 불일치 (약 ${e.locationDistanceMeters}m)`}
+                        </div>
+                      )}
                       <div className="meta">{timeAgo(e.statusChangedAt)}</div>
                     </div>
                   ))}

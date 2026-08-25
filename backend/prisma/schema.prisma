@@ -137,6 +137,10 @@ model Client {
   id      String @id @default(uuid())
   name    String
   address String
+  // 고객사 방문(도착체크/미팅/작업) 시 GPS 위치 대조용 — 관리자가 직접 입력(지도에서 좌표 조회 후 입력).
+  // 미입력 상태면 위치 대조를 안 하고 그냥 통과시킨다.
+  latitude  Float?
+  longitude Float?
 
   users            User[]
   residentCheckins ResidentCheckin[]
@@ -163,6 +167,8 @@ model User {
   dataSource        DataSource       @default(MANUAL) @map("data_source")
   // 다우오피스 동기화로 새로 생성된 계정은 true로 시작 — 최초 로그인 시 비밀번호 변경을 강제한다.
   mustChangePassword Boolean         @default(false) @map("must_change_password")
+  // 고객사 방문 위치대조 기능에 대한 동의 시각(최초 1회 명시적 동의) — null이면 아직 미동의.
+  locationConsentAt  DateTime?       @map("location_consent_at")
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 
@@ -241,6 +247,9 @@ model StatusChangeLog {
   changedAt DateTime         @default(now()) @map("changed_at")
   note      String?
   source    StatusSource     @default(WEB)
+  // 고객사미팅/고객사작업 등록 시 GPS 위치대조 결과. 원본 좌표는 저장하지 않고 결과만 남긴다.
+  locationMatch          Boolean? @map("location_match")
+  locationDistanceMeters Int?     @map("location_distance_meters")
 
   @@map("status_change_logs")
 }
@@ -253,6 +262,9 @@ model ResidentCheckin {
   client          Client    @relation(fields: [clientId], references: [id])
   checkinAt       DateTime  @default(now()) @map("checkin_at")
   lastConfirmedAt DateTime  @default(now()) @map("last_confirmed_at")
+  // 도착체크 시 GPS 위치대조 결과. 원본 좌표는 저장하지 않고 결과만 남긴다.
+  locationMatch          Boolean? @map("location_match")
+  locationDistanceMeters Int?     @map("location_distance_meters")
 
   @@map("resident_checkins")
 }

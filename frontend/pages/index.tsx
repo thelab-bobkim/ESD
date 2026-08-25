@@ -3,6 +3,8 @@ import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
+import { getCurrentLocation } from '@/lib/geolocation';
+import LocationConsentModal from '@/components/LocationConsentModal';
 
 // 요청하신 배열: 재택/본사근무/고객사상주, 이동중/고객사미팅/고객사작업, 야간작업/대체휴무/휴가 (총 9개)
 const STATUS_META: Record<string, { label: string; icon: string }> = {
@@ -27,7 +29,7 @@ const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미�
 const WEEKLY_LIMIT_MINUTES = 52 * 60;
 
 interface MeResponse {
-  name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null; mustChangePassword: boolean;
+  name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null; mustChangePassword: boolean; locationConsentGiven: boolean;
 }
 interface StatusLog { status: string; changedAt: string; source: string; note: string | null; }
 interface MeAttendance { record: { clockInAt: string | null; clockOutAt: string | null } | null; latestStatus: StatusLog | null; }
@@ -70,6 +72,7 @@ function hoursLabel(minutes: number): string {
 export default function EmployeeHome() {
   const router = useRouter();
   const [me, setMe] = useState<MeResponse | null>(null);
+  const [showLocationConsent, setShowLocationConsent] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [myStatus, setMyStatus] = useState<MeAttendance | null>(null);
   const [weekly, setWeekly] = useState<WeeklySummary | null>(null);
@@ -121,6 +124,7 @@ export default function EmployeeHome() {
           return;
         }
         setMe(data);
+        setShowLocationConsent(!data.locationConsentGiven);
         refreshMyStatus();
       })
       .catch(() => router.push('/login'));
@@ -155,7 +159,7 @@ export default function EmployeeHome() {
     );
   }
 
-  function submitDetailForm() {
+  async function submitDetailForm() {
     if (!detailStatus) return;
     const code = detailStatus;
     const note = `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail}`;
@@ -169,6 +173,11 @@ export default function EmployeeHome() {
         endTime: workEnd || undefined,
         description: workDetail,
       };
+    }
+    // 고객사미팅/고객사작업은 등록 순간 위치를 확인해서 등록된 고객사 위치와 대조한다(동의한 경우에만).
+    if (EFFORT_STATUSES.has(code) && me?.locationConsentGiven) {
+      const loc = await getCurrentLocation();
+      if (loc) body.location = loc;
     }
     run(
       () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
@@ -197,6 +206,15 @@ export default function EmployeeHome() {
       <Head>
         <title>기술부 현황 등록</title>
       </Head>
+
+      {showLocationConsent && (
+        <LocationConsentModal
+          onDone={(consented) => {
+            setShowLocationConsent(false);
+            if (consented) setMe((prev) => (prev ? { ...prev, locationConsentGiven: true } : prev));
+          }}
+        />
+      )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
@@ -296,7 +314,16 @@ export default function EmployeeHome() {
           {me.assignedClient && (
             <div className="card">
               <h2>고객사 상주 도착체크</h2>
-              <button onClick={() => run(() => apiFetch('/resident/checkin', { method: 'POST' }), '도착체크가 완료되었습니다.')}>도착체크</button>
+              <button
+                onClick={() =>
+                  run(async () => {
+                    const loc = me?.locationConsentGiven ? await getCurrentLocation() : null;
+                    return apiFetch('/resident/checkin', { method: 'POST', body: JSON.stringify(loc ? { location: loc } : {}) });
+                  }, '도착체크가 완료되었습니다.')
+                }
+              >
+                도착체크
+              </button>
               <button className="secondary" onClick={() => run(() => apiFetch('/resident/confirm', { method: 'POST' }), '현재 상태를 재확인했습니다.')}>상태 재확인</button>
             </div>
           )}

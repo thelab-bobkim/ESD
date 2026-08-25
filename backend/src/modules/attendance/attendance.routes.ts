@@ -5,6 +5,7 @@ import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
+import { checkLocationMatch } from '../../common/location';
 
 export const attendanceRouter = Router();
 attendanceRouter.use(requireAuth);
@@ -92,7 +93,12 @@ const statusSchema = z.object({
   ]),
   note: z.string().optional(),
   effort: effortSchema.optional(),
+  // 고객사미팅/고객사작업 등록 시 그 순간의 좌표(대조 후 즉시 폐기, 저장 안 함)
+  location: z.object({ lat: z.number(), lng: z.number() }).optional(),
 });
+
+// 이 상태들만 GPS 위치대조 대상이다(고객사 위치와 비교할 대상이 있는 경우만).
+const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 
 /** 현재 상태 변경. 업무 시작류 상태면 출근시각을 자동 인식하고, 고객사미팅/작업이면 공수기록도 남긴다. */
 attendanceRouter.post('/status', async (req, res) => {
@@ -101,10 +107,27 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '상태값을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
-  const { status, note, effort } = parsed.data;
+  const { status, note, effort, location } = parsed.data;
+
+  // 위치대조: 입력한 고객사명과 등록된 고객사를 이름으로 매칭해서 좌표를 비교한다.
+  // 매칭되는 고객사가 없거나 좌표 미등록/위치권한 없음이면 그냥 null(확인 안 함)로 둔다.
+  let locationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
+  if (LOCATION_CHECK_STATUSES.has(status) && effort?.clientName) {
+    const matchedClient = await prisma.client.findFirst({
+      where: { name: { contains: effort.clientName.trim(), mode: 'insensitive' } },
+    });
+    locationResult = checkLocationMatch(location, matchedClient);
+  }
 
   const log = await prisma.statusChangeLog.create({
-    data: { userId, status, note, source: 'WEB' },
+    data: {
+      userId,
+      status,
+      note,
+      source: 'WEB',
+      locationMatch: locationResult?.locationMatch ?? null,
+      locationDistanceMeters: locationResult?.locationDistanceMeters ?? null,
+    },
   });
 
   if (WORK_START_STATUSES.has(status)) {

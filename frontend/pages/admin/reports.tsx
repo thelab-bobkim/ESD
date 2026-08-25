@@ -80,6 +80,8 @@ export default function AdminReportsPage() {
   const [error, setError] = useState<string | null>(null);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
   const [workTypeFilter, setWorkTypeFilter] = useState('ALL');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
 
   const range = useMemo(() => computeRange(period, anchor), [period, anchor]);
 
@@ -106,13 +108,14 @@ export default function AdminReportsPage() {
   }, [period, range.from.getTime(), range.to.getTime()]);
 
   useEffect(() => {
-    const fromStr = fmt(range.from);
-    const toStr = fmt(range.to);
+    // 직접 선택한 기간(from/to)이 있으면 그걸 우선 쓰고, 없으면 위 일/주/월/년 탭 기준을 쓴다.
+    const fromStr = customFrom || fmt(range.from);
+    const toStr = customTo || fmt(range.to);
     apiFetch<EffortSummary>(`/reports/effort-summary?from=${fromStr}&to=${toStr}&workType=${workTypeFilter}`)
       .then(setEffort)
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range.from.getTime(), range.to.getTime(), workTypeFilter]);
+  }, [range.from.getTime(), range.to.getTime(), workTypeFilter, customFrom, customTo]);
 
   function toggleProject(key: string) {
     setExpandedProjects((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -284,8 +287,26 @@ export default function AdminReportsPage() {
       {/* 프로젝트별 공수 + 작업유형 드롭다운 필터 */}
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-          <h2>🛠️ 프로젝트별 공수(工數) — {range.label}</h2>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <h2>🛠️ 프로젝트별 공수(工數) — {customFrom && customTo ? `${customFrom} ~ ${customTo}(직접 선택)` : range.label}</h2>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              type="date"
+              style={{ margin: 0, width: 'auto' }}
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+            />
+            <span style={{ color: '#868e96' }}>~</span>
+            <input
+              type="date"
+              style={{ margin: 0, width: 'auto' }}
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+            />
+            {(customFrom || customTo) && (
+              <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={() => { setCustomFrom(''); setCustomTo(''); }}>
+                기간선택 해제
+              </button>
+            )}
             <select className="field-select" style={{ margin: 0, width: 'auto' }} value={workTypeFilter} onChange={(e) => setWorkTypeFilter(e.target.value)}>
               <option value="ALL">전체 작업유형</option>
               {WORK_TYPE_OPTIONS.map((t) => (
@@ -297,6 +318,9 @@ export default function AdminReportsPage() {
             </button>
           </div>
         </div>
+        <p style={{ fontSize: 11, color: '#adb5bd', marginTop: -4, marginBottom: 12 }}>
+          * 위 시작일~종료일을 직접 지정하면, 위쪽 일/주/월/년 탭과 상관없이 그 기간으로 조회됩니다.
+        </p>
 
         {effort && effort.rows.length > 0 && (
           <div className="macro-tile" style={{ borderLeftColor: '#2f6feb', marginBottom: 12, display: 'inline-flex' }}>

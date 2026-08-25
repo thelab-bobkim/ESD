@@ -48,6 +48,8 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
         statusChangedAt: statusOnDay?.changedAt ?? null,
         statusSource: statusOnDay?.source ?? null,
         statusNote: statusOnDay?.note ?? null,
+        locationMatch: statusOnDay?.locationMatch ?? checkinOnDay?.locationMatch ?? null,
+        locationDistanceMeters: statusOnDay?.locationDistanceMeters ?? checkinOnDay?.locationDistanceMeters ?? null,
         lastConfirmedAt: checkinOnDay?.lastConfirmedAt ?? null,
       };
     })

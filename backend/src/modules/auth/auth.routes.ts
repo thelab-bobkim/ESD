@@ -129,8 +129,26 @@ authRouter.get('/me', requireAuth, async (req, res) => {
       assignedClient: user.assignedClient?.name ?? null,
       roles: user.userRoles.map((ur) => ur.role.code),
       mustChangePassword: user.mustChangePassword,
+      locationConsentGiven: user.locationConsentAt != null,
     },
   });
+});
+
+/**
+ * 고객사 방문 위치대조 기능에 대한 최초 동의 기록. 이미 동의했으면 그대로 둔다(재동의 불필요).
+ * 위치정보보호법상 목적을 명시하고 명시적 동의를 받아야 하므로, 브라우저 권한창과 별개로
+ * 이 동의 기록을 서버에 남겨 법적 근거로 삼는다.
+ */
+authRouter.post('/location-consent', requireAuth, async (req, res) => {
+  const userId = req.authUser!.userId;
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' } });
+  }
+  if (!user.locationConsentAt) {
+    await prisma.user.update({ where: { id: userId }, data: { locationConsentAt: new Date() } });
+  }
+  return res.json({ success: true, data: { consented: true } });
 });
 
 const changePasswordSchema = z.object({
