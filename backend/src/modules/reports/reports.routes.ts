@@ -157,3 +157,32 @@ reportsRouter.get('/night-work-export', async (req, res) => {
   res.setHeader('Content-Disposition', 'attachment; filename="night-work-export.csv"');
   return res.send(toCSV(rows));
 });
+
+const daySchema = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+
+/**
+ * 하루 단위 출퇴근 상세 — worktime-summary와 달리 "퇴근 전(진행중)"인 사람도 포함해서
+ * 출근시각/퇴근시각을 있는 그대로 보여준다. "오늘 출퇴근 현황을 매일 확인"하는 용도.
+ */
+reportsRouter.get('/attendance-detail', async (req, res) => {
+  const parsed = daySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'date(YYYY-MM-DD)가 필요합니다.' } });
+  }
+  const workDate = new Date(`${parsed.data.date}T00:00:00.000Z`);
+  const records = await prisma.attendanceRecord.findMany({
+    where: { workDate, user: { name: { not: { startsWith: 'SAMPLE_' } } } },
+    include: { user: { include: { department: true } } },
+    orderBy: { clockInAt: 'asc' },
+  });
+  const rows = records.map((r) => ({
+    userId: r.userId,
+    employeeNo: r.user.employeeNo,
+    name: r.user.name,
+    department: r.user.department.name,
+    clockInAt: r.clockInAt,
+    clockOutAt: r.clockOutAt,
+    totalWorkedMinutes: r.totalWorkedMinutes,
+  }));
+  return res.json({ success: true, data: { date: parsed.data.date, rows } });
+});
