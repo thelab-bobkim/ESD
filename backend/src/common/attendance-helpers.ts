@@ -33,3 +33,12 @@ export function combineDateTime(workDate: Date, hhmm: string): Date {
   const d = workDate.getUTCDate();
   return new Date(Date.UTC(y, mo, d, h - 9, m));
 }
+
+/**
+ * 종료시각이 시작시각보다 이르면(예: 22:00 시작 ~ 02:00 종료) 자정을 넘겨 다음날로 넘어간
+ * 것으로 보고 하루(24시간)를 더해준다. 야간작업처럼 자정을 넘기는 근무를 정확히 계산하기 위함.
+ */
+export function resolveEndTime(startTime: Date, endTime: Date): Date {
+  if (endTime.getTime() >= startTime.getTime()) return endTime;
+  return new Date(endTime.getTime() + 24 * 60 * 60 * 1000);
+}

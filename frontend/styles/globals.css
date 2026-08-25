@@ -15,6 +15,11 @@ button {
   background: #2f6feb; color: #fff; cursor: pointer; width: 100%; margin-bottom: 8px;
 }
 button.secondary { background: #eef1f6; color: #1c1f24; }
+button.done {
+  background: #e7f5ec; color: #2f9e44; border: 2px solid #2f9e44; cursor: default;
+  font-weight: 700; opacity: 1;
+}
+button:disabled:not(.done) { opacity: 0.5; cursor: not-allowed; }
 input {
   width: 100%; padding: 10px; border: 1px solid #d7dbe0; border-radius: 8px; margin-bottom: 12px; font-size: 14px;
 }

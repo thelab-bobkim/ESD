@@ -57,6 +57,10 @@ function timeAgoShort(iso: string): string {
   return remMin > 0 ? `${hr}시간 ${remMin}분 전` : `${hr}시간 전`;
 }
 
+function fmtClock(iso: string): string {
+  return new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+}
+
 function hoursLabel(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
@@ -250,8 +254,20 @@ export default function EmployeeHome() {
         <div>
           <div className="card">
             <h2>출퇴근</h2>
-            <button onClick={() => run(() => apiFetch('/attendance/clock-in', { method: 'POST' }), '출근 처리되었습니다.')}>출근</button>
-            <button className="secondary" onClick={() => run(() => apiFetch('/attendance/clock-out', { method: 'POST' }), '퇴근 처리되었습니다. 오늘도 수고하셨어요!')}>퇴근</button>
+            <button
+              className={myStatus?.record?.clockInAt ? 'done' : ''}
+              disabled={Boolean(myStatus?.record?.clockInAt)}
+              onClick={() => run(() => apiFetch('/attendance/clock-in', { method: 'POST' }), '출근 처리되었습니다.')}
+            >
+              {myStatus?.record?.clockInAt ? `✓ 출근 완료 · ${fmtClock(myStatus.record.clockInAt)}` : '출근'}
+            </button>
+            <button
+              className={myStatus?.record?.clockOutAt ? 'done' : 'secondary'}
+              disabled={!myStatus?.record?.clockInAt || Boolean(myStatus?.record?.clockOutAt)}
+              onClick={() => run(() => apiFetch('/attendance/clock-out', { method: 'POST' }), '퇴근 처리되었습니다. 오늘도 수고하셨어요!')}
+            >
+              {myStatus?.record?.clockOutAt ? `✓ 퇴근 완료 · ${fmtClock(myStatus.record.clockOutAt)}` : '퇴근'}
+            </button>
             <p style={{ fontSize: 11, color: '#adb5bd', marginTop: 4, marginBottom: 8 }}>
               * "본사근무/고객사상주/고객사미팅/고객사작업" 상태로 바꾸거나 도착체크를 하면 출근시각이 자동으로 기록됩니다. 퇴근 버튼을 눌러야 그날 근무가 확정됩니다.
             </p>

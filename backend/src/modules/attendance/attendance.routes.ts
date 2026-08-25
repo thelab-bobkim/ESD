@@ -3,14 +3,14 @@ import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, ensureClockIn, combineDateTime } from '../../common/attendance-helpers';
+import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
 
 export const attendanceRouter = Router();
 attendanceRouter.use(requireAuth);
 
 // 이 상태로 바뀌면 "실제 업무 시작"으로 보고 출근시각을 자동 인식한다(주52시간제 대응).
-const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK']);
+const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
 // 이 상태는 프로젝트별 공수(工數) 기록 대상이다.
 const EFFORT_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 
@@ -105,7 +105,7 @@ attendanceRouter.post('/status', async (req, res) => {
   if (EFFORT_STATUSES.has(status) && effort) {
     const workDate = todayDateOnly();
     const startTime = effort.startTime ? combineDateTime(workDate, effort.startTime) : new Date();
-    const endTime = effort.endTime ? combineDateTime(workDate, effort.endTime) : null;
+    const endTime = effort.endTime ? resolveEndTime(startTime, combineDateTime(workDate, effort.endTime)) : null;
     const minutes = endTime ? Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 60000)) : null;
     effortLog = await prisma.effortLog.create({
       data: {
@@ -126,7 +126,7 @@ attendanceRouter.post('/status', async (req, res) => {
   if (status === 'NIGHT_WORK' && effort) {
     const workDate = todayDateOnly();
     const startTime = effort.startTime ? combineDateTime(workDate, effort.startTime) : new Date();
-    const endTime = effort.endTime ? combineDateTime(workDate, effort.endTime) : null;
+    const endTime = effort.endTime ? resolveEndTime(startTime, combineDateTime(workDate, effort.endTime)) : null;
     nightWork = await recordNightWork(userId, startTime, endTime, effort.description);
   }
 
