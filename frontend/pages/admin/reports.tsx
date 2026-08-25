@@ -5,6 +5,8 @@ import { apiFetch, apiDownload, clearToken } from '@/lib/api';
 const WEEKLY_LIMIT_MINUTES = 52 * 60; // 주52시간제 기준
 type Period = 'day' | 'week' | 'month' | 'year';
 const PERIOD_LABELS: Record<Period, string> = { day: '일', week: '주', month: '월', year: '년' };
+const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
+const WORK_TYPE_ICONS: Record<string, string> = { 정기점검: '🔧', 신규설치: '🆕', 장애대응: '🚨', 미팅: '🤝', 기타: '📌' };
 
 interface WorktimeRow {
   userId: string; name: string; employeeNo: string; department: string; totalMinutes: number; days: number;
@@ -18,7 +20,7 @@ interface AttendanceDetailRow {
 interface AttendanceDetail { date: string; rows: AttendanceDetailRow[]; }
 
 interface EffortByUser { userId: string; name: string; minutes: number; }
-interface EffortRow { projectName: string; clientName: string; totalMinutes: number; byUser: EffortByUser[]; }
+interface EffortRow { projectName: string; clientName: string; totalMinutes: number; workTypes: string[]; byUser: EffortByUser[]; }
 interface EffortSummary { from: string; to: string; rows: EffortRow[]; }
 
 function fmt(d: Date): string {
@@ -41,11 +43,8 @@ function startOfWeek(d: Date): Date {
   return monday;
 }
 
-/** 선택된 기간(period)과 기준일(anchor)로 [from, to] 범위와 화면표시용 라벨을 계산한다. */
 function computeRange(period: Period, anchor: Date): { from: Date; to: Date; label: string } {
-  if (period === 'day') {
-    return { from: anchor, to: anchor, label: fmt(anchor) };
-  }
+  if (period === 'day') return { from: anchor, to: anchor, label: fmt(anchor) };
   if (period === 'week') {
     const from = startOfWeek(anchor);
     const to = new Date(from);
@@ -57,7 +56,6 @@ function computeRange(period: Period, anchor: Date): { from: Date; to: Date; lab
     const to = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
     return { from, to, label: `${anchor.getFullYear()}년 ${anchor.getMonth() + 1}월` };
   }
-  // year
   const from = new Date(anchor.getFullYear(), 0, 1);
   const to = new Date(anchor.getFullYear(), 11, 31);
   return { from, to, label: `${anchor.getFullYear()}년` };
@@ -81,6 +79,7 @@ export default function AdminReportsPage() {
   const [effort, setEffort] = useState<EffortSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+  const [workTypeFilter, setWorkTypeFilter] = useState('ALL');
 
   const range = useMemo(() => computeRange(period, anchor), [period, anchor]);
 
@@ -103,12 +102,17 @@ export default function AdminReportsPage() {
         .then(setWorktime)
         .catch((err) => setError(err instanceof Error ? err.message : '오류가 발생했습니다.'));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period, range.from.getTime(), range.to.getTime()]);
 
-    apiFetch<EffortSummary>(`/reports/effort-summary?from=${fromStr}&to=${toStr}`)
+  useEffect(() => {
+    const fromStr = fmt(range.from);
+    const toStr = fmt(range.to);
+    apiFetch<EffortSummary>(`/reports/effort-summary?from=${fromStr}&to=${toStr}&workType=${workTypeFilter}`)
       .then(setEffort)
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period, range.from.getTime(), range.to.getTime()]);
+  }, [range.from.getTime(), range.to.getTime(), workTypeFilter]);
 
   function toggleProject(key: string) {
     setExpandedProjects((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -119,10 +123,30 @@ export default function AdminReportsPage() {
     router.push('/login');
   }
 
+  // 요약 카드 계산
+  const daySummary = useMemo(() => {
+    if (!attendanceDetail) return null;
+    const total = attendanceDetail.rows.length;
+    const inProgress = attendanceDetail.rows.filter((r) => r.clockInAt && !r.clockOutAt).length;
+    const done = attendanceDetail.rows.filter((r) => r.clockOutAt).length;
+    return { total, inProgress, done };
+  }, [attendanceDetail]);
+
+  const periodSummary = useMemo(() => {
+    if (!worktime) return null;
+    const total = worktime.rows.length;
+    const totalMinutes = worktime.rows.reduce((s, r) => s + r.totalMinutes, 0);
+    const avgMinutes = total > 0 ? Math.round(totalMinutes / total) : 0;
+    const overCount = period === 'week' ? worktime.rows.filter((r) => r.totalMinutes > WEEKLY_LIMIT_MINUTES).length : 0;
+    return { total, avgMinutes, overCount };
+  }, [worktime, period]);
+
+  const effortTotalMinutes = useMemo(() => (effort ? effort.rows.reduce((s, r) => s + r.totalMinutes, 0) : 0), [effort]);
+
   return (
     <div className="admin-shell">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>출퇴근 · 근로시간 · 공수 리포트</h1>
+        <h1>📋 출퇴근 · 근로시간 · 공수 리포트</h1>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/dashboard')}>상황판으로</button>
           <button className="secondary" style={{ width: 'auto' }} onClick={logout}>로그아웃</button>
@@ -132,12 +156,7 @@ export default function AdminReportsPage() {
 
       <div className="toolbar">
         {(Object.keys(PERIOD_LABELS) as Period[]).map((p) => (
-          <button
-            key={p}
-            className={period === p ? '' : 'secondary'}
-            style={{ width: 'auto' }}
-            onClick={() => setPeriod(p)}
-          >
+          <button key={p} className={period === p ? '' : 'secondary'} style={{ width: 'auto' }} onClick={() => setPeriod(p)}>
             {PERIOD_LABELS[p]}별
           </button>
         ))}
@@ -148,13 +167,49 @@ export default function AdminReportsPage() {
         <button className="secondary" style={{ width: 'auto' }} onClick={() => setAnchor(new Date())}>오늘</button>
       </div>
 
-      {/* 일(day) 선택 시: 출퇴근 상세표 (퇴근 전 진행중 포함) */}
+      {/* 요약 카드 */}
+      {period === 'day' && daySummary && (
+        <div className="stat-row">
+          <div className="stat-card">
+            <div className="stat-label">👥 오늘 활동 인원</div>
+            <div className="stat-value">{daySummary.total}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">🟠 근무중(진행)</div>
+            <div className="stat-value" style={{ color: '#f08c00' }}>{daySummary.inProgress}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">✅ 퇴근 완료</div>
+            <div className="stat-value" style={{ color: '#2f9e44' }}>{daySummary.done}</div>
+          </div>
+        </div>
+      )}
+      {period !== 'day' && periodSummary && (
+        <div className="stat-row">
+          <div className="stat-card">
+            <div className="stat-label">👥 근무 인원</div>
+            <div className="stat-value">{periodSummary.total}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">⏱️ 1인 평균</div>
+            <div className="stat-value">{hoursLabel(periodSummary.avgMinutes)}</div>
+          </div>
+          {period === 'week' && (
+            <div className="stat-card">
+              <div className="stat-label">⚠️ 52시간 초과</div>
+              <div className="stat-value" style={{ color: periodSummary.overCount > 0 ? '#e03131' : '#495057' }}>{periodSummary.overCount}명</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 일(day) 선택 시: 출퇴근 상세표 */}
       {period === 'day' && (
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2>출퇴근 현황 — {range.label}</h2>
+            <h2>🕒 출퇴근 현황 — {range.label}</h2>
             <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
-              근태 CSV 내려받기
+              CSV 내려받기
             </button>
           </div>
           {!attendanceDetail && <div className="board-empty">불러오는 중...</div>}
@@ -167,10 +222,15 @@ export default function AdminReportsPage() {
               <tbody>
                 {attendanceDetail.rows.map((r) => (
                   <tr key={r.userId}>
-                    <td>{r.name}</td>
+                    <td>
+                      <div className="chip-row">
+                        <div className="chip-avatar" style={{ background: r.clockOutAt ? '#2f9e44' : '#f08c00' }}>{r.name.slice(-2)}</div>
+                        {r.name}
+                      </div>
+                    </td>
                     <td>{r.department}</td>
                     <td>{fmtTime(r.clockInAt)}</td>
-                    <td>{r.clockOutAt ? fmtTime(r.clockOutAt) : <span style={{ color: '#f08c00' }}>진행중</span>}</td>
+                    <td>{r.clockOutAt ? fmtTime(r.clockOutAt) : <span style={{ color: '#f08c00', fontWeight: 600 }}>● 진행중</span>}</td>
                     <td>{r.totalWorkedMinutes != null ? hoursLabel(r.totalWorkedMinutes) : '-'}</td>
                   </tr>
                 ))}
@@ -184,9 +244,9 @@ export default function AdminReportsPage() {
       {period !== 'day' && (
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2>{PERIOD_LABELS[period]}별 근무시간 누계 (주52시간제 기준) — {range.label}</h2>
+            <h2>📊 {PERIOD_LABELS[period]}별 근무시간 누계 (주52시간제 기준) — {range.label}</h2>
             <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
-              근태 CSV 내려받기
+              CSV 내려받기
             </button>
           </div>
           {!worktime && <div className="board-empty">불러오는 중...</div>}
@@ -201,7 +261,12 @@ export default function AdminReportsPage() {
                   const over = period === 'week' && r.totalMinutes > WEEKLY_LIMIT_MINUTES;
                   return (
                     <tr key={r.userId}>
-                      <td>{r.name}</td>
+                      <td>
+                        <div className="chip-row">
+                          <div className="chip-avatar" style={{ background: over ? '#e03131' : '#2f6feb' }}>{r.name.slice(-2)}</div>
+                          {r.name}
+                        </div>
+                      </td>
                       <td>{r.department}</td>
                       <td style={{ color: over ? '#e03131' : undefined, fontWeight: over ? 700 : undefined }}>
                         {hoursLabel(r.totalMinutes)}{over ? ' ⚠ 52시간 초과' : ''}
@@ -216,15 +281,35 @@ export default function AdminReportsPage() {
         </div>
       )}
 
+      {/* 프로젝트별 공수 + 작업유형 드롭다운 필터 */}
       <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2>프로젝트별 공수(工數) — {range.label}</h2>
-          <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/effort-export', 'effort-export.csv')}>
-            공수 CSV 내려받기
-          </button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <h2>🛠️ 프로젝트별 공수(工數) — {range.label}</h2>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select className="field-select" style={{ margin: 0, width: 'auto' }} value={workTypeFilter} onChange={(e) => setWorkTypeFilter(e.target.value)}>
+              <option value="ALL">전체 작업유형</option>
+              {WORK_TYPE_OPTIONS.map((t) => (
+                <option key={t} value={t}>{WORK_TYPE_ICONS[t]} {t}</option>
+              ))}
+            </select>
+            <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/effort-export', 'effort-export.csv')}>
+              CSV 내려받기
+            </button>
+          </div>
         </div>
+
+        {effort && effort.rows.length > 0 && (
+          <div className="macro-tile" style={{ borderLeftColor: '#2f6feb', marginBottom: 12, display: 'inline-flex' }}>
+            <div className="macro-tile-icon">⏱️</div>
+            <div>
+              <div className="macro-tile-label">선택된 조건 총 공수</div>
+              <div className="macro-tile-value" style={{ color: '#2f6feb' }}>{hoursLabel(effortTotalMinutes)}</div>
+            </div>
+          </div>
+        )}
+
         {!effort && <div className="board-empty">불러오는 중...</div>}
-        {effort && effort.rows.length === 0 && <div className="board-empty">이 기간에 등록된(완료된) 공수기록이 없습니다.</div>}
+        {effort && effort.rows.length === 0 && <div className="board-empty">이 조건에 등록된(완료된) 공수기록이 없습니다.</div>}
         {effort && effort.rows.map((row) => {
           const key = `${row.clientName}::${row.projectName}`;
           const isExpanded = expandedProjects[key] ?? false;
@@ -233,14 +318,20 @@ export default function AdminReportsPage() {
               <div className="board-column-header" style={{ cursor: 'pointer' }} onClick={() => toggleProject(key)}>
                 <span>
                   <span style={{ display: 'inline-block', width: 12, transform: isExpanded ? 'rotate(90deg)' : 'none' }}>▸</span>
-                  {' '}{row.projectName} <span style={{ color: '#868e96', fontWeight: 400 }}>· {row.clientName}</span>
+                  {' '}{row.workTypes.map((t) => WORK_TYPE_ICONS[t] ?? '📌').join('')} {row.projectName}
+                  <span style={{ color: '#868e96', fontWeight: 400 }}> · {row.clientName}</span>
                 </span>
                 <span className="count">{hoursLabel(row.totalMinutes)}</span>
               </div>
               {isExpanded && row.byUser.map((u) => (
                 <div className="employee-chip" key={u.userId}>
-                  <div className="name">{u.name}</div>
-                  <div className="meta">{hoursLabel(u.minutes)}</div>
+                  <div className="chip-row">
+                    <div className="chip-avatar" style={{ background: '#2f6feb' }}>{u.name.slice(-2)}</div>
+                    <div style={{ flex: 1 }}>
+                      <div className="name">{u.name}</div>
+                      <div className="meta">{hoursLabel(u.minutes)}</div>
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>

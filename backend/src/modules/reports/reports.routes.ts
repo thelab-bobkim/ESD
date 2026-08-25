@@ -66,8 +66,13 @@ reportsRouter.get('/effort-summary', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'from, to가 필요합니다(YYYY-MM-DD).' } });
   }
   const { from, to } = parsed.data;
+  const workType = typeof req.query.workType === 'string' && req.query.workType !== 'ALL' ? req.query.workType : undefined;
   const logs = await prisma.effortLog.findMany({
-    where: { workDate: { gte: new Date(from), lte: new Date(to) }, minutes: { not: null } },
+    where: {
+      workDate: { gte: new Date(from), lte: new Date(to) },
+      minutes: { not: null },
+      ...(workType ? { workType } : {}),
+    },
     include: { user: { select: { name: true, employeeNo: true } } },
     orderBy: { workDate: 'desc' },
   });
@@ -76,13 +81,15 @@ reportsRouter.get('/effort-summary', async (req, res) => {
     projectName: string;
     clientName: string;
     totalMinutes: number;
+    workTypes: Set<string>;
     byUser: Map<string, { userId: string; name: string; minutes: number }>;
   }
   const byProject = new Map<string, ProjectGroup>();
   for (const l of logs) {
     const key = `${l.clientName}::${l.projectName}`;
-    const group = byProject.get(key) ?? { projectName: l.projectName || '(미지정)', clientName: l.clientName || '(미지정)', totalMinutes: 0, byUser: new Map() };
+    const group = byProject.get(key) ?? { projectName: l.projectName || '(미지정)', clientName: l.clientName || '(미지정)', totalMinutes: 0, workTypes: new Set<string>(), byUser: new Map() };
     group.totalMinutes += l.minutes ?? 0;
+    group.workTypes.add(l.workType);
     const u = group.byUser.get(l.userId) ?? { userId: l.userId, name: l.user.name, minutes: 0 };
     u.minutes += l.minutes ?? 0;
     group.byUser.set(l.userId, u);
@@ -90,7 +97,13 @@ reportsRouter.get('/effort-summary', async (req, res) => {
   }
 
   const rows = Array.from(byProject.values())
-    .map((g) => ({ projectName: g.projectName, clientName: g.clientName, totalMinutes: g.totalMinutes, byUser: Array.from(g.byUser.values()).sort((a, b) => b.minutes - a.minutes) }))
+    .map((g) => ({
+      projectName: g.projectName,
+      clientName: g.clientName,
+      totalMinutes: g.totalMinutes,
+      workTypes: Array.from(g.workTypes),
+      byUser: Array.from(g.byUser.values()).sort((a, b) => b.minutes - a.minutes),
+    }))
     .sort((a, b) => b.totalMinutes - a.totalMinutes);
 
   return res.json({ success: true, data: { from, to, rows } });
