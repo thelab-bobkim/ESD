@@ -200,6 +200,7 @@ export default function EmployeeHome() {
   if (!me) return <div className="page">불러오는 중...</div>;
 
   const currentStatus = myStatus?.latestStatus;
+  const clockedOut = Boolean(myStatus?.record?.clockOutAt);
 
   return (
     <div className="employee-shell">
@@ -296,12 +297,17 @@ export default function EmployeeHome() {
 
           <div className="card">
             <h2>지금 뭐 하고 계세요?</h2>
+            {clockedOut && (
+              <div className="board-empty" style={{ marginBottom: 8, color: '#f08c00', fontWeight: 600 }}>
+                🔒 퇴근 처리되어 상태를 더 이상 바꿀 수 없습니다. 내일 다시 만나요!
+              </div>
+            )}
             <div className="status-icon-grid">
               {STATUS_ORDER.map((code) => (
                 <div
                   key={code}
-                  className={`status-icon-btn${currentStatus?.status === code ? ' active' : ''}`}
-                  onClick={() => changeStatus(code)}
+                  className={`status-icon-btn${currentStatus?.status === code ? ' active' : ''}${clockedOut ? ' locked' : ''}`}
+                  onClick={() => !clockedOut && changeStatus(code)}
                 >
                   <div className="status-icon-emoji">{STATUS_META[code].icon}</div>
                   <div className="status-icon-label">{STATUS_META[code].label}</div>

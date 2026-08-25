@@ -36,6 +36,7 @@ input {
 .status-icon-btn:hover, .status-icon-btn:active { background: #eaf1ff; border-color: #2f6feb; }
 .status-icon-btn.active { background: #e7f5ec; border-color: #2f9e44; position: relative; }
 .status-icon-btn.active .status-icon-label { color: #2f9e44; font-weight: 700; }
+.status-icon-btn.locked { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
 .status-icon-check {
   position: absolute; top: 4px; right: 6px; font-size: 11px; color: #fff;
   background: #2f9e44; border-radius: 999px; width: 16px; height: 16px;

@@ -80,19 +80,22 @@ export default function AdminReportsPage() {
   const [error, setError] = useState<string | null>(null);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
   const [workTypeFilter, setWorkTypeFilter] = useState('ALL');
+  // 년/월/일을 직접 선택하는 기간 — 지정하면 위 탭(일/주/월/년)보다 우선한다. 출퇴근·근로시간·공수 전부 공통 적용.
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
 
-  const range = useMemo(() => computeRange(period, anchor), [period, anchor]);
+  const tabRange = useMemo(() => computeRange(period, anchor), [period, anchor]);
+  const isCustom = Boolean(customFrom && customTo);
+  const effectiveFrom = isCustom ? customFrom : fmt(tabRange.from);
+  const effectiveTo = isCustom ? customTo : fmt(tabRange.to);
+  const isSingleDay = effectiveFrom === effectiveTo;
+  const rangeLabel = isCustom ? `${customFrom} ~ ${customTo}(직접 선택)` : tabRange.label;
 
   useEffect(() => {
     setError(null);
-    const fromStr = fmt(range.from);
-    const toStr = fmt(range.to);
-
-    if (period === 'day') {
+    if (isSingleDay) {
       setWorktime(null);
-      apiFetch<AttendanceDetail>(`/reports/attendance-detail?date=${fromStr}`)
+      apiFetch<AttendanceDetail>(`/reports/attendance-detail?date=${effectiveFrom}`)
         .then(setAttendanceDetail)
         .catch((err) => {
           if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰'))) router.push('/login');
@@ -100,25 +103,28 @@ export default function AdminReportsPage() {
         });
     } else {
       setAttendanceDetail(null);
-      apiFetch<WorktimeSummary>(`/reports/worktime-summary?from=${fromStr}&to=${toStr}`)
+      apiFetch<WorktimeSummary>(`/reports/worktime-summary?from=${effectiveFrom}&to=${effectiveTo}`)
         .then(setWorktime)
         .catch((err) => setError(err instanceof Error ? err.message : '오류가 발생했습니다.'));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period, range.from.getTime(), range.to.getTime()]);
+  }, [effectiveFrom, effectiveTo, isSingleDay]);
 
   useEffect(() => {
-    // 직접 선택한 기간(from/to)이 있으면 그걸 우선 쓰고, 없으면 위 일/주/월/년 탭 기준을 쓴다.
-    const fromStr = customFrom || fmt(range.from);
-    const toStr = customTo || fmt(range.to);
-    apiFetch<EffortSummary>(`/reports/effort-summary?from=${fromStr}&to=${toStr}&workType=${workTypeFilter}`)
+    apiFetch<EffortSummary>(`/reports/effort-summary?from=${effectiveFrom}&to=${effectiveTo}&workType=${workTypeFilter}`)
       .then(setEffort)
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range.from.getTime(), range.to.getTime(), workTypeFilter, customFrom, customTo]);
+  }, [effectiveFrom, effectiveTo, workTypeFilter]);
 
   function toggleProject(key: string) {
     setExpandedProjects((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
+
+  function selectTab(p: Period) {
+    setCustomFrom('');
+    setCustomTo('');
+    setPeriod(p);
   }
 
   function logout() {
@@ -140,9 +146,9 @@ export default function AdminReportsPage() {
     const total = worktime.rows.length;
     const totalMinutes = worktime.rows.reduce((s, r) => s + r.totalMinutes, 0);
     const avgMinutes = total > 0 ? Math.round(totalMinutes / total) : 0;
-    const overCount = period === 'week' ? worktime.rows.filter((r) => r.totalMinutes > WEEKLY_LIMIT_MINUTES).length : 0;
+    const overCount = period === 'week' && !isCustom ? worktime.rows.filter((r) => r.totalMinutes > WEEKLY_LIMIT_MINUTES).length : 0;
     return { total, avgMinutes, overCount };
-  }, [worktime, period]);
+  }, [worktime, period, isCustom]);
 
   const effortTotalMinutes = useMemo(() => (effort ? effort.rows.reduce((s, r) => s + r.totalMinutes, 0) : 0), [effort]);
 
@@ -159,22 +165,35 @@ export default function AdminReportsPage() {
 
       <div className="toolbar">
         {(Object.keys(PERIOD_LABELS) as Period[]).map((p) => (
-          <button key={p} className={period === p ? '' : 'secondary'} style={{ width: 'auto' }} onClick={() => setPeriod(p)}>
+          <button key={p} className={period === p && !isCustom ? '' : 'secondary'} style={{ width: 'auto' }} onClick={() => selectTab(p)}>
             {PERIOD_LABELS[p]}별
           </button>
         ))}
         <div className="spacer" />
-        <button className="secondary" style={{ width: 'auto' }} onClick={() => setAnchor(shiftAnchor(period, anchor, -1))}>‹ 이전</button>
-        <span style={{ fontWeight: 700, minWidth: 140, textAlign: 'center' }}>{range.label}</span>
-        <button className="secondary" style={{ width: 'auto' }} onClick={() => setAnchor(shiftAnchor(period, anchor, 1))}>다음 ›</button>
-        <button className="secondary" style={{ width: 'auto' }} onClick={() => setAnchor(new Date())}>오늘</button>
+        <button className="secondary" style={{ width: 'auto' }} disabled={isCustom} onClick={() => setAnchor(shiftAnchor(period, anchor, -1))}>‹ 이전</button>
+        <span style={{ fontWeight: 700, minWidth: 160, textAlign: 'center' }}>{rangeLabel}</span>
+        <button className="secondary" style={{ width: 'auto' }} disabled={isCustom} onClick={() => setAnchor(shiftAnchor(period, anchor, 1))}>다음 ›</button>
+        <button className="secondary" style={{ width: 'auto' }} onClick={() => { setCustomFrom(''); setCustomTo(''); setAnchor(new Date()); }}>오늘</button>
+      </div>
+
+      {/* 년/월/일을 직접 선택하는 기간 — 출퇴근/근로시간/공수 전체에 공통 적용 */}
+      <div className="toolbar">
+        <span style={{ fontSize: 13, color: '#495057' }}>직접 기간선택:</span>
+        <input type="date" style={{ margin: 0, width: 'auto' }} value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+        <span style={{ color: '#868e96' }}>~</span>
+        <input type="date" style={{ margin: 0, width: 'auto' }} value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+        {isCustom && (
+          <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={() => { setCustomFrom(''); setCustomTo(''); }}>
+            기간선택 해제(탭으로 돌아가기)
+          </button>
+        )}
       </div>
 
       {/* 요약 카드 */}
-      {period === 'day' && daySummary && (
+      {isSingleDay && daySummary && (
         <div className="stat-row">
           <div className="stat-card">
-            <div className="stat-label">👥 오늘 활동 인원</div>
+            <div className="stat-label">👥 활동 인원</div>
             <div className="stat-value">{daySummary.total}</div>
           </div>
           <div className="stat-card">
@@ -187,7 +206,7 @@ export default function AdminReportsPage() {
           </div>
         </div>
       )}
-      {period !== 'day' && periodSummary && (
+      {!isSingleDay && periodSummary && (
         <div className="stat-row">
           <div className="stat-card">
             <div className="stat-label">👥 근무 인원</div>
@@ -197,7 +216,7 @@ export default function AdminReportsPage() {
             <div className="stat-label">⏱️ 1인 평균</div>
             <div className="stat-value">{hoursLabel(periodSummary.avgMinutes)}</div>
           </div>
-          {period === 'week' && (
+          {period === 'week' && !isCustom && (
             <div className="stat-card">
               <div className="stat-label">⚠️ 52시간 초과</div>
               <div className="stat-value" style={{ color: periodSummary.overCount > 0 ? '#e03131' : '#495057' }}>{periodSummary.overCount}명</div>
@@ -206,11 +225,11 @@ export default function AdminReportsPage() {
         </div>
       )}
 
-      {/* 일(day) 선택 시: 출퇴근 상세표 */}
-      {period === 'day' && (
+      {/* 하루 단위: 출퇴근 상세표 */}
+      {isSingleDay && (
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2>🕒 출퇴근 현황 — {range.label}</h2>
+            <h2>🕒 출퇴근 현황 — {rangeLabel}</h2>
             <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
               CSV 내려받기
             </button>
@@ -243,11 +262,11 @@ export default function AdminReportsPage() {
         </div>
       )}
 
-      {/* 주/월/년 선택 시: 누적 근무시간 표 */}
-      {period !== 'day' && (
+      {/* 여러 날: 누적 근무시간 표 */}
+      {!isSingleDay && (
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2>📊 {PERIOD_LABELS[period]}별 근무시간 누계 (주52시간제 기준) — {range.label}</h2>
+            <h2>📊 근무시간 누계 (주52시간제 기준) — {rangeLabel}</h2>
             <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
               CSV 내려받기
             </button>
@@ -261,7 +280,7 @@ export default function AdminReportsPage() {
               </thead>
               <tbody>
                 {worktime.rows.map((r) => {
-                  const over = period === 'week' && r.totalMinutes > WEEKLY_LIMIT_MINUTES;
+                  const over = period === 'week' && !isCustom && r.totalMinutes > WEEKLY_LIMIT_MINUTES;
                   return (
                     <tr key={r.userId}>
                       <td>
@@ -287,26 +306,8 @@ export default function AdminReportsPage() {
       {/* 프로젝트별 공수 + 작업유형 드롭다운 필터 */}
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-          <h2>🛠️ 프로젝트별 공수(工數) — {customFrom && customTo ? `${customFrom} ~ ${customTo}(직접 선택)` : range.label}</h2>
+          <h2>🛠️ 프로젝트별 공수(工數) — {rangeLabel}</h2>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <input
-              type="date"
-              style={{ margin: 0, width: 'auto' }}
-              value={customFrom}
-              onChange={(e) => setCustomFrom(e.target.value)}
-            />
-            <span style={{ color: '#868e96' }}>~</span>
-            <input
-              type="date"
-              style={{ margin: 0, width: 'auto' }}
-              value={customTo}
-              onChange={(e) => setCustomTo(e.target.value)}
-            />
-            {(customFrom || customTo) && (
-              <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={() => { setCustomFrom(''); setCustomTo(''); }}>
-                기간선택 해제
-              </button>
-            )}
             <select className="field-select" style={{ margin: 0, width: 'auto' }} value={workTypeFilter} onChange={(e) => setWorkTypeFilter(e.target.value)}>
               <option value="ALL">전체 작업유형</option>
               {WORK_TYPE_OPTIONS.map((t) => (
@@ -318,9 +319,6 @@ export default function AdminReportsPage() {
             </button>
           </div>
         </div>
-        <p style={{ fontSize: 11, color: '#adb5bd', marginTop: -4, marginBottom: 12 }}>
-          * 위 시작일~종료일을 직접 지정하면, 위쪽 일/주/월/년 탭과 상관없이 그 기간으로 조회됩니다.
-        </p>
 
         {effort && effort.rows.length > 0 && (
           <div className="macro-tile" style={{ borderLeftColor: '#2f6feb', marginBottom: 12, display: 'inline-flex' }}>
