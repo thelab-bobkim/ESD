@@ -299,21 +299,25 @@ export default function EmployeeHome() {
             <h2>지금 뭐 하고 계세요?</h2>
             {clockedOut && (
               <div className="board-empty" style={{ marginBottom: 8, color: '#f08c00', fontWeight: 600 }}>
-                🔒 퇴근 처리되어 상태를 더 이상 바꿀 수 없습니다. 내일 다시 만나요!
+                🔒 퇴근 처리되어 상태를 더 이상 바꿀 수 없습니다 (야간작업은 계속 등록 가능해요). 내일 다시 만나요!
               </div>
             )}
             <div className="status-icon-grid">
-              {STATUS_ORDER.map((code) => (
-                <div
-                  key={code}
-                  className={`status-icon-btn${currentStatus?.status === code ? ' active' : ''}${clockedOut ? ' locked' : ''}`}
-                  onClick={() => !clockedOut && changeStatus(code)}
-                >
-                  <div className="status-icon-emoji">{STATUS_META[code].icon}</div>
-                  <div className="status-icon-label">{STATUS_META[code].label}</div>
-                  {currentStatus?.status === code && <div className="status-icon-check">✓</div>}
-                </div>
-              ))}
+              {STATUS_ORDER.map((code) => {
+                // 퇴근(낮근무 종료) 후에도 야간작업자는 계속 상태를 등록해야 하니 예외로 둔다.
+                const isLocked = clockedOut && code !== 'NIGHT_WORK';
+                return (
+                  <div
+                    key={code}
+                    className={`status-icon-btn${currentStatus?.status === code ? ' active' : ''}${isLocked ? ' locked' : ''}`}
+                    onClick={() => !isLocked && changeStatus(code)}
+                  >
+                    <div className="status-icon-emoji">{STATUS_META[code].icon}</div>
+                    <div className="status-icon-label">{STATUS_META[code].label}</div>
+                    {currentStatus?.status === code && <div className="status-icon-check">✓</div>}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
