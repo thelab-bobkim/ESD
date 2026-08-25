@@ -17,6 +17,7 @@ const STATUS_META: Record<string, { label: string; icon: string; color: string }
   ALT_DAY_OFF: { label: '대체휴무', icon: '🏖️', color: '#868e96' },
   ON_LEAVE: { label: '휴가', icon: '🌴', color: '#868e96' },
   UNKNOWN: { label: '상태 미확인', icon: '❔', color: '#e03131' },
+  CLOCKED_OUT: { label: '퇴근완료', icon: '🏁', color: '#495057' },
 };
 
 const STATUS_ORDER = [
@@ -36,6 +37,7 @@ const MACRO_GROUPS: { key: string; label: string; icon: string; color: string; s
   { key: 'FIELD', label: '외부업무', icon: '🚗', color: '#1c7ed6', statuses: ['RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'MOVING', 'MEETING'] },
   { key: 'REMOTE', label: '재택', icon: '🏠', color: '#6741d9', statuses: ['REMOTE'] },
   { key: 'OFF', label: '휴무·야간', icon: '🏖️', color: '#868e96', statuses: ['NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE'] },
+  { key: 'CLOCKED_OUT', label: '퇴근완료', icon: '🏁', color: '#495057', statuses: [] },
   { key: 'UNKNOWN', label: '미확인', icon: '❔', color: '#e03131', statuses: ['UNKNOWN'] },
 ];
 
@@ -47,6 +49,7 @@ interface EmployeeRow {
   userId: string; name: string; department: string; client: string | null; workType: string;
   status: string | null; statusChangedAt: string | null; statusSource: string | null; statusNote: string | null; lastConfirmedAt: string | null;
   locationMatch: boolean | null; locationDistanceMeters: number | null;
+  clockedOut: boolean; clockOutAt: string | null;
 }
 interface CompanyBoard { summary: Record<string, number>; employees: EmployeeRow[]; }
 
@@ -122,33 +125,40 @@ export default function AdminDashboard() {
   }, [board, deptFilter, search]);
 
   const grouped = useMemo(() => {
-    const map: Record<string, EmployeeRow[]> = {};
+    const map: Record<string, EmployeeRow[]> = { CLOCKED_OUT: [] };
     for (const code of STATUS_ORDER) map[code] = [];
     for (const e of filteredEmployees) {
+      if (e.clockedOut) {
+        map.CLOCKED_OUT.push(e);
+        continue;
+      }
       const key = e.status && STATUS_META[e.status] ? e.status : 'UNKNOWN';
       map[key].push(e);
     }
     return map;
   }, [filteredEmployees]);
 
-  // 요약 통계: 전체/근무중/휴가·휴무/미확인 + 근무중 비율
+  // 요약 통계: 전체/근무중/휴가·휴무/미확인 + 근무중 비율 (퇴근한 사람은 근무중에서 제외)
   const stats = useMemo(() => {
     const total = filteredEmployees.length;
     let working = 0;
     let off = 0;
     let unknown = 0;
+    let clockedOut = 0;
     for (const e of filteredEmployees) {
+      if (e.clockedOut) { clockedOut += 1; continue; }
       if (e.status && WORKING_STATUSES.has(e.status)) working += 1;
       else if (e.status && OFF_STATUSES.has(e.status)) off += 1;
       else if (!e.status) unknown += 1;
     }
     const workingRate = total > 0 ? Math.round((working / total) * 100) : 0;
-    return { total, working, off, unknown, workingRate };
+    return { total, working, off, unknown, clockedOut, workingRate };
   }, [filteredEmployees]);
 
   // "한눈에 보는 동선" — 9개 세부상태를 대분류로 묶어서 집계
   const macroCounts = useMemo(() => {
     const counts = new Map(MACRO_GROUPS.map((g) => [g.key, 0]));
+    counts.set('CLOCKED_OUT', grouped.CLOCKED_OUT?.length ?? 0);
     for (const code of STATUS_ORDER) {
       const n = grouped[code]?.length ?? 0;
       const group = MACRO_GROUPS.find((g) => g.statuses.includes(code));
@@ -303,7 +313,7 @@ export default function AdminDashboard() {
       <div className="dashboard-layout">
         <div>
           <div className="board">
-            {STATUS_ORDER.map((code) => {
+            {['CLOCKED_OUT', ...STATUS_ORDER].map((code) => {
               const meta = STATUS_META[code];
               const employees = grouped[code];
               const isExpanded = expandedColumns[code] ?? employees.length <= 5;
@@ -343,13 +353,16 @@ export default function AdminDashboard() {
                           </div>
                         </div>
                       </div>
-                      {e.statusNote && <div className="meta" style={{ color: '#1c1f24', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
+                      {code !== 'CLOCKED_OUT' && e.statusNote && <div className="meta" style={{ color: '#1c1f24', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
+                      {code === 'CLOCKED_OUT' && e.status && STATUS_META[e.status] && (
+                        <div className="meta">마지막 상태: {STATUS_META[e.status].icon} {STATUS_META[e.status].label}</div>
+                      )}
                       {e.locationMatch !== null && (
                         <div className="meta" style={{ color: e.locationMatch ? '#2f9e44' : '#e03131', fontWeight: 600 }}>
                           {e.locationMatch ? '📍 위치 확인됨' : `📍 위치 불일치 (약 ${e.locationDistanceMeters}m)`}
                         </div>
                       )}
-                      <div className="meta">{timeAgo(e.statusChangedAt)}</div>
+                      <div className="meta">{code === 'CLOCKED_OUT' ? `퇴근 ${timeAgo(e.clockOutAt)}` : timeAgo(e.statusChangedAt)}</div>
                     </div>
                   ))}
                 </div>

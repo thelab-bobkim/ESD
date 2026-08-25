@@ -38,6 +38,14 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
         where: { userId: u.id, checkinAt: { gte: dayStart, lt: dayEnd } },
         orderBy: { checkinAt: 'desc' },
       });
+      // 퇴근했으면 상황판에서 "마지막 상태" 대신 "퇴근완료"로 보여줄 수 있게 별도로 알려준다.
+      // 단, 야간작업자는 퇴근 후에도 계속 상태를 등록할 수 있으므로, 퇴근시각 이후 새로 등록된
+      // 상태가 있으면(=야간작업 등) 그 상태를 그대로 보여주고 "퇴근완료"로 덮어쓰지 않는다.
+      const attendanceOnDay = await prisma.attendanceRecord.findUnique({
+        where: { userId_workDate: { userId: u.id, workDate: dayStart } },
+      });
+      const clockedOut = Boolean(attendanceOnDay?.clockOutAt)
+        && (!statusOnDay || statusOnDay.changedAt <= attendanceOnDay!.clockOutAt!);
       return {
         userId: u.id,
         name: u.name,
@@ -51,6 +59,8 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
         locationMatch: statusOnDay?.locationMatch ?? checkinOnDay?.locationMatch ?? null,
         locationDistanceMeters: statusOnDay?.locationDistanceMeters ?? checkinOnDay?.locationDistanceMeters ?? null,
         lastConfirmedAt: checkinOnDay?.lastConfirmedAt ?? null,
+        clockedOut,
+        clockOutAt: attendanceOnDay?.clockOutAt ?? null,
       };
     })
   );
