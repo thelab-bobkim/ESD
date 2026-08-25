@@ -167,6 +167,47 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-siz
 .stat-card .stat-value { font-size: 26px; font-weight: 700; }
 .stat-card .stat-sub { font-size: 11px; color: #adb5bd; margin-top: 2px; }
 
+/* 한눈에 보는 동선: 도넛차트 + 대분류 타일 */
+.macro-section {
+  display: flex; gap: 24px; align-items: center; flex-wrap: wrap;
+  background: #fff; border-radius: 16px; padding: 20px 24px; margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.donut-wrap { flex-shrink: 0; }
+.donut-chart {
+  width: 140px; height: 140px; border-radius: 50%; position: relative;
+  display: flex; align-items: center; justify-content: center;
+}
+.donut-hole {
+  width: 92px; height: 92px; border-radius: 50%; background: #fff;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.donut-total { font-size: 24px; font-weight: 800; color: #1c1f24; }
+.donut-total-label { font-size: 11px; color: #868e96; }
+.macro-tiles { flex: 1; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; min-width: 260px; }
+.macro-tile {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  background: #f8f9fb; border-radius: 10px; border-left: 4px solid #ccc;
+}
+.macro-tile-icon { font-size: 22px; }
+.macro-tile-label { font-size: 12px; color: #868e96; }
+.macro-tile-value { font-size: 18px; font-weight: 700; }
+.macro-tile-pct { font-size: 11px; font-weight: 400; color: #adb5bd; margin-left: 2px; }
+
+/* 칸반 카드 안 아바타 이니셜 */
+.chip-row { display: flex; align-items: center; gap: 8px; }
+.chip-avatar {
+  flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%; color: #fff;
+  font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+
+/* 최근 활동 피드 */
+.activity-row { display: flex; gap: 10px; padding: 8px 2px; border-bottom: 1px solid #f1f3f5; }
+.activity-row:last-child { border-bottom: none; }
+.activity-icon { font-size: 18px; flex-shrink: 0; }
+.activity-line { font-size: 13px; color: #1c1f24; line-height: 1.4; }
+.activity-time { font-size: 11px; color: #adb5bd; margin-top: 2px; }
+
 /* 부서별 인원 막대그래프 */
 .dept-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
 .dept-bar-label { width: 120px; flex-shrink: 0; color: #495057; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

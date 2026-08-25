@@ -133,3 +133,27 @@ dashboardRouter.get('/calendar', async (req, res) => {
 
   return res.json({ success: true, data: { year, month, days } });
 });
+
+/**
+ * 최근 활동 피드 — "지금 누가 뭘 눌렀는지"를 시간순으로 보여준다.
+ * 예외/경고가 아니라 있는 그대로의 활동 중계라, 회사 전체의 움직임을 체감하기 좋다.
+ */
+dashboardRouter.get('/recent-activity', async (req, res) => {
+  const limit = Math.min(50, Number(req.query.limit) || 20);
+  const logs = await prisma.statusChangeLog.findMany({
+    where: { user: { name: { not: { startsWith: 'SAMPLE_' } } } },
+    orderBy: { changedAt: 'desc' },
+    take: limit,
+    include: { user: { include: { department: true } } },
+  });
+  const rows = logs.map((l) => ({
+    userId: l.userId,
+    name: l.user.name,
+    department: l.user.department.name,
+    status: l.status,
+    changedAt: l.changedAt,
+    source: l.source,
+    note: l.note,
+  }));
+  return res.json({ success: true, data: rows });
+});

@@ -30,6 +30,19 @@ const OFF_STATUSES = new Set(['ALT_DAY_OFF', 'ON_LEAVE']);
 
 const REFRESH_INTERVAL_MS = 15000; // 15초마다 자동 갱신 (실시간에 가까운 폴링)
 
+// "한눈에 보는 동선"용 대분류 — 9개 세부상태를 4개 그룹으로 묶어서 즉시 파악되게 한다.
+const MACRO_GROUPS: { key: string; label: string; icon: string; color: string; statuses: string[] }[] = [
+  { key: 'ONSITE', label: '사내', icon: '🏢', color: '#2f9e44', statuses: ['HQ_WORKING'] },
+  { key: 'FIELD', label: '외부업무', icon: '🚗', color: '#1c7ed6', statuses: ['RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'MOVING', 'MEETING'] },
+  { key: 'REMOTE', label: '재택', icon: '🏠', color: '#6741d9', statuses: ['REMOTE'] },
+  { key: 'OFF', label: '휴무·야간', icon: '🏖️', color: '#868e96', statuses: ['NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE'] },
+  { key: 'UNKNOWN', label: '미확인', icon: '❔', color: '#e03131', statuses: ['UNKNOWN'] },
+];
+
+interface ActivityRow {
+  userId: string; name: string; department: string; status: string; changedAt: string; source: string; note: string | null;
+}
+
 interface EmployeeRow {
   userId: string; name: string; department: string; client: string | null; workType: string;
   status: string | null; statusChangedAt: string | null; statusSource: string | null; statusNote: string | null; lastConfirmedAt: string | null;
@@ -57,12 +70,17 @@ export default function AdminDashboard() {
   const [search, setSearch] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [justRefreshed, setJustRefreshed] = useState(false);
+  const [activity, setActivity] = useState<ActivityRow[] | null>(null);
 
   async function load() {
     setRefreshing(true);
     try {
-      const b = await apiFetch<CompanyBoard>('/dashboard/company');
+      const [b, a] = await Promise.all([
+        apiFetch<CompanyBoard>('/dashboard/company'),
+        apiFetch<ActivityRow[]>('/dashboard/recent-activity?limit=20'),
+      ]);
       setBoard(b);
+      setActivity(a);
       setLastUpdated(new Date());
       setError(null);
       setJustRefreshed(true);
@@ -127,7 +145,30 @@ export default function AdminDashboard() {
     return { total, working, off, unknown, workingRate };
   }, [filteredEmployees]);
 
-  const [syncing, setSyncing] = useState<'employees' | 'attendance' | null>(null);
+  // "한눈에 보는 동선" — 9개 세부상태를 대분류로 묶어서 집계
+  const macroCounts = useMemo(() => {
+    const counts = new Map(MACRO_GROUPS.map((g) => [g.key, 0]));
+    for (const code of STATUS_ORDER) {
+      const n = grouped[code]?.length ?? 0;
+      const group = MACRO_GROUPS.find((g) => g.statuses.includes(code));
+      if (group) counts.set(group.key, (counts.get(group.key) ?? 0) + n);
+    }
+    return counts;
+  }, [grouped]);
+
+  const donutGradient = useMemo(() => {
+    const total = stats.total;
+    if (total === 0) return '#e9ecef';
+    let acc = 0;
+    const parts = MACRO_GROUPS.map((g) => {
+      const n = macroCounts.get(g.key) ?? 0;
+      const start = (acc / total) * 100;
+      acc += n;
+      const end = (acc / total) * 100;
+      return `${g.color} ${start}% ${end}%`;
+    });
+    return `conic-gradient(${parts.join(', ')})`;
+  }, [macroCounts, stats.total]);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   async function runSyncEmployees() {
@@ -229,70 +270,106 @@ export default function AdminDashboard() {
         </span>
       </div>
 
-      <div className="stat-row">
-        <div className="stat-card">
-          <div className="stat-label">전체 인원</div>
-          <div className="stat-value">{stats.total}</div>
+      <div className="macro-section">
+        <div className="donut-wrap">
+          <div className="donut-chart" style={{ background: donutGradient }}>
+            <div className="donut-hole">
+              <div className="donut-total">{stats.total}</div>
+              <div className="donut-total-label">전체</div>
+            </div>
+          </div>
         </div>
-        <div className="stat-card">
-          <div className="stat-label">근무중</div>
-          <div className="stat-value" style={{ color: '#2f9e44' }}>{stats.working}</div>
-          <div className="stat-sub">전체의 {stats.workingRate}%</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">휴가·대체휴무</div>
-          <div className="stat-value" style={{ color: '#868e96' }}>{stats.off}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">상태 미확인</div>
-          <div className="stat-value" style={{ color: stats.unknown > 0 ? '#e03131' : '#495057' }}>{stats.unknown}</div>
-          <div className="stat-sub">아직 로그인/출근 안 함</div>
+        <div className="macro-tiles">
+          {MACRO_GROUPS.map((g) => {
+            const n = macroCounts.get(g.key) ?? 0;
+            const pct = stats.total > 0 ? Math.round((n / stats.total) * 100) : 0;
+            return (
+              <div className="macro-tile" key={g.key} style={{ borderLeftColor: g.color }}>
+                <div className="macro-tile-icon">{g.icon}</div>
+                <div>
+                  <div className="macro-tile-label">{g.label}</div>
+                  <div className="macro-tile-value" style={{ color: g.color }}>{n}<span className="macro-tile-pct">명 · {pct}%</span></div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      <div className="board">
-        {STATUS_ORDER.map((code) => {
-          const meta = STATUS_META[code];
-          const employees = grouped[code];
-          const isExpanded = expandedColumns[code] ?? employees.length <= 5;
-          return (
-            <div className="board-column" key={code} style={{ borderTopColor: meta.color }}>
-              <div
-                className="board-column-header"
-                style={{ cursor: employees.length > 0 ? 'pointer' : 'default' }}
-                onClick={() => employees.length > 0 && toggleColumn(code)}
-              >
-                <span>
-                  {employees.length > 0 && <span style={{ display: 'inline-block', width: 12, transform: isExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▸</span>}
-                  {' '}{meta.icon} {meta.label}
-                </span>
-                <span className="count">{employees.length}</span>
-              </div>
-              {employees.length === 0 && <div className="board-empty">해당 없음</div>}
-              {employees.length > 0 && !isExpanded && (
-                <div className="board-empty" style={{ cursor: 'pointer' }} onClick={() => toggleColumn(code)}>
-                  {employees.length}명 — 클릭하여 펼치기
-                </div>
-              )}
-              {isExpanded && employees.map((e) => (
-                <div className="employee-chip" key={e.userId}>
-                  <div className="name">
-                    {e.name}
-                    {e.statusSource === 'SYSTEM' && (
-                      <span style={{ marginLeft: 6, fontSize: 10, color: '#868e96', fontWeight: 400 }}>(자동추정)</span>
-                    )}
+      <div className="dashboard-layout">
+        <div>
+          <div className="board">
+            {STATUS_ORDER.map((code) => {
+              const meta = STATUS_META[code];
+              const employees = grouped[code];
+              const isExpanded = expandedColumns[code] ?? employees.length <= 5;
+              return (
+                <div className="board-column" key={code} style={{ borderTopColor: meta.color }}>
+                  <div
+                    className="board-column-header"
+                    style={{ cursor: employees.length > 0 ? 'pointer' : 'default' }}
+                    onClick={() => employees.length > 0 && toggleColumn(code)}
+                  >
+                    <span>
+                      {employees.length > 0 && <span style={{ display: 'inline-block', width: 12, transform: isExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▸</span>}
+                      {' '}{meta.icon} {meta.label}
+                    </span>
+                    <span className="count">{employees.length}</span>
                   </div>
-                  <div className="meta">
-                    {e.department}
-                    {code === 'RESIDENT_ONSITE' && e.client ? ` · ${e.client}` : ''}
-                  </div>
-                  {e.statusNote && <div className="meta" style={{ color: '#1c1f24', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
-                  <div className="meta">{timeAgo(e.statusChangedAt)}</div>
+                  {employees.length === 0 && <div className="board-empty">해당 없음</div>}
+                  {employees.length > 0 && !isExpanded && (
+                    <div className="board-empty" style={{ cursor: 'pointer' }} onClick={() => toggleColumn(code)}>
+                      {employees.length}명 — 클릭하여 펼치기
+                    </div>
+                  )}
+                  {isExpanded && employees.map((e) => (
+                    <div className="employee-chip" key={e.userId}>
+                      <div className="chip-row">
+                        <div className="chip-avatar" style={{ background: meta.color }}>{e.name.slice(-2)}</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="name">
+                            {e.name}
+                            {e.statusSource === 'SYSTEM' && (
+                              <span style={{ marginLeft: 6, fontSize: 10, color: '#868e96', fontWeight: 400 }}>(자동추정)</span>
+                            )}
+                          </div>
+                          <div className="meta">
+                            {e.department}
+                            {code === 'RESIDENT_ONSITE' && e.client ? ` · ${e.client}` : ''}
+                          </div>
+                        </div>
+                      </div>
+                      {e.statusNote && <div className="meta" style={{ color: '#1c1f24', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
+                      <div className="meta">{timeAgo(e.statusChangedAt)}</div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          );
-        })}
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="dashboard-side">
+          <div className="card" style={{ marginBottom: 0 }}>
+            <h2>🟢 최근 활동</h2>
+            {!activity && <div className="board-empty">불러오는 중...</div>}
+            {activity && activity.length === 0 && <div className="board-empty">오늘 아직 활동이 없습니다.</div>}
+            {activity && activity.map((a, i) => {
+              const meta = STATUS_META[a.status] ?? STATUS_META.UNKNOWN;
+              return (
+                <div className="activity-row" key={`${a.userId}-${a.changedAt}-${i}`}>
+                  <span className="activity-icon">{meta.icon}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="activity-line">
+                      <strong>{a.name}</strong>님이 <span style={{ color: meta.color, fontWeight: 600 }}>{meta.label}</span>(으)로
+                    </div>
+                    <div className="activity-time">{a.department} · {timeAgo(a.changedAt)}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );
