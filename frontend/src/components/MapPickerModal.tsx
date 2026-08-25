@@ -1,0 +1,129 @@
+import { useEffect, useRef, useState } from 'react';
+
+declare global {
+  interface Window {
+    kakao: any;
+  }
+}
+
+interface Props {
+  initialAddress?: string;
+  onSelect: (lat: number, lng: number) => void;
+  onClose: () => void;
+}
+
+const KAKAO_KEY = process.env.NEXT_PUBLIC_KAKAO_MAP_KEY;
+
+function loadKakaoScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (window.kakao?.maps) {
+      resolve();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_KEY}&autoload=false&libraries=services`;
+    script.onload = () => window.kakao.maps.load(() => resolve());
+    script.onerror = () => reject(new Error('카카오맵을 불러오지 못했습니다.'));
+    document.head.appendChild(script);
+  });
+}
+
+export default function MapPickerModal({ initialAddress, onSelect, onClose }: Props) {
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<any>(null);
+  const markerRef = useRef<any>(null);
+  const [search, setSearch] = useState(initialAddress ?? '');
+  const [selected, setSelected] = useState<{ lat: number; lng: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!KAKAO_KEY) {
+      setError('카카오맵 키가 설정되어 있지 않습니다. 관리자에게 문의하세요.');
+      setLoading(false);
+      return;
+    }
+    loadKakaoScript()
+      .then(() => {
+        if (!mapContainerRef.current) return;
+        const map = new window.kakao.maps.Map(mapContainerRef.current, {
+          center: new window.kakao.maps.LatLng(37.5665, 126.978),
+          level: 4,
+        });
+        mapRef.current = map;
+
+        window.kakao.maps.event.addListener(map, 'click', (e: any) => {
+          const lat = e.latLng.getLat();
+          const lng = e.latLng.getLng();
+          placeMarker(lat, lng);
+        });
+
+        setLoading(false);
+        if (initialAddress) doSearch(initialAddress, map);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : '지도를 불러오지 못했습니다.');
+        setLoading(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function placeMarker(lat: number, lng: number) {
+    const map = mapRef.current;
+    if (!map) return;
+    const position = new window.kakao.maps.LatLng(lat, lng);
+    if (markerRef.current) {
+      markerRef.current.setPosition(position);
+    } else {
+      markerRef.current = new window.kakao.maps.Marker({ position, map });
+    }
+    map.setCenter(position);
+    setSelected({ lat, lng });
+  }
+
+  function doSearch(keyword?: string, mapOverride?: any) {
+    const map = mapOverride ?? mapRef.current;
+    const q = keyword ?? search;
+    if (!q.trim() || !window.kakao?.maps?.services) return;
+    const places = new window.kakao.maps.services.Places();
+    places.keywordSearch(q, (data: any[], status: string) => {
+      if (status === window.kakao.maps.services.Status.OK && data.length > 0) {
+        const { y, x } = data[0];
+        placeMarker(Number(y), Number(x));
+        map?.setLevel(3);
+      } else {
+        setError('검색 결과가 없습니다. 지도를 클릭해서 직접 위치를 찍어주세요.');
+      }
+    });
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 16, padding: 20, maxWidth: 640, width: '100%' }}>
+        <h2 style={{ marginTop: 0 }}>🗺️ 지도에서 고객사 위치 찾기</h2>
+        {error && <div className="error">{error}</div>}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+          <input
+            style={{ margin: 0, flex: 1 }}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="고객사명 또는 주소 검색"
+            onKeyDown={(e) => e.key === 'Enter' && doSearch()}
+          />
+          <button style={{ width: 'auto', margin: 0 }} onClick={() => doSearch()}>검색</button>
+        </div>
+        {loading && <div className="board-empty">지도를 불러오는 중...</div>}
+        <div ref={mapContainerRef} style={{ width: '100%', height: 360, borderRadius: 10, background: '#eee' }} />
+        <p style={{ fontSize: 12, color: '#868e96', marginTop: 8 }}>
+          검색 후 정확한 위치가 아니면 지도를 클릭해서 직접 위치를 찍어주세요.
+        </p>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button disabled={!selected} onClick={() => selected && onSelect(selected.lat, selected.lng)}>
+            이 위치로 저장
+          </button>
+          <button className="secondary" onClick={onClose}>취소</button>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -46,6 +46,8 @@ services:
     build:
       context: ./frontend
       # NEXT_PUBLIC_API_BASE_URL을 비워서 브라우저 접속 IP 기준 "/api/v1" 자동감지 사용
+      args:
+        NEXT_PUBLIC_KAKAO_MAP_KEY: ${NEXT_PUBLIC_KAKAO_MAP_KEY:-}
     restart: unless-stopped
     depends_on:
       - backend
