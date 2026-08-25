@@ -169,6 +169,8 @@ export default function AdminDashboard() {
     });
     return `conic-gradient(${parts.join(', ')})`;
   }, [macroCounts, stats.total]);
+
+  const [syncing, setSyncing] = useState<'employees' | 'attendance' | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   async function runSyncEmployees() {
