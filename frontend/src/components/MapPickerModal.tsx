@@ -8,7 +8,7 @@ declare global {
 
 interface Props {
   initialAddress?: string;
-  onSelect: (lat: number, lng: number, address?: string) => void;
+  onSelect: (lat: number, lng: number, address?: string, placeName?: string) => void;
   onClose: () => void;
 }
 
@@ -133,7 +133,7 @@ export default function MapPickerModal({ initialAddress, onSelect, onClose }: Pr
           검색 후 정확한 위치가 아니면 지도를 클릭해서 직접 위치를 찍어주세요.
         </p>
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-          <button disabled={!selected} onClick={() => selected && onSelect(selected.lat, selected.lng, selected.address)}>
+          <button disabled={!selected} onClick={() => selected && onSelect(selected.lat, selected.lng, selected.address, selected.placeName)}>
             이 위치로 저장
           </button>
           <button className="secondary" onClick={onClose}>취소</button>

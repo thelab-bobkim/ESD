@@ -6,6 +6,7 @@ import MapPickerModal from '@/components/MapPickerModal';
 interface ClientRow {
   id: string; name: string; address: string; latitude: number | null; longitude: number | null; hasCoordinates: boolean;
 }
+interface NewClientDraft { name: string; address: string; lat: number; lng: number; }
 
 export default function AdminClientsPage() {
   const router = useRouter();
@@ -14,6 +15,9 @@ export default function AdminClientsPage() {
   const [editing, setEditing] = useState<Record<string, { lat: string; lng: string }>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [mapTargetId, setMapTargetId] = useState<string | null>(null);
+  const [showAddMap, setShowAddMap] = useState(false);
+  const [newClientDraft, setNewClientDraft] = useState<NewClientDraft | null>(null);
+  const [creating, setCreating] = useState(false);
 
   function load() {
     apiFetch<ClientRow[]>('/clients')
@@ -54,6 +58,28 @@ export default function AdminClientsPage() {
     await saveCoordsValue(id, Number(lat), Number(lng));
   }
 
+  async function createClient() {
+    if (!newClientDraft) return;
+    setCreating(true);
+    try {
+      await apiFetch('/clients', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: newClientDraft.name,
+          address: newClientDraft.address,
+          latitude: newClientDraft.lat,
+          longitude: newClientDraft.lng,
+        }),
+      });
+      setNewClientDraft(null);
+      load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '등록에 실패했습니다.');
+    } finally {
+      setCreating(false);
+    }
+  }
+
   function logout() {
     clearToken();
     router.push('/login');
@@ -73,18 +99,39 @@ export default function AdminClientsPage() {
       {error && <div className="error">{error}</div>}
 
       <div className="card">
-        <h2>사용법</h2>
-        <p style={{ fontSize: 13, color: '#495057', lineHeight: 1.6 }}>
-          각 고객사 줄의 <strong>"🗺️ 지도에서 찾기"</strong>를 눌러서, 지도에서 주소 검색 후 정확한 위치를
-          클릭하면 좌표가 자동으로 저장됩니다. (숫자를 직접 입력하고 싶으면 아래 위도/경도 칸에 입력 후
-          "직접입력 저장"을 눌러도 됩니다.)
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2>신규 고객사 등록</h2>
+          <button style={{ width: 'auto', margin: 0 }} onClick={() => setShowAddMap(true)}>➕ 지도에서 고객사 찾아 등록</button>
+        </div>
+        <p style={{ fontSize: 13, color: '#495057', lineHeight: 1.6, marginBottom: 0 }}>
+          지도에서 고객사명을 검색해서 선택하면, 고객사명과 주소가 자동으로 채워집니다. 확인 후 등록만 누르면 됩니다.
         </p>
       </div>
 
+      {newClientDraft && (
+        <div className="card">
+          <h2>새 고객사 확인</h2>
+          <label className="field-label">고객사명</label>
+          <input value={newClientDraft.name} onChange={(e) => setNewClientDraft({ ...newClientDraft, name: e.target.value })} />
+          <label className="field-label">주소</label>
+          <input value={newClientDraft.address} onChange={(e) => setNewClientDraft({ ...newClientDraft, address: e.target.value })} />
+          <p style={{ fontSize: 12, color: '#868e96' }}>좌표: {newClientDraft.lat.toFixed(6)}, {newClientDraft.lng.toFixed(6)}</p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button disabled={creating || !newClientDraft.name.trim()} onClick={createClient}>
+              {creating ? '등록 중...' : '이 고객사 등록'}
+            </button>
+            <button className="secondary" onClick={() => setNewClientDraft(null)}>취소</button>
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <h2>고객사 목록</h2>
+        <p style={{ fontSize: 12, color: '#868e96', marginTop: -6 }}>
+          각 줄의 "🗺️ 지도에서 찾기"를 눌러서 좌표를 다시 등록/수정할 수 있습니다.
+        </p>
         {!clients && <div className="board-empty">불러오는 중...</div>}
-        {clients && clients.length === 0 && <div className="board-empty">등록된 고객사가 없습니다.</div>}
+        {clients && clients.length === 0 && <div className="board-empty">등록된 고객사가 없습니다. 위에서 새로 등록해주세요.</div>}
         {clients && clients.length > 0 && (
           <table>
             <thead>
@@ -136,6 +183,16 @@ export default function AdminClientsPage() {
           onSelect={async (lat, lng, address) => {
             await saveCoordsValue(mapTargetClient.id, lat, lng, address);
             setMapTargetId(null);
+          }}
+        />
+      )}
+
+      {showAddMap && (
+        <MapPickerModal
+          onClose={() => setShowAddMap(false)}
+          onSelect={(lat, lng, address, placeName) => {
+            setNewClientDraft({ name: placeName || '', address: address || '', lat, lng });
+            setShowAddMap(false);
           }}
         />
       )}

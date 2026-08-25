@@ -6,9 +6,12 @@ import { requireAuth, requireRole } from '../../common/guards/auth';
 export const clientsRouter = Router();
 clientsRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN'));
 
-/** 고객사 목록 + 좌표 등록 여부 (위치대조 기능용 관리 화면) */
+/** 고객사 목록 + 좌표 등록 여부 (위치대조 기능용 관리 화면). SAMPLE_ 테스트 고객사는 제외한다. */
 clientsRouter.get('/', async (_req, res) => {
-  const clients = await prisma.client.findMany({ orderBy: { name: 'asc' } });
+  const clients = await prisma.client.findMany({
+    where: { name: { not: { startsWith: 'SAMPLE_' } } },
+    orderBy: { name: 'asc' },
+  });
   return res.json({
     success: true,
     data: clients.map((c) => ({
@@ -20,6 +23,30 @@ clientsRouter.get('/', async (_req, res) => {
       hasCoordinates: c.latitude != null && c.longitude != null,
     })),
   });
+});
+
+const createClientSchema = z.object({
+  name: z.string().min(1),
+  address: z.string().min(1),
+  latitude: z.number().min(-90).max(90).nullable().optional(),
+  longitude: z.number().min(-180).max(180).nullable().optional(),
+});
+
+/** 신규 고객사 등록 — 지도에서 검색한 고객사명/주소/좌표를 그대로 넘기면 바로 생성된다. */
+clientsRouter.post('/', async (req, res) => {
+  const parsed = createClientSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '고객사명과 주소를 확인하세요.' } });
+  }
+  const created = await prisma.client.create({
+    data: {
+      name: parsed.data.name,
+      address: parsed.data.address,
+      latitude: parsed.data.latitude ?? null,
+      longitude: parsed.data.longitude ?? null,
+    },
+  });
+  return res.json({ success: true, data: created });
 });
 
 const updateCoordsSchema = z.object({
