@@ -24,7 +24,7 @@ const STATUS_ORDER = ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIE
 const DETAIL_FORM_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
 // 이 상태들은 처음 누르면 상세폼 없이 즉시 등록된다(상황판이 바로 반영됨). 이미 그 상태인데 다시
 // 누르면 그때 상세폼이 열려서 작업내용 등을 나중에 채워넣을 수 있다("작업 후 작성" 원칙).
-const QUICK_REGISTER_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
+const QUICK_REGISTER_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
 // 이 상태들은 프로젝트별 공수(工數) 집계 대상이라 프로젝트명 필드가 필요하다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
 
@@ -455,16 +455,10 @@ export default function EmployeeHome() {
         <div className="right-col-fill">
           {detailStatus && (
             <div className="card right-col-card">
-              <h2>{STATUS_META[detailStatus].icon} {detailStatus === 'HQ_WORKING' ? '본사근무 업무일지' : `${STATUS_META[detailStatus].label} 내용 추가`}</h2>
-              {detailStatus === 'HQ_WORKING' ? (
-                <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
-                  * 오늘 사내에서 어떤 업무를 하셨는지 간단히 남겨주세요.
-                </p>
-              ) : (
-                <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
-                  * 이미 '{STATUS_META[detailStatus].label}'(으)로 등록되어 있습니다. 작업내용/완료시간을 채워서 기록을 보완해주세요.
-                </p>
-              )}
+              <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 내용 추가</h2>
+              <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+                * 이미 '{STATUS_META[detailStatus].label}'(으)로 등록되어 있습니다. 작업이 마무리됐으면 여기서 내용/완료시간을 채워주세요.
+              </p>
               <label className="field-label">
                 {detailStatus === 'HQ_WORKING' ? '관련 프로젝트/고객사(선택)' : '고객사명'}
                 {detailStatus === 'NIGHT_WORK' ? '(내부 작업이면 비워두세요)' : ''}
