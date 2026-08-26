@@ -28,7 +28,7 @@ const DETAIL_FORM_STATUSES = new Set([
 // 이 상태들은 처음 누르면 상세폼 없이 즉시 등록된다(상황판이 바로 반영됨). 이미 그 상태인데 다시
 // 누르면 그때 상세폼이 열려서 세부내용을 나중에 채워넣을 수 있다("작업 후 작성" 원칙).
 // 출장/휴가는 사전에 정해진 계획 정보라 예외로 항상 바로 폼을 띄운다(즉시등록 대상 아님).
-const QUICK_REGISTER_STATUSES = new Set(['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+const QUICK_REGISTER_STATUSES = new Set(['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP']);
 // 이 상태들은 프로젝트별 공수(工數) 집계 대상이라 프로젝트명 필드가 필요하다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
 // 이 상태들은 "고객사명 + 업무내용"만 간단히 입력하는 단순폼이다(프로젝트/작업유형/시간 불필요).
@@ -244,9 +244,14 @@ export default function EmployeeHome() {
       if (['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK'].includes(code)) {
         body.effort = { clientName: prefilledClientName || undefined, startTime: nowHHMM() };
       }
+      if (code === 'BUSINESS_TRIP') {
+        body.businessTrip = { destination: '(추후 입력)', purpose: '(추후 입력)', startAt: new Date().toISOString() };
+      }
       run(
         () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-        `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 (세부내용은 같은 아이콘을 다시 눌러서 추가하실 수 있어요)`
+        code === 'BUSINESS_TRIP'
+          ? `상태가 '출장'(으)로 변경되었습니다. 😊 (목적지/기간/목적은 같은 아이콘을 다시 눌러서 입력해주세요)`
+          : `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 (세부내용은 같은 아이콘을 다시 눌러서 추가하실 수 있어요)`
       );
       return;
     }
