@@ -25,15 +25,10 @@ const STATUS_ORDER = ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIE
 const DETAIL_FORM_STATUSES = new Set([
   'REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP', 'ON_LEAVE', 'ALT_DAY_OFF',
 ]);
-// 이 상태들은 처음 누르면 상세폼 없이 즉시 등록된다(상황판이 바로 반영됨). 이미 그 상태인데 다시
-// 누르면 그때 상세폼이 열려서 세부내용을 나중에 채워넣을 수 있다("작업 후 작성" 원칙).
-// 출장/휴가는 사전에 정해진 계획 정보라 예외로 항상 바로 폼을 띄운다(즉시등록 대상 아님).
-// (예전에는 일부 상태를 "먼저 빈 채로 등록 → 나중에 내용 추가"로 처리했으나, 대부분은 휴가처럼
-// 처음 클릭할 때부터 바로 상세폼을 띄워서 상태변경과 기록을 한 번에 끝낸다.)
-// 단, 고객사미팅/고객사작업은 예외다 — "이동중 → 고객사 도착"처럼 시작하는 순간엔 아직 무슨 내용을
-// 적을지 모르는 게 당연해서, 클릭하면 우선 상태부터 바로 반영하고, 작업이 끝난 뒤 같은 아이콘을
-// 다시 눌러서 내용을 기록하게 한다.
-const QUICK_REGISTER_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
+// 9개 아이콘 전부 동일한 규칙: 처음 누르면 상세폼 없이 즉시 등록되어 체크(✓) 표시가 바로 뜬다
+// (상황판에도 즉시 반영). 이미 그 상태인데 같은 아이콘을 다시 누르면, 그때 상세폼이 열려서
+// 날짜/장소/사유 같은 세부내용을 나중에 채워넣을 수 있다("우선 등록, 내용은 나중에" 원칙).
+const QUICK_REGISTER_STATUSES = new Set(DETAIL_FORM_STATUSES);
 // 이 상태들은 프로젝트별 공수(工數) 집계 대상이라 프로젝트명 필드가 필요하다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
 // 이 상태들은 "고객사명 + 업무내용"만 간단히 입력하는 단순폼이다(프로젝트/작업유형/시간 불필요).
