@@ -28,9 +28,9 @@ const DETAIL_FORM_STATUSES = new Set([
 // 9개 아이콘 전부 동일한 규칙: 처음 누르면 상세폼 없이 즉시 등록되어 체크(✓) 표시가 바로 뜬다
 // (상황판에도 즉시 반영). 이미 그 상태인데 같은 아이콘을 다시 누르면, 그때 상세폼이 열려서
 // 날짜/장소/사유 같은 세부내용을 나중에 채워넣을 수 있다("우선 등록, 내용은 나중에" 원칙).
-// 9개 항목 전부 클릭할 때마다 매번 아래에 입력화면이 뜬다(즉시등록 없음) — 요청에 따라
-// "클릭 → 입력폼 표시 → 등록"을 항상 거치도록 되돌린 상태.
-const QUICK_REGISTER_STATUSES = new Set<string>([]);
+// 9개 항목 전부 클릭 즉시 상태변경(체크 표시)된다. 다만 이전 상태의 내용(note)을 아직 안 채웠는데
+// 다른 상태로 넘어가려 하면 changeStatus()에서 막고 경고 후 그 상태의 입력폼을 대신 열어준다.
+const QUICK_REGISTER_STATUSES = new Set(DETAIL_FORM_STATUSES);
 // 이 상태들은 프로젝트별 공수(工數) 집계 대상이라 프로젝트명 필드가 필요하다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
 // 이 상태들은 "고객사명 + 업무내용"만 간단히 입력하는 단순폼이다(프로젝트/작업유형/시간 불필요).
@@ -236,8 +236,39 @@ export default function EmployeeHome() {
     }
   }
 
+  function openDetailForm(code: string, prefilledClientName?: string) {
+    setDetailStatus(code);
+    setClientName(prefilledClientName ?? (code === 'RESIDENT_ONSITE' ? (me?.assignedClient ?? '') : ''));
+    setProjectName('');
+    setWorkStart(nowHHMM());
+    setWorkEnd('');
+    setWorkType(code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : WORK_TYPE_OPTIONS[0]);
+    setWorkDetail('');
+    setTripDestination('');
+    setTripStart(nowDateTimeLocal());
+    setTripEnd('');
+    setTripPurpose('');
+    setMovingFrom('');
+    setMovingTo('');
+    setLeaveStart(todayDateLocal());
+    setLeaveEnd(todayDateLocal());
+    setLeaveDestination('');
+    setLeaveContact('');
+    // 모바일에서 폼이 화면 아래로 밀려서 "아무 반응 없다"고 느껴지지 않게, 폼으로 스크롤을 옮겨준다.
+    setTimeout(() => detailFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  }
+
   function changeStatus(code: string, prefilledClientName?: string) {
     const alreadyInThisStatus = currentStatus?.status === code;
+
+    // 지금 상태의 내용(note)을 아직 안 채웠는데 다른 상태로 넘어가려 하면 막고, 그 상태의
+    // 입력폼을 대신 열어준다 — "내용입력이 끝나야 다음 상태로 넘어갈 수 있다" 원칙.
+    if (currentStatus && !currentStatus.note && !alreadyInThisStatus) {
+      const pendingLabel = STATUS_META[currentStatus.status]?.label ?? currentStatus.status;
+      setMessage(`⚠️ 먼저 '${pendingLabel}'의 내용을 입력해주세요. 내용을 등록해야 다른 상태로 바꿀 수 있어요.`);
+      openDetailForm(currentStatus.status);
+      return;
+    }
 
     // 즉시등록 대상은 처음 누르면 상세폼 없이 바로 등록해서 상황판에 즉시 반영한다.
     // ("세부내용은 나중에 작성" — 시작하는 시점엔 아직 쓸 내용이 없는 게 당연하므로.)
@@ -259,25 +290,7 @@ export default function EmployeeHome() {
     }
 
     if (DETAIL_FORM_STATUSES.has(code)) {
-      setDetailStatus(code);
-      setClientName(prefilledClientName ?? (code === 'RESIDENT_ONSITE' ? (me?.assignedClient ?? '') : ''));
-      setProjectName('');
-      setWorkStart(nowHHMM());
-      setWorkEnd('');
-      setWorkType(code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : WORK_TYPE_OPTIONS[0]);
-      setWorkDetail('');
-      setTripDestination('');
-      setTripStart(nowDateTimeLocal());
-      setTripEnd('');
-      setTripPurpose('');
-      setMovingFrom('');
-      setMovingTo('');
-      setLeaveStart(todayDateLocal());
-      setLeaveEnd(todayDateLocal());
-      setLeaveDestination('');
-      setLeaveContact('');
-      // 모바일에서 폼이 화면 아래로 밀려서 "아무 반응 없다"고 느껴지지 않게, 폼으로 스크롤을 옮겨준다.
-      setTimeout(() => detailFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+      openDetailForm(code, prefilledClientName);
       return;
     }
     run(
@@ -495,7 +508,14 @@ export default function EmployeeHome() {
         </div>
       )}
 
-      {message && <div className="card col-full" style={{ background: '#eef7ee' }}>{message}</div>}
+      {message && (
+        <div
+          className="card col-full"
+          style={{ background: message.startsWith('⚠️') ? '#fff4e6' : '#eef7ee', color: message.startsWith('⚠️') ? '#e8590c' : undefined, fontWeight: message.startsWith('⚠️') ? 600 : undefined }}
+        >
+          {message}
+        </div>
+      )}
 
       <div className="employee-grid">
         {/* 왼쪽 열 */}
