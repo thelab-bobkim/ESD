@@ -303,25 +303,25 @@ export default function AdminDashboard() {
 
       <div className="board">
         {['CLOCKED_OUT', ...STATUS_ORDER]
-          .filter((code) => (grouped[code]?.length ?? 0) > 0)
           .map((code) => {
             const meta = STATUS_META[code];
             const employees = grouped[code];
-            const isExpanded = expandedColumns[code] ?? employees.length <= 5;
+            const isExpanded = expandedColumns[code] ?? (employees.length > 0 && employees.length <= 5);
             return (
               <div className="board-column" key={code} style={{ borderTopColor: meta.color }}>
                 <div
                   className="board-column-header"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => toggleColumn(code)}
+                  style={{ cursor: employees.length > 0 ? 'pointer' : 'default' }}
+                  onClick={() => employees.length > 0 && toggleColumn(code)}
                 >
                   <span>
-                    <span style={{ display: 'inline-block', width: 12, transform: isExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▸</span>
+                    {employees.length > 0 && <span style={{ display: 'inline-block', width: 12, transform: isExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▸</span>}
                     {' '}{meta.icon} {meta.label}
                   </span>
                   <span className="count">{employees.length}</span>
                 </div>
-                {!isExpanded && (
+                {employees.length === 0 && <div className="board-empty">해당 없음</div>}
+                {employees.length > 0 && !isExpanded && (
                   <div className="board-empty" style={{ cursor: 'pointer' }} onClick={() => toggleColumn(code)}>
                     {employees.length}명 — 클릭하여 펼치기
                   </div>
