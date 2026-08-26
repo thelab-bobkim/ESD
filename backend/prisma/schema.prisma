@@ -55,6 +55,7 @@ enum AttendanceStatus {
   ON_LEAVE
   CLIENT_MEETING
   CLIENT_WORK
+  BUSINESS_TRIP
 }
 
 enum StatusSource {
@@ -182,6 +183,7 @@ model User {
   pilotGroupMembers      PilotGroupMember[]
   pilotFeedback          PilotFeedback[]
   effortLogs             EffortLog[]
+  businessTripLogs       BusinessTripLog[]
   pushSubscriptions      PushSubscription[]
   approvalRequestsMade   ApprovalRequest[] @relation("Requester")
   approvalRequestsDecided ApprovalRequest[] @relation("Approver")
@@ -492,3 +494,17 @@ model PushSubscription {
   @@map("push_subscriptions")
 }
 
+// ===== 출장 =====
+// 다른 상태와 달리 여러 날에 걸칠 수 있고 사전에 계획된 정보(목적지/기간/목적)라 별도 모델로 관리한다.
+model BusinessTripLog {
+  id          String    @id @default(uuid())
+  userId      String    @map("user_id")
+  user        User      @relation(fields: [userId], references: [id])
+  destination String
+  purpose     String
+  startAt     DateTime  @map("start_at")
+  endAt       DateTime? @map("end_at") // 복귀 예정(또는 실제 복귀) 일시. 아직 모르면 비워둠.
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@map("business_trip_logs")
+}

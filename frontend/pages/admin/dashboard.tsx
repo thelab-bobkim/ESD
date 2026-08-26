@@ -12,6 +12,7 @@ const STATUS_META: Record<string, { label: string; icon: string; color: string }
   CLIENT_WORK: { label: '고객사 작업', icon: '🛠️', color: '#1c7ed6' },
   MOVING: { label: '이동중', icon: '🚙', color: '#1c7ed6' },
   MEETING: { label: '회의중', icon: '👥', color: '#1c7ed6' },
+  BUSINESS_TRIP: { label: '출장', icon: '✈️', color: '#1c7ed6' },
   REMOTE: { label: '재택(집)', icon: '🏠', color: '#6741d9' },
   NIGHT_WORK: { label: '야간작업', icon: '🌙', color: '#f08c00' },
   ALT_DAY_OFF: { label: '대체휴무', icon: '🏖️', color: '#868e96' },
@@ -22,11 +23,11 @@ const STATUS_META: Record<string, { label: string; icon: string; color: string }
 
 const STATUS_ORDER = [
   'HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'MOVING', 'MEETING',
-  'REMOTE', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'UNKNOWN',
+  'BUSINESS_TRIP', 'REMOTE', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'UNKNOWN',
 ];
 
 // "근무중"으로 집계할 상태 — 요약 통계의 근무중 비율 계산에 사용
-const WORKING_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'MOVING', 'MEETING', 'NIGHT_WORK']);
+const WORKING_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'MOVING', 'MEETING', 'NIGHT_WORK', 'BUSINESS_TRIP']);
 const OFF_STATUSES = new Set(['ALT_DAY_OFF', 'ON_LEAVE']);
 
 const REFRESH_INTERVAL_MS = 15000; // 15초마다 자동 갱신 (실시간에 가까운 폴링)
@@ -34,7 +35,7 @@ const REFRESH_INTERVAL_MS = 15000; // 15초마다 자동 갱신 (실시간에 �
 // "한눈에 보는 동선"용 대분류 — 9개 세부상태를 4개 그룹으로 묶어서 즉시 파악되게 한다.
 const MACRO_GROUPS: { key: string; label: string; icon: string; color: string; statuses: string[] }[] = [
   { key: 'ONSITE', label: '사내', icon: '🏢', color: '#2f9e44', statuses: ['HQ_WORKING'] },
-  { key: 'FIELD', label: '외부업무', icon: '🚗', color: '#1c7ed6', statuses: ['RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'MOVING', 'MEETING'] },
+  { key: 'FIELD', label: '외부업무', icon: '🚗', color: '#1c7ed6', statuses: ['RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'MOVING', 'MEETING', 'BUSINESS_TRIP'] },
   { key: 'REMOTE', label: '재택', icon: '🏠', color: '#6741d9', statuses: ['REMOTE'] },
   { key: 'OFF', label: '휴무·야간', icon: '🏖️', color: '#868e96', statuses: ['NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE'] },
   { key: 'CLOCKED_OUT', label: '퇴근완료', icon: '🏁', color: '#495057', statuses: [] },

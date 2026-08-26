@@ -15,13 +15,15 @@ const STATUS_META: Record<string, { label: string; icon: string }> = {
   CLIENT_MEETING: { label: '고객사미팅', icon: '🤝' },
   CLIENT_WORK: { label: '고객사작업', icon: '🛠️' },
   NIGHT_WORK: { label: '야간작업', icon: '🌙' },
+  BUSINESS_TRIP: { label: '출장', icon: '✈️' },
   ALT_DAY_OFF: { label: '대체휴무', icon: '🏖️' },
   ON_LEAVE: { label: '휴가', icon: '🌴' },
 };
-const STATUS_ORDER = ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE'];
+const STATUS_ORDER = ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP', 'ALT_DAY_OFF', 'ON_LEAVE'];
 
 // 이 상태들은 클릭 시 오른쪽에 상세입력 폼을 띄운다. 본사근무는 "업무일지" 성격, 나머지는 고객사 방문 기록.
-const DETAIL_FORM_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+// 출장은 목적지/기간/목적이 사전에 정해진 계획 정보라 항상 바로 폼을 띄운다(즉시등록 대상 아님).
+const DETAIL_FORM_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP']);
 // 이 상태들은 처음 누르면 상세폼 없이 즉시 등록된다(상황판이 바로 반영됨). 이미 그 상태인데 다시
 // 누르면 그때 상세폼이 열려서 작업내용 등을 나중에 채워넣을 수 있다("작업 후 작성" 원칙).
 const QUICK_REGISTER_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
@@ -41,6 +43,13 @@ interface WeeklySummary { from: string; to: string; totalMinutes: number; days: 
 function nowHHMM(): string {
   const d = new Date();
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** <input type="datetime-local">에 넣을 "지금" 기본값 (YYYY-MM-DDTHH:MM, 로컬시간 기준) */
+function nowDateTimeLocal(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function greetingByHour(): string {
@@ -95,6 +104,11 @@ export default function EmployeeHome() {
   const [workEnd, setWorkEnd] = useState('');
   const [workType, setWorkType] = useState(WORK_TYPE_OPTIONS[0]);
   const [workDetail, setWorkDetail] = useState('');
+  // 출장 전용 필드 (목적지/기간/목적)
+  const [tripDestination, setTripDestination] = useState('');
+  const [tripStart, setTripStart] = useState('');
+  const [tripEnd, setTripEnd] = useState('');
+  const [tripPurpose, setTripPurpose] = useState('');
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
 
@@ -218,6 +232,10 @@ export default function EmployeeHome() {
       setWorkEnd('');
       setWorkType(WORK_TYPE_OPTIONS[0]);
       setWorkDetail('');
+      setTripDestination('');
+      setTripStart(nowDateTimeLocal());
+      setTripEnd('');
+      setTripPurpose('');
       return;
     }
     run(
@@ -229,6 +247,28 @@ export default function EmployeeHome() {
   async function submitDetailForm() {
     if (!detailStatus) return;
     const code = detailStatus;
+
+    if (code === 'BUSINESS_TRIP') {
+      if (!tripDestination.trim() || !tripStart || !tripPurpose.trim()) return;
+      const note = `목적지: ${tripDestination} | 출발: ${tripStart}${tripEnd ? ` | 복귀예정: ${tripEnd}` : ' | 복귀예정 미정'} | 목적: ${tripPurpose}`;
+      const body = {
+        status: code,
+        note,
+        businessTrip: {
+          destination: tripDestination,
+          purpose: tripPurpose,
+          startAt: tripStart,
+          endAt: tripEnd || undefined,
+        },
+      };
+      run(
+        () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+        `출장(${tripDestination})이 등록되었습니다. 😊`
+      );
+      setDetailStatus(null);
+      return;
+    }
+
     const note = `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail}`;
     const body: Record<string, unknown> = { status: code, note };
     if (DETAIL_FORM_STATUSES.has(code)) {
@@ -451,9 +491,44 @@ export default function EmployeeHome() {
           )}
         </div>
 
-        {/* 오른쪽 열: 고객사미팅/고객사작업/야간작업 상세입력 폼 (왼쪽 열과 높이를 맞춤) */}
+        {/* 오른쪽 열: 고객사미팅/고객사작업/야간작업/출장 상세입력 폼 (왼쪽 열과 높이를 맞춤) */}
         <div className="right-col-fill">
-          {detailStatus && (
+          {detailStatus === 'BUSINESS_TRIP' && (
+            <div className="card right-col-card">
+              <h2>✈️ 출장 등록</h2>
+              <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+                * 목적지·출발일시·목적은 필수입니다. 복귀예정일시는 몰라도 비워두고 등록 가능합니다.
+              </p>
+              <label className="field-label">목적지</label>
+              <input value={tripDestination} onChange={(e) => setTripDestination(e.target.value)} placeholder="예: 부산 OO데이터센터" />
+
+              <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <label className="field-label">출발 일시</label>
+                  <input type="datetime-local" value={tripStart} onChange={(e) => setTripStart(e.target.value)} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label className="field-label">복귀 예정 일시(선택)</label>
+                  <input type="datetime-local" value={tripEnd} onChange={(e) => setTripEnd(e.target.value)} />
+                </div>
+              </div>
+
+              <label className="field-label">목적</label>
+              <textarea
+                className="detail-textarea right-col-textarea"
+                rows={3}
+                placeholder="예: OO데이터센터 서버 이전 작업 지원"
+                value={tripPurpose}
+                onChange={(e) => setTripPurpose(e.target.value)}
+              />
+              <button disabled={!tripDestination.trim() || !tripStart || !tripPurpose.trim()} onClick={submitDetailForm}>
+                등록
+              </button>
+              <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
+            </div>
+          )}
+
+          {detailStatus && detailStatus !== 'BUSINESS_TRIP' && (
             <div className="card right-col-card">
               <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 내용 추가</h2>
               <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>

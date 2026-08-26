@@ -12,7 +12,7 @@ export const attendanceRouter = Router();
 attendanceRouter.use(requireAuth);
 
 // 이 상태로 바뀌면 "실제 업무 시작"으로 보고 출근시각을 자동 인식한다(주52시간제 대응).
-const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP']);
 // 이 상태는 프로젝트별 공수(工數) 기록 대상이다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
 
@@ -105,12 +105,20 @@ const effortSchema = z.object({
   description: z.string().optional(),
 });
 
+const businessTripSchema = z.object({
+  destination: z.string().min(1),
+  purpose: z.string().min(1),
+  startAt: z.string().min(1), // ISO datetime-local 문자열
+  endAt: z.string().optional(),
+});
+
 const statusSchema = z.object({
   status: z.enum([
-    'HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'MEETING', 'MOVING', 'REMOTE', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'CLIENT_MEETING', 'CLIENT_WORK',
+    'HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'MEETING', 'MOVING', 'REMOTE', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'CLIENT_MEETING', 'CLIENT_WORK', 'BUSINESS_TRIP',
   ]),
   note: z.string().optional(),
   effort: effortSchema.optional(),
+  businessTrip: businessTripSchema.optional(),
   // 고객사미팅/고객사작업 등록 시 그 순간의 좌표(대조 후 즉시 폐기, 저장 안 함)
   location: z.object({ lat: z.number(), lng: z.number() }).optional(),
 });
@@ -125,7 +133,12 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '상태값을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
-  const { status, note, effort, location } = parsed.data;
+  const { status, note, effort, location, businessTrip } = parsed.data;
+
+  // 출장은 목적지/기간/목적이 필수다(계획된 정보라 즉시 확정해서 남긴다).
+  if (status === 'BUSINESS_TRIP' && !businessTrip) {
+    return res.status(400).json({ success: false, error: { code: 'BUSINESS_TRIP_REQUIRED', message: '목적지·출발일시·목적을 모두 입력해야 합니다.' } });
+  }
 
   // 고객사미팅/고객사작업/야간작업은 작업시작 시간만 있으면 등록 가능하다(막 시작한 시점엔 완료시간을
   // 알 수 없는 게 당연하므로). 완료시간은 나중에 다시 등록해서 채우면 된다("진행중" 허용).
@@ -188,8 +201,21 @@ attendanceRouter.post('/status', async (req, res) => {
     nightWork = await recordNightWork(userId, startTime, endTime, effort.description);
   }
 
-  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'status_change_log', targetId: log.id, afterValue: { log, effortLog, nightWork } });
-  return res.json({ success: true, data: { statusLog: log, effortLog, nightWork } });
+  let businessTripLog = null;
+  if (status === 'BUSINESS_TRIP' && businessTrip) {
+    businessTripLog = await prisma.businessTripLog.create({
+      data: {
+        userId,
+        destination: businessTrip.destination,
+        purpose: businessTrip.purpose,
+        startAt: new Date(businessTrip.startAt),
+        endAt: businessTrip.endAt ? new Date(businessTrip.endAt) : null,
+      },
+    });
+  }
+
+  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'status_change_log', targetId: log.id, afterValue: { log, effortLog, nightWork, businessTripLog } });
+  return res.json({ success: true, data: { statusLog: log, effortLog, nightWork, businessTripLog } });
 });
 
 /** 본인 오늘 근태 조회 (상태는 "오늘" 것만 — 며칠 지난 상태를 현재처럼 보여주지 않는다) */
