@@ -43,8 +43,13 @@ interface DailyTimeline {
 }
 
 interface EffortByUser { userId: string; name: string; minutes: number; }
-interface EffortRow { projectName: string; clientName: string; totalMinutes: number; workTypes: string[]; byUser: EffortByUser[]; }
-interface EffortSummary { from: string; to: string; rows: EffortRow[]; }
+interface EffortProjectRow { projectName: string; clientName: string; totalMinutes: number; workTypes: string[]; byUser: EffortByUser[]; }
+interface EffortClientRow {
+  clientName: string; totalMinutes: number; projectCount: number; engineerCount: number;
+  topEngineerName: string | null; concentrationPct: number; topWorkType: string | null; trendPct: number | null;
+  projects: EffortProjectRow[];
+}
+interface EffortSummary { from: string; to: string; clients: EffortClientRow[]; }
 
 function fmt(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -183,7 +188,7 @@ export default function AdminReportsPage() {
     return { total, avgMinutes, overCount };
   }, [worktime, period, isCustom]);
 
-  const effortTotalMinutes = useMemo(() => (effort ? effort.rows.reduce((s, r) => s + r.totalMinutes, 0) : 0), [effort]);
+  const effortTotalMinutes = useMemo(() => (effort ? effort.clients.reduce((s, c) => s + c.totalMinutes, 0) : 0), [effort]);
 
   return (
     <div className="admin-shell">
@@ -338,10 +343,10 @@ export default function AdminReportsPage() {
         </div>
       )}
 
-      {/* 프로젝트별 공수 + 작업유형 드롭다운 필터 */}
+      {/* 고객사별 공수 현황 — 관리 판단 기준(총 투입시간/편중도/증감/주요유형) 중심으로 재구성 */}
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-          <h2>🛠️ 프로젝트별 공수(工數) — {rangeLabel}</h2>
+          <h2>🛠️ 고객사별 공수(工數) 현황 — {rangeLabel}</h2>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <select className="field-select" style={{ margin: 0, width: 'auto' }} value={workTypeFilter} onChange={(e) => setWorkTypeFilter(e.target.value)}>
               <option value="ALL">전체 작업유형</option>
@@ -354,8 +359,11 @@ export default function AdminReportsPage() {
             </button>
           </div>
         </div>
+        <p style={{ fontSize: 12, color: '#868e96', marginTop: -6, marginBottom: 12 }}>
+          직전 동일기간 대비 증감률, 엔지니어 편중도(한 명이 몇 %를 담당하는지)를 같이 보여드려서 재계약·리스크 판단에 참고하실 수 있습니다.
+        </p>
 
-        {effort && effort.rows.length > 0 && (
+        {effort && effort.clients.length > 0 && (
           <div className="macro-tile" style={{ borderLeftColor: '#2f6feb', marginBottom: 12, display: 'inline-flex' }}>
             <div className="macro-tile-icon">⏱️</div>
             <div>
@@ -366,31 +374,77 @@ export default function AdminReportsPage() {
         )}
 
         {!effort && <div className="board-empty">불러오는 중...</div>}
-        {effort && effort.rows.length === 0 && <div className="board-empty">이 조건에 등록된(완료된) 공수기록이 없습니다.</div>}
-        {effort && effort.rows.map((row) => {
-          const key = `${row.clientName}::${row.projectName}`;
-          const isExpanded = expandedProjects[key] ?? false;
+        {effort && effort.clients.length === 0 && <div className="board-empty">이 조건에 등록된(완료된) 공수기록이 없습니다.</div>}
+        {effort && effort.clients.map((client) => {
+          const isClientExpanded = expandedProjects[`client::${client.clientName}`] ?? false;
           return (
-            <div key={key} className="board-column" style={{ marginBottom: 10, borderTopColor: '#2f6feb' }}>
-              <div className="board-column-header" style={{ cursor: 'pointer' }} onClick={() => toggleProject(key)}>
+            <div key={client.clientName} className="board-column" style={{ marginBottom: 10, borderTopColor: '#2f6feb' }}>
+              <div className="board-column-header" style={{ cursor: 'pointer' }} onClick={() => toggleProject(`client::${client.clientName}`)}>
                 <span>
-                  <span style={{ display: 'inline-block', width: 12, transform: isExpanded ? 'rotate(90deg)' : 'none' }}>▸</span>
-                  {' '}{row.workTypes.map((t) => WORK_TYPE_ICONS[t] ?? '📌').join('')} {row.projectName}
-                  <span style={{ color: '#868e96', fontWeight: 400 }}> · {row.clientName}</span>
+                  <span style={{ display: 'inline-block', width: 12, transform: isClientExpanded ? 'rotate(90deg)' : 'none' }}>▸</span>
+                  {' '}🏢 {client.clientName}
+                  <span style={{ color: '#868e96', fontWeight: 400 }}> · 프로젝트 {client.projectCount}개 · 엔지니어 {client.engineerCount}명</span>
                 </span>
-                <span className="count">{hoursLabel(row.totalMinutes)}</span>
+                <span className="count">{hoursLabel(client.totalMinutes)}</span>
               </div>
-              {isExpanded && row.byUser.map((u) => (
-                <div className="employee-chip" key={u.userId}>
-                  <div className="chip-row">
-                    <div className="chip-avatar" style={{ background: '#2f6feb' }}>{u.name.slice(-2)}</div>
-                    <div style={{ flex: 1 }}>
-                      <div className="name">{u.name}</div>
-                      <div className="meta">{hoursLabel(u.minutes)}</div>
+
+              {/* 관리 판단용 배지들 */}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '8px 14px' }}>
+                {client.topWorkType && (
+                  <span style={{ fontSize: 12, background: '#f1f3f5', borderRadius: 999, padding: '3px 10px' }}>
+                    {WORK_TYPE_ICONS[client.topWorkType] ?? '📌'} 주요유형: {client.topWorkType}
+                  </span>
+                )}
+                {client.topEngineerName && (
+                  <span
+                    style={{
+                      fontSize: 12, borderRadius: 999, padding: '3px 10px',
+                      background: client.concentrationPct >= 70 ? '#fff0e6' : '#f1f3f5',
+                      color: client.concentrationPct >= 70 ? '#e8590c' : '#495057',
+                    }}
+                  >
+                    {client.concentrationPct >= 70 ? '⚠ ' : ''}담당 편중: {client.topEngineerName} {client.concentrationPct}%
+                  </span>
+                )}
+                {client.trendPct !== null && (
+                  <span
+                    style={{
+                      fontSize: 12, borderRadius: 999, padding: '3px 10px',
+                      background: client.trendPct > 0 ? '#eaf1ff' : client.trendPct < 0 ? '#f1f3f5' : '#f1f3f5',
+                      color: client.trendPct > 0 ? '#2f6feb' : client.trendPct < 0 ? '#868e96' : '#495057',
+                    }}
+                  >
+                    {client.trendPct > 0 ? '📈' : client.trendPct < 0 ? '📉' : '➖'} 전기간 대비 {client.trendPct > 0 ? '+' : ''}{client.trendPct}%
+                  </span>
+                )}
+              </div>
+
+              {isClientExpanded && client.projects.map((row) => {
+                const key = `${row.clientName}::${row.projectName}`;
+                const isProjectExpanded = expandedProjects[key] ?? false;
+                return (
+                  <div key={key} style={{ margin: '0 14px 8px', border: '1px solid #eee', borderRadius: 8 }}>
+                    <div className="board-column-header" style={{ cursor: 'pointer', padding: '8px 10px' }} onClick={() => toggleProject(key)}>
+                      <span>
+                        <span style={{ display: 'inline-block', width: 12, transform: isProjectExpanded ? 'rotate(90deg)' : 'none' }}>▸</span>
+                        {' '}{row.workTypes.map((t) => WORK_TYPE_ICONS[t] ?? '📌').join('')} {row.projectName}
+                      </span>
+                      <span className="count">{hoursLabel(row.totalMinutes)}</span>
                     </div>
+                    {isProjectExpanded && row.byUser.map((u) => (
+                      <div className="employee-chip" key={u.userId} style={{ margin: '0 10px 8px' }}>
+                        <div className="chip-row">
+                          <div className="chip-avatar" style={{ background: '#2f6feb' }}>{u.name.slice(-2)}</div>
+                          <div style={{ flex: 1 }}>
+                            <div className="name">{u.name}</div>
+                            <div className="meta">{hoursLabel(u.minutes)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           );
         })}

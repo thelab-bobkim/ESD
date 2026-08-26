@@ -67,15 +67,28 @@ reportsRouter.get('/effort-summary', async (req, res) => {
   }
   const { from, to } = parsed.data;
   const workType = typeof req.query.workType === 'string' && req.query.workType !== 'ALL' ? req.query.workType : undefined;
-  const logs = await prisma.effortLog.findMany({
-    where: {
-      workDate: { gte: new Date(from), lte: new Date(to) },
-      minutes: { not: null },
-      ...(workType ? { workType } : {}),
-    },
-    include: { user: { select: { name: true, employeeNo: true } } },
-    orderBy: { workDate: 'desc' },
-  });
+
+  const fetchLogs = (fromD: Date, toD: Date) =>
+    prisma.effortLog.findMany({
+      where: { workDate: { gte: fromD, lte: toD }, minutes: { not: null }, ...(workType ? { workType } : {}) },
+      include: { user: { select: { name: true, employeeNo: true } } },
+      orderBy: { workDate: 'desc' },
+    });
+
+  const fromDate = new Date(from);
+  const toDate = new Date(to);
+  const logs = await fetchLogs(fromDate, toDate);
+
+  // 전기간(직전 동일 길이 구간) 대비 증감을 보여주기 위해 이전 구간도 같이 집계한다.
+  const periodMs = toDate.getTime() - fromDate.getTime() + 24 * 60 * 60 * 1000;
+  const prevTo = new Date(fromDate.getTime() - 24 * 60 * 60 * 1000);
+  const prevFrom = new Date(prevTo.getTime() - periodMs + 24 * 60 * 60 * 1000);
+  const prevLogs = await fetchLogs(prevFrom, prevTo);
+  const prevByClient = new Map<string, number>();
+  for (const l of prevLogs) {
+    const key = l.clientName || '(미지정)';
+    prevByClient.set(key, (prevByClient.get(key) ?? 0) + (l.minutes ?? 0));
+  }
 
   interface ProjectGroup {
     projectName: string;
@@ -96,17 +109,64 @@ reportsRouter.get('/effort-summary', async (req, res) => {
     byProject.set(key, group);
   }
 
-  const rows = Array.from(byProject.values())
-    .map((g) => ({
-      projectName: g.projectName,
-      clientName: g.clientName,
-      totalMinutes: g.totalMinutes,
-      workTypes: Array.from(g.workTypes),
-      byUser: Array.from(g.byUser.values()).sort((a, b) => b.minutes - a.minutes),
-    }))
+  const projectRows = Array.from(byProject.values()).map((g) => ({
+    projectName: g.projectName,
+    clientName: g.clientName,
+    totalMinutes: g.totalMinutes,
+    workTypes: Array.from(g.workTypes),
+    byUser: Array.from(g.byUser.values()).sort((a, b) => b.minutes - a.minutes),
+  }));
+
+  // 고객사 단위로 다시 묶는다 — 관리 판단은 프로젝트 단위가 아니라 "이 고객사에 총 몇 시간 썼는지"가 기준이라서.
+  interface ClientGroup {
+    clientName: string;
+    totalMinutes: number;
+    projects: typeof projectRows;
+    engineerMinutes: Map<string, { userId: string; name: string; minutes: number }>;
+    workTypeMinutes: Map<string, number>;
+  }
+  const byClient = new Map<string, ClientGroup>();
+  for (const p of projectRows) {
+    const group = byClient.get(p.clientName) ?? {
+      clientName: p.clientName, totalMinutes: 0, projects: [], engineerMinutes: new Map(), workTypeMinutes: new Map(),
+    };
+    group.totalMinutes += p.totalMinutes;
+    group.projects.push(p);
+    for (const u of p.byUser) {
+      const cur = group.engineerMinutes.get(u.userId) ?? { userId: u.userId, name: u.name, minutes: 0 };
+      cur.minutes += u.minutes;
+      group.engineerMinutes.set(u.userId, cur);
+    }
+    for (const wt of p.workTypes) {
+      // workTypes는 프로젝트 안에 섞인 유형 목록이라, 프로젝트 총 시간을 유형 수로 나눠 근사치로 배분한다.
+      group.workTypeMinutes.set(wt, (group.workTypeMinutes.get(wt) ?? 0) + p.totalMinutes / p.workTypes.length);
+    }
+    byClient.set(p.clientName, group);
+  }
+
+  const clients = Array.from(byClient.values())
+    .map((g) => {
+      const engineers = Array.from(g.engineerMinutes.values()).sort((a, b) => b.minutes - a.minutes);
+      const topEngineer = engineers[0] ?? null;
+      const concentrationPct = topEngineer && g.totalMinutes > 0 ? Math.round((topEngineer.minutes / g.totalMinutes) * 100) : 0;
+      const topWorkType = Array.from(g.workTypeMinutes.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+      const prevMinutes = prevByClient.get(g.clientName) ?? 0;
+      const trendPct = prevMinutes > 0 ? Math.round(((g.totalMinutes - prevMinutes) / prevMinutes) * 100) : null;
+      return {
+        clientName: g.clientName,
+        totalMinutes: g.totalMinutes,
+        projectCount: g.projects.length,
+        engineerCount: engineers.length,
+        topEngineerName: topEngineer?.name ?? null,
+        concentrationPct, // 한 엔지니어가 이 고객사 공수의 몇 %를 담당하는지(편중도)
+        topWorkType,
+        trendPct, // 직전 동일기간 대비 증감률(%). 이전 데이터 없으면 null
+        projects: g.projects.sort((a, b) => b.totalMinutes - a.totalMinutes),
+      };
+    })
     .sort((a, b) => b.totalMinutes - a.totalMinutes);
 
-  return res.json({ success: true, data: { from, to, rows } });
+  return res.json({ success: true, data: { from, to, clients } });
 });
 
 reportsRouter.get('/effort-export', async (req, res) => {
