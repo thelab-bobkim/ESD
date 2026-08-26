@@ -199,3 +199,60 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
   }));
   return res.json({ success: true, data: { date: parsed.data.date, rows } });
 });
+
+const dailyTimelineSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  userId: z.string().min(1),
+});
+
+/**
+ * 특정 직원의 특정 날짜 상태변화 타임라인 — "몇시부터 몇시까지 뭘 했는지"를 순서대로 보여준다.
+ * 각 구간의 소요시간은 "다음 상태로 바뀐 시각(또는 퇴근시각)"과의 차이로 계산한다.
+ */
+reportsRouter.get('/daily-timeline', async (req, res) => {
+  const parsed = dailyTimelineSchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'date, userId가 필요합니다.' } });
+  }
+  const { date, userId } = parsed.data;
+  const dayStart = new Date(`${date}T00:00:00.000Z`);
+  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+  const user = await prisma.user.findUnique({ where: { id: userId }, include: { department: true } });
+  if (!user) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '직원을 찾을 수 없습니다.' } });
+  }
+
+  const record = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate: dayStart } } });
+  const logs = await prisma.statusChangeLog.findMany({
+    where: { userId, changedAt: { gte: dayStart, lt: dayEnd } },
+    orderBy: { changedAt: 'asc' },
+  });
+
+  const timeline = logs.map((log, i) => {
+    const nextChangedAt: Date | null = logs[i + 1]?.changedAt ?? record?.clockOutAt ?? null;
+    const isOngoing = !nextChangedAt;
+    const endTime = nextChangedAt ?? new Date();
+    const durationMinutes = Math.max(0, Math.round((endTime.getTime() - log.changedAt.getTime()) / 60000));
+    return {
+      status: log.status,
+      changedAt: log.changedAt,
+      note: log.note,
+      durationMinutes,
+      ongoing: isOngoing,
+    };
+  });
+
+  return res.json({
+    success: true,
+    data: {
+      date,
+      name: user.name,
+      department: user.department.name,
+      clockInAt: record?.clockInAt ?? null,
+      clockOutAt: record?.clockOutAt ?? null,
+      totalWorkedMinutes: record?.totalWorkedMinutes ?? null,
+      timeline,
+    },
+  });
+});

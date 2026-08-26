@@ -8,6 +8,22 @@ const PERIOD_LABELS: Record<Period, string> = { day: '일', week: '주', month: 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 const WORK_TYPE_ICONS: Record<string, string> = { 정기점검: '🔧', 신규설치: '🆕', 장애대응: '🚨', 미팅: '🤝', 기타: '📌' };
 
+// 타임라인에 표시할 상태별 아이콘/라벨/색상 (직원화면 STATUS_META와 동일한 코드 목록)
+const TIMELINE_STATUS_META: Record<string, { label: string; icon: string; color: string }> = {
+  REMOTE: { label: '재택(집)', icon: '🏠', color: '#6741d9' },
+  HQ_WORKING: { label: '본사근무', icon: '🏢', color: '#2f9e44' },
+  RESIDENT_ONSITE: { label: '고객사상주', icon: '🏬', color: '#2f9e44' },
+  OFFSITE: { label: '외근', icon: '🚗', color: '#1c7ed6' },
+  MOVING: { label: '이동중', icon: '🚙', color: '#1c7ed6' },
+  MEETING: { label: '회의중', icon: '👥', color: '#1c7ed6' },
+  CLIENT_MEETING: { label: '고객사미팅', icon: '🤝', color: '#1c7ed6' },
+  CLIENT_WORK: { label: '고객사작업', icon: '🛠️', color: '#1c7ed6' },
+  NIGHT_WORK: { label: '야간작업', icon: '🌙', color: '#f08c00' },
+  BUSINESS_TRIP: { label: '출장', icon: '✈️', color: '#1c7ed6' },
+  ALT_DAY_OFF: { label: '대체휴무', icon: '🏖️', color: '#868e96' },
+  ON_LEAVE: { label: '휴가', icon: '🌴', color: '#868e96' },
+};
+
 interface WorktimeRow {
   userId: string; name: string; employeeNo: string; department: string; totalMinutes: number; days: number;
 }
@@ -18,6 +34,13 @@ interface AttendanceDetailRow {
   clockInAt: string | null; clockOutAt: string | null; totalWorkedMinutes: number | null;
 }
 interface AttendanceDetail { date: string; rows: AttendanceDetailRow[]; }
+
+interface TimelineEntry { status: string; changedAt: string; note: string | null; durationMinutes: number; ongoing: boolean; }
+interface DailyTimeline {
+  date: string; name: string; department: string;
+  clockInAt: string | null; clockOutAt: string | null; totalWorkedMinutes: number | null;
+  timeline: TimelineEntry[];
+}
 
 interface EffortByUser { userId: string; name: string; minutes: number; }
 interface EffortRow { projectName: string; clientName: string; totalMinutes: number; workTypes: string[]; byUser: EffortByUser[]; }
@@ -83,6 +106,16 @@ export default function AdminReportsPage() {
   // 년/월/일을 직접 선택하는 기간 — 지정하면 위 탭(일/주/월/년)보다 우선한다. 출퇴근·근로시간·공수 전부 공통 적용.
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
+  const [timelineTarget, setTimelineTarget] = useState<{ userId: string; date: string } | null>(null);
+  const [timeline, setTimeline] = useState<DailyTimeline | null>(null);
+
+  function openTimeline(userId: string, date: string) {
+    setTimelineTarget({ userId, date });
+    setTimeline(null);
+    apiFetch<DailyTimeline>(`/reports/daily-timeline?date=${date}&userId=${userId}`)
+      .then(setTimeline)
+      .catch((err) => setError(err instanceof Error ? err.message : '타임라인을 불러오지 못했습니다.'));
+  }
 
   const tabRange = useMemo(() => computeRange(period, anchor), [period, anchor]);
   const isCustom = Boolean(customFrom && customTo);
@@ -243,11 +276,12 @@ export default function AdminReportsPage() {
               </thead>
               <tbody>
                 {attendanceDetail.rows.map((r) => (
-                  <tr key={r.userId}>
+                  <tr key={r.userId} style={{ cursor: 'pointer' }} onClick={() => openTimeline(r.userId, attendanceDetail.date)}>
                     <td>
                       <div className="chip-row">
                         <div className="chip-avatar" style={{ background: r.clockOutAt ? '#2f9e44' : '#f08c00' }}>{r.name.slice(-2)}</div>
                         {r.name}
+                        <span style={{ fontSize: 11, color: '#2f6feb', marginLeft: 4 }}>상세보기 ▸</span>
                       </div>
                     </td>
                     <td>{r.department}</td>
@@ -282,11 +316,12 @@ export default function AdminReportsPage() {
                 {worktime.rows.map((r) => {
                   const over = period === 'week' && !isCustom && r.totalMinutes > WEEKLY_LIMIT_MINUTES;
                   return (
-                    <tr key={r.userId}>
+                    <tr key={r.userId} style={{ cursor: 'pointer' }} onClick={() => openTimeline(r.userId, fmt(new Date()))}>
                       <td>
                         <div className="chip-row">
                           <div className="chip-avatar" style={{ background: over ? '#e03131' : '#2f6feb' }}>{r.name.slice(-2)}</div>
                           {r.name}
+                          <span style={{ fontSize: 11, color: '#2f6feb', marginLeft: 4 }}>오늘 상세 ▸</span>
                         </div>
                       </td>
                       <td>{r.department}</td>
@@ -360,6 +395,42 @@ export default function AdminReportsPage() {
           );
         })}
       </div>
+
+      {timelineTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 20, maxWidth: 560, width: '100%', maxHeight: '85vh', overflowY: 'auto' }}>
+            {!timeline && <div className="board-empty">불러오는 중...</div>}
+            {timeline && (
+              <>
+                <h2 style={{ marginTop: 0 }}>🕒 {timeline.name}님의 {timeline.date} 상세 타임라인</h2>
+                <p style={{ fontSize: 13, color: '#495057' }}>
+                  {timeline.department} · 출근 {fmtTime(timeline.clockInAt)} · 퇴근 {timeline.clockOutAt ? fmtTime(timeline.clockOutAt) : '진행중'}
+                  {timeline.totalWorkedMinutes != null && ` · 근무시간 ${hoursLabel(timeline.totalWorkedMinutes)}`}
+                </p>
+                {timeline.timeline.length === 0 && <div className="board-empty">이 날짜에 등록된 상태 변경이 없습니다.</div>}
+                {timeline.timeline.map((t, i) => {
+                  const meta = TIMELINE_STATUS_META[t.status] ?? { label: t.status, icon: '❔', color: '#868e96' };
+                  return (
+                    <div key={i} style={{ display: 'flex', gap: 12, padding: '10px 0', borderBottom: '1px solid #f1f3f5' }}>
+                      <div style={{ fontSize: 20 }}>{meta.icon}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <strong style={{ color: meta.color }}>{meta.label}</strong>
+                          <span style={{ fontSize: 13, color: '#495057' }}>
+                            {fmtTime(t.changedAt)} · {t.ongoing ? <span style={{ color: '#f08c00' }}>진행중</span> : hoursLabel(t.durationMinutes)}
+                          </span>
+                        </div>
+                        {t.note && <div style={{ fontSize: 12, color: '#868e96', marginTop: 2, fontStyle: 'italic' }}>“{t.note}”</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+            <button className="secondary" style={{ marginTop: 12 }} onClick={() => { setTimelineTarget(null); setTimeline(null); }}>닫기</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
