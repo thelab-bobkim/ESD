@@ -94,6 +94,8 @@ export default function EmployeeHome() {
   const [myStatus, setMyStatus] = useState<MeAttendance | null>(null);
   const currentStatus = myStatus?.latestStatus;
   const clockedOut = Boolean(myStatus?.record?.clockOutAt);
+  // 관리자 권한 계정은 퇴근 후에도 테스트할 수 있게 상태변경 잠금에서 예외로 둔다.
+  const isAdminAccount = Boolean(me?.roles?.some((r) => ['SYSTEM_ADMIN', 'HR_ADMIN'].includes(r)));
   const [weekly, setWeekly] = useState<WeeklySummary | null>(null);
 
   // 고객사미팅/고객사작업/야간작업 공용 상세입력 폼 상태
@@ -449,15 +451,20 @@ export default function EmployeeHome() {
 
           <div className="card">
             <h2>지금 뭐 하고 계세요?</h2>
-            {clockedOut && (
+            {clockedOut && !isAdminAccount && (
               <div className="board-empty" style={{ marginBottom: 8, color: '#f08c00', fontWeight: 600 }}>
                 🔒 퇴근 처리되어 상태를 더 이상 바꿀 수 없습니다 (야간작업은 계속 등록 가능해요). 내일 다시 만나요!
+              </div>
+            )}
+            {clockedOut && isAdminAccount && (
+              <div className="board-empty" style={{ marginBottom: 8, color: '#868e96' }}>
+                🔓 관리자 계정이라 퇴근 후에도 계속 상태를 테스트하실 수 있어요.
               </div>
             )}
             <div className="status-icon-grid">
               {STATUS_ORDER.map((code) => {
                 // 퇴근(낮근무 종료) 후에도 야간작업자는 계속 상태를 등록해야 하니 예외로 둔다.
-                const isLocked = clockedOut && code !== 'NIGHT_WORK';
+                const isLocked = clockedOut && code !== 'NIGHT_WORK' && !isAdminAccount;
                 return (
                   <div
                     key={code}
