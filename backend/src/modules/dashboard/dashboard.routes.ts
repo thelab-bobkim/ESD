@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
+import { realDayWindow } from '../../common/attendance-helpers';
 
 export const dashboardRouter = Router();
 dashboardRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'));
@@ -22,8 +23,8 @@ function dateOnlyUTC(d?: Date): Date {
  * forDate를 안 넘기면 오늘 기준(라이브 상황판), 과거 날짜를 넘기면 그날의 스냅샷(캘린더 조회용)이 된다.
  */
 async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC()) {
-  const dayStart = forDate;
-  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+  const workDateLabel = forDate;
+  const { start: dayStart, end: dayEnd } = realDayWindow(workDateLabel);
 
   const users = await prisma.user.findMany({
     where: {
@@ -48,7 +49,7 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
       // 단, 야간작업자는 퇴근 후에도 계속 상태를 등록할 수 있으므로, 퇴근시각 이후 새로 등록된
       // 상태가 있으면(=야간작업 등) 그 상태를 그대로 보여주고 "퇴근완료"로 덮어쓰지 않는다.
       const attendanceOnDay = await prisma.attendanceRecord.findUnique({
-        where: { userId_workDate: { userId: u.id, workDate: dayStart } },
+        where: { userId_workDate: { userId: u.id, workDate: workDateLabel } },
       });
       const clockedOut = Boolean(attendanceOnDay?.clockOutAt)
         && (!statusOnDay || statusOnDay.changedAt <= attendanceOnDay!.clockOutAt!);

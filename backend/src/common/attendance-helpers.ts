@@ -12,6 +12,19 @@ export function todayDateOnly(): Date {
 }
 
 /**
+ * workDate 라벨(위 todayDateOnly()가 반환하는, "그 날짜"를 나타내는 UTC자정 Date)이 실제로
+ * 가리키는 "진짜 시간 범위"를 계산한다. 하루의 경계가 자정이 아니라 새벽 3시(KST)이므로,
+ * workDate로 표시된 날의 실제 범위는 [그 날짜 UTC자정 - 6시간, +18시간) = KST 새벽3시~다음날 새벽3시다.
+ * status_change_logs.changed_at 처럼 "실제 타임스탬프" 컬럼을 이 범위로 걸러야 할 때 반드시 이 함수를 써야
+ * 한다 — workDate ~ workDate+24시간으로 그냥 계산하면 새벽 3시 이전에 등록된 기록이 빠져버린다.
+ */
+export function realDayWindow(workDateLabel: Date): { start: Date; end: Date } {
+  const start = new Date(workDateLabel.getTime() - 6 * 60 * 60 * 1000);
+  const end = new Date(workDateLabel.getTime() + 18 * 60 * 60 * 1000);
+  return { start, end };
+}
+
+/**
  * 주52시간제 대응: "출근"의 시작을 실제 업무 시작 시점(본사근무/고객사상주/고객사미팅/고객사작업
  * 상태로 바뀌거나 고객사 도착체크)으로 자동 인식한다. 그날 이미 출근 기록이 있으면 아무것도 하지
  * 않는다 — 그날 가장 먼저 "일을 시작한" 시점만 출근시각으로 남는다. 실질적인 하루 근무 종료(퇴근

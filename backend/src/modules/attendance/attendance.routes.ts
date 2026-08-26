@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime } from '../../common/attendance-helpers';
+import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
 import { checkLocationMatch } from '../../common/location';
 import { getPolicyNumber, getPolicyString } from '../../common/policy-engine/policy-engine';
@@ -32,8 +32,8 @@ attendanceRouter.post('/clock-in', async (req, res) => {
 
   // "출근"만 누르고 9개 상태 아이콘을 따로 안 고르면 계속 "상태 미확인"으로 남던 문제를 막기 위해,
   // 오늘 아직 상태를 하나도 안 골랐다면 일단 "본사근무"로 잠정 설정한다(직원이 실제 상태를 고르면 그게 우선).
-  const dayEnd = new Date(workDate.getTime() + 24 * 60 * 60 * 1000);
-  const todayStatus = await prisma.statusChangeLog.findFirst({ where: { userId, changedAt: { gte: workDate, lt: dayEnd } } });
+  const { start: dayStartReal, end: dayEndReal } = realDayWindow(workDate);
+  const todayStatus = await prisma.statusChangeLog.findFirst({ where: { userId, changedAt: { gte: dayStartReal, lt: dayEndReal } } });
   if (!todayStatus) {
     await prisma.statusChangeLog.create({
       data: { userId, status: 'HQ_WORKING', source: 'WEB', note: '출근 버튼 클릭 시 잠정 설정(실제 상태로 바꾸면 그 값이 우선함)' },
@@ -222,13 +222,13 @@ attendanceRouter.post('/status', async (req, res) => {
 attendanceRouter.get('/me', async (req, res) => {
   const userId = req.authUser!.userId;
   const workDate = todayDateOnly();
-  const dayEnd = new Date(workDate.getTime() + 24 * 60 * 60 * 1000);
+  const { start: dayStartReal, end: dayEndReal } = realDayWindow(workDate);
   const record = await prisma.attendanceRecord.findUnique({
     where: { userId_workDate: { userId, workDate } },
     include: { breakSessions: true },
   });
   const latestStatus = await prisma.statusChangeLog.findFirst({
-    where: { userId, changedAt: { gte: workDate, lt: dayEnd } },
+    where: { userId, changedAt: { gte: dayStartReal, lt: dayEndReal } },
     orderBy: { changedAt: 'desc' },
   });
   return res.json({ success: true, data: { record, latestStatus } });

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
+import { realDayWindow } from '../../common/attendance-helpers';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN', 'TEAM_LEAD'));
@@ -277,15 +278,15 @@ reportsRouter.get('/daily-timeline', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'date, userId가 필요합니다.' } });
   }
   const { date, userId } = parsed.data;
-  const dayStart = new Date(`${date}T00:00:00.000Z`);
-  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+  const workDateLabel = new Date(`${date}T00:00:00.000Z`);
+  const { start: dayStart, end: dayEnd } = realDayWindow(workDateLabel);
 
   const user = await prisma.user.findUnique({ where: { id: userId }, include: { department: true } });
   if (!user) {
     return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '직원을 찾을 수 없습니다.' } });
   }
 
-  const record = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate: dayStart } } });
+  const record = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate: workDateLabel } } });
   const logs = await prisma.statusChangeLog.findMany({
     where: { userId, changedAt: { gte: dayStart, lt: dayEnd } },
     orderBy: { changedAt: 'asc' },
