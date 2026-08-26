@@ -128,7 +128,7 @@ reportsRouter.get('/effort-summary', async (req, res) => {
   const byClient = new Map<string, ClientGroup>();
   for (const p of projectRows) {
     const group = byClient.get(p.clientName) ?? {
-      clientName: p.clientName, totalMinutes: 0, projects: [], engineerMinutes: new Map(), workTypeMinutes: new Map(),
+      clientName: p.clientName, totalMinutes: 0, projects: [] as typeof projectRows, engineerMinutes: new Map(), workTypeMinutes: new Map(),
     };
     group.totalMinutes += p.totalMinutes;
     group.projects.push(p);
