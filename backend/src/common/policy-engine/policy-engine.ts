@@ -68,10 +68,11 @@ export async function getPolicyJSON<T = unknown>(key: string, fallback: T, depar
 }
 
 export async function setPolicyString(key: string, value: string, departmentId: string | null = null): Promise<void> {
-  await prisma.policySetting.upsert({
-    where: { key_scopeDepartmentId: { key, scopeDepartmentId: departmentId } },
-    update: { value, valueType: 'STRING' },
-    create: { key, value, valueType: 'STRING', scopeDepartmentId: departmentId },
-  });
+  const existing = await prisma.policySetting.findFirst({ where: { key, scopeDepartmentId: departmentId } });
+  if (existing) {
+    await prisma.policySetting.update({ where: { id: existing.id }, data: { value, valueType: 'STRING' } });
+  } else {
+    await prisma.policySetting.create({ data: { key, value, valueType: 'STRING', scopeDepartmentId: departmentId } });
+  }
   invalidatePolicyCache();
 }
