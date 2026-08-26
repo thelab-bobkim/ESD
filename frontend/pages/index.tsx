@@ -21,16 +21,22 @@ const STATUS_META: Record<string, { label: string; icon: string }> = {
 };
 const STATUS_ORDER = ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP', 'ALT_DAY_OFF', 'ON_LEAVE'];
 
-// 이 상태들은 클릭 시 오른쪽에 상세입력 폼을 띄운다. 본사근무는 "업무일지" 성격, 나머지는 고객사 방문 기록.
-// 출장은 목적지/기간/목적이 사전에 정해진 계획 정보라 항상 바로 폼을 띄운다(즉시등록 대상 아님).
-const DETAIL_FORM_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP']);
+// 이 상태들은 클릭 시 오른쪽에 상세입력 폼을 띄운다.
+const DETAIL_FORM_STATUSES = new Set([
+  'REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP', 'ON_LEAVE',
+]);
 // 이 상태들은 처음 누르면 상세폼 없이 즉시 등록된다(상황판이 바로 반영됨). 이미 그 상태인데 다시
-// 누르면 그때 상세폼이 열려서 작업내용 등을 나중에 채워넣을 수 있다("작업 후 작성" 원칙).
-const QUICK_REGISTER_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+// 누르면 그때 상세폼이 열려서 세부내용을 나중에 채워넣을 수 있다("작업 후 작성" 원칙).
+// 출장/휴가는 사전에 정해진 계획 정보라 예외로 항상 바로 폼을 띄운다(즉시등록 대상 아님).
+const QUICK_REGISTER_STATUSES = new Set(['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
 // 이 상태들은 프로젝트별 공수(工數) 집계 대상이라 프로젝트명 필드가 필요하다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
+// 이 상태들은 "고객사명 + 업무내용"만 간단히 입력하는 단순폼이다(프로젝트/작업유형/시간 불필요).
+const SIMPLE_CLIENT_STATUSES = new Set(['REMOTE', 'RESIDENT_ONSITE']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
+// 본사근무는 고객사 작업과 성격이 달라서(기술지원/셀프스터디 등) 별도 유형 목록을 쓴다.
+const HQ_WORK_TYPE_OPTIONS = ['기술지원', '셀프스터디', '교육', '문서작성', '내부미팅', '기타'];
 const WEEKLY_LIMIT_MINUTES = 52 * 60;
 
 interface MeResponse {
@@ -50,6 +56,13 @@ function nowDateTimeLocal(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** <input type="date">에 넣을 "오늘" 기본값 (YYYY-MM-DD, 로컬시간 기준) */
+function todayDateLocal(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 function greetingByHour(): string {
@@ -111,6 +124,15 @@ export default function EmployeeHome() {
   const [tripStart, setTripStart] = useState('');
   const [tripEnd, setTripEnd] = useState('');
   const [tripPurpose, setTripPurpose] = useState('');
+  // 이동중 전용 필드 (출발지/목적지)
+  const [movingFrom, setMovingFrom] = useState('');
+  const [movingTo, setMovingTo] = useState('');
+  // 휴가 전용 필드 (기간/행선지/비상연락처)
+  const [leaveStart, setLeaveStart] = useState('');
+  const [leaveEnd, setLeaveEnd] = useState('');
+  const [leaveDestination, setLeaveDestination] = useState('');
+  const [leaveContact, setLeaveContact] = useState('');
+  const detailFormRef = useRef<HTMLDivElement | null>(null);
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
 
@@ -215,29 +237,40 @@ export default function EmployeeHome() {
   function changeStatus(code: string, prefilledClientName?: string) {
     const alreadyInThisStatus = currentStatus?.status === code;
 
-    // 고객사미팅/고객사작업은 처음 누르면 상세폼 없이 바로 등록해서 상황판에 즉시 반영한다.
-    // ("작업내용은 작업 후에 작성" — 시작하는 시점엔 아직 쓸 내용이 없는 게 당연하므로.)
+    // 즉시등록 대상은 처음 누르면 상세폼 없이 바로 등록해서 상황판에 즉시 반영한다.
+    // ("세부내용은 나중에 작성" — 시작하는 시점엔 아직 쓸 내용이 없는 게 당연하므로.)
     if (QUICK_REGISTER_STATUSES.has(code) && !alreadyInThisStatus) {
-      const body: Record<string, unknown> = { status: code, effort: { clientName: prefilledClientName || undefined, startTime: nowHHMM() } };
+      const body: Record<string, unknown> = { status: code };
+      if (['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK'].includes(code)) {
+        body.effort = { clientName: prefilledClientName || undefined, startTime: nowHHMM() };
+      }
       run(
         () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-        `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 (작업내용은 같은 아이콘을 다시 눌러서 추가하실 수 있어요)`
+        `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 (세부내용은 같은 아이콘을 다시 눌러서 추가하실 수 있어요)`
       );
       return;
     }
 
     if (DETAIL_FORM_STATUSES.has(code)) {
       setDetailStatus(code);
-      setClientName(prefilledClientName ?? '');
+      setClientName(prefilledClientName ?? (code === 'RESIDENT_ONSITE' ? (me?.assignedClient ?? '') : ''));
       setProjectName('');
       setWorkStart(nowHHMM());
       setWorkEnd('');
-      setWorkType(WORK_TYPE_OPTIONS[0]);
+      setWorkType(code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : WORK_TYPE_OPTIONS[0]);
       setWorkDetail('');
       setTripDestination('');
       setTripStart(nowDateTimeLocal());
       setTripEnd('');
       setTripPurpose('');
+      setMovingFrom('');
+      setMovingTo('');
+      setLeaveStart(todayDateLocal());
+      setLeaveEnd(todayDateLocal());
+      setLeaveDestination('');
+      setLeaveContact('');
+      // 모바일에서 폼이 화면 아래로 밀려서 "아무 반응 없다"고 느껴지지 않게, 폼으로 스크롤을 옮겨준다.
+      setTimeout(() => detailFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
       return;
     }
     run(
@@ -256,17 +289,35 @@ export default function EmployeeHome() {
       const body = {
         status: code,
         note,
-        businessTrip: {
-          destination: tripDestination,
-          purpose: tripPurpose,
-          startAt: tripStart,
-          endAt: tripEnd || undefined,
-        },
+        businessTrip: { destination: tripDestination, purpose: tripPurpose, startAt: tripStart, endAt: tripEnd || undefined },
       };
-      run(
-        () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-        `출장(${tripDestination})이 등록되었습니다. 😊`
-      );
+      run(() => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }), `출장(${tripDestination})이 등록되었습니다. 😊`);
+      setDetailStatus(null);
+      return;
+    }
+
+    if (code === 'ON_LEAVE') {
+      if (!leaveStart || !leaveEnd) return;
+      const note = `휴가기간: ${leaveStart} ~ ${leaveEnd}${leaveDestination ? ` | 행선지: ${leaveDestination}` : ''}${leaveContact ? ` | 비상연락처: ${leaveContact}` : ''}`;
+      run(() => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: code, note }) }), '휴가가 등록되었습니다. 😊');
+      setDetailStatus(null);
+      return;
+    }
+
+    if (code === 'MOVING') {
+      if (!movingFrom.trim() || !movingTo.trim()) return;
+      const note = `${movingFrom} → ${movingTo}`;
+      run(() => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: code, note }) }), '이동경로가 등록되었습니다. 😊');
+      setDetailStatus(null);
+      return;
+    }
+
+    if (SIMPLE_CLIENT_STATUSES.has(code)) {
+      if (!workDetail.trim()) return;
+      const note = code === 'REMOTE'
+        ? `지원고객사: ${clientName || '-'} | 업무내용: ${workDetail}`
+        : `고객사: ${clientName || '-'} | 업무내용: ${workDetail}`;
+      run(() => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: code, note }) }), `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`);
       setDetailStatus(null);
       return;
     }
@@ -498,8 +549,8 @@ export default function EmployeeHome() {
           )}
         </div>
 
-        {/* 오른쪽 열: 고객사미팅/고객사작업/야간작업/출장 상세입력 폼 (왼쪽 열과 높이를 맞춤) */}
-        <div className="right-col-fill">
+        {/* 오른쪽 열: 상태별 상세입력 폼 (왼쪽 열과 높이를 맞춤) */}
+        <div className="right-col-fill" ref={detailFormRef}>
           {detailStatus === 'BUSINESS_TRIP' && (
             <div className="card right-col-card">
               <h2>✈️ 출장 등록</h2>
@@ -535,7 +586,69 @@ export default function EmployeeHome() {
             </div>
           )}
 
-          {detailStatus && detailStatus !== 'BUSINESS_TRIP' && (
+          {detailStatus === 'ON_LEAVE' && (
+            <div className="card right-col-card">
+              <h2>🌴 휴가 등록</h2>
+              <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+                * 휴가 시작일·종료일은 필수입니다. 행선지·비상연락처는 남겨두시면 급한 연락에 도움이 됩니다.
+              </p>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <label className="field-label">시작일</label>
+                  <input type="date" value={leaveStart} onChange={(e) => setLeaveStart(e.target.value)} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label className="field-label">종료일</label>
+                  <input type="date" value={leaveEnd} onChange={(e) => setLeaveEnd(e.target.value)} />
+                </div>
+              </div>
+              <label className="field-label">행선지(선택)</label>
+              <input value={leaveDestination} onChange={(e) => setLeaveDestination(e.target.value)} placeholder="예: 제주도, 국내(자택)" />
+              <label className="field-label">비상연락처(선택)</label>
+              <input value={leaveContact} onChange={(e) => setLeaveContact(e.target.value)} placeholder="예: 010-1234-5678" />
+              <button disabled={!leaveStart || !leaveEnd} onClick={submitDetailForm}>등록</button>
+              <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
+            </div>
+          )}
+
+          {detailStatus === 'MOVING' && (
+            <div className="card right-col-card">
+              <h2>🚙 이동경로 추가</h2>
+              <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+                * 이미 '이동중'으로 등록되어 있습니다. 어디서 어디로 이동하시는지 남겨주세요.
+              </p>
+              <label className="field-label">출발지</label>
+              <input value={movingFrom} onChange={(e) => setMovingFrom(e.target.value)} placeholder="예: 본사" />
+              <label className="field-label">목적지</label>
+              <input value={movingTo} onChange={(e) => setMovingTo(e.target.value)} placeholder="예: OO상사" />
+              <button disabled={!movingFrom.trim() || !movingTo.trim()} onClick={submitDetailForm}>등록</button>
+              <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
+            </div>
+          )}
+
+          {detailStatus && SIMPLE_CLIENT_STATUSES.has(detailStatus) && (
+            <div className="card right-col-card">
+              <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 내용 추가</h2>
+              <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+                * 이미 '{STATUS_META[detailStatus].label}'(으)로 등록되어 있습니다.
+                {detailStatus === 'REMOTE' ? ' 어떤 고객을 지원하고 계신지 남겨주세요.' : ' 어떤 업무로 상주 중이신지 남겨주세요.'}
+              </p>
+              <label className="field-label">{detailStatus === 'REMOTE' ? '지원 고객사' : '고객사명'}</label>
+              <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
+              <label className="field-label">업무내용</label>
+              <textarea
+                className="detail-textarea right-col-textarea"
+                rows={3}
+                placeholder={detailStatus === 'REMOTE' ? '예: OO상사 원격 장애대응' : '예: 서버 정기점검 및 모니터링'}
+                value={workDetail}
+                onChange={(e) => setWorkDetail(e.target.value)}
+              />
+              <button disabled={!workDetail.trim()} onClick={submitDetailForm}>등록</button>
+              <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
+            </div>
+          )}
+
+          {detailStatus && !SIMPLE_CLIENT_STATUSES.has(detailStatus) && !['BUSINESS_TRIP', 'ON_LEAVE', 'MOVING'].includes(detailStatus) && (
             <div className="card right-col-card">
               <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 내용 추가</h2>
               <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
@@ -556,7 +669,7 @@ export default function EmployeeHome() {
 
               <label className="field-label">작업 유형</label>
               <select className="field-select" value={workType} onChange={(e) => setWorkType(e.target.value)}>
-                {WORK_TYPE_OPTIONS.map((opt) => (
+                {(detailStatus === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS : WORK_TYPE_OPTIONS).map((opt) => (
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>
@@ -576,7 +689,7 @@ export default function EmployeeHome() {
               <textarea
                 className="detail-textarea right-col-textarea"
                 rows={3}
-                placeholder={detailStatus === 'HQ_WORKING' ? '예: 백업 정책서 작성, 사내 서버 점검' : '예: 서버 점검 및 백업 정책 협의'}
+                placeholder={detailStatus === 'HQ_WORKING' ? '예: 기술지원 - 백업 정책서 작성' : '예: 서버 점검 및 백업 정책 협의'}
                 value={workDetail}
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
