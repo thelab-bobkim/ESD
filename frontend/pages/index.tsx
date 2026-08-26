@@ -282,10 +282,10 @@ export default function EmployeeHome() {
       }
       run(
         () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-        code === 'BUSINESS_TRIP'
-          ? `상태가 '출장'(으)로 변경되었습니다. 😊 (목적지/기간/목적은 같은 아이콘을 다시 눌러서 입력해주세요)`
-          : `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 (세부내용은 같은 아이콘을 다시 눌러서 추가하실 수 있어요)`
+        `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요.`
       );
+      // 상태변경과 동시에 세부내용 입력폼도 바로 아래에 띄운다(두 번 누를 필요 없게).
+      openDetailForm(code, prefilledClientName);
       return;
     }
 
