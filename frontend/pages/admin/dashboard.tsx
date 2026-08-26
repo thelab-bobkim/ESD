@@ -23,7 +23,7 @@ const STATUS_META: Record<string, { label: string; icon: string; color: string }
 
 const STATUS_ORDER = [
   'HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'MOVING', 'MEETING',
-  'BUSINESS_TRIP', 'REMOTE', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'UNKNOWN',
+  'BUSINESS_TRIP', 'REMOTE', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE',
 ];
 
 // "근무중"으로 집계할 상태 — 요약 통계의 근무중 비율 계산에 사용
@@ -39,7 +39,6 @@ const MACRO_GROUPS: { key: string; label: string; icon: string; color: string; s
   { key: 'REMOTE', label: '재택', icon: '🏠', color: '#6741d9', statuses: ['REMOTE'] },
   { key: 'OFF', label: '휴무·야간', icon: '🏖️', color: '#868e96', statuses: ['NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE'] },
   { key: 'CLOCKED_OUT', label: '퇴근완료', icon: '🏁', color: '#495057', statuses: [] },
-  { key: 'UNKNOWN', label: '미확인', icon: '❔', color: '#e03131', statuses: ['UNKNOWN'] },
 ];
 
 interface EmployeeRow {
@@ -117,7 +116,7 @@ export default function AdminDashboard() {
   }, [board, deptFilter, search]);
 
   const grouped = useMemo(() => {
-    const map: Record<string, EmployeeRow[]> = { CLOCKED_OUT: [] };
+    const map: Record<string, EmployeeRow[]> = { CLOCKED_OUT: [], UNKNOWN: [] };
     for (const code of STATUS_ORDER) map[code] = [];
     for (const e of filteredEmployees) {
       if (e.clockedOut) {
