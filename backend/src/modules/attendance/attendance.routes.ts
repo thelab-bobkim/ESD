@@ -14,7 +14,7 @@ attendanceRouter.use(requireAuth);
 // 이 상태로 바뀌면 "실제 업무 시작"으로 보고 출근시각을 자동 인식한다(주52시간제 대응).
 const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
 // 이 상태는 프로젝트별 공수(工數) 기록 대상이다.
-const EFFORT_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
+const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
 
 /** 출근 처리(수동) — 위 자동인식 대상이 아닌 경우를 위한 수동 버튼 */
 attendanceRouter.post('/clock-in', async (req, res) => {

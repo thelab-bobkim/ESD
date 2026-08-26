@@ -20,10 +20,12 @@ const STATUS_META: Record<string, { label: string; icon: string }> = {
 };
 const STATUS_ORDER = ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE'];
 
-// 이 상태들은 클릭 시 오른쪽에 상세입력 폼을 띄운다.
-const DETAIL_FORM_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
-// 이 상태는 프로젝트별 공수(工數) 기록 대상이라 프로젝트명 필드가 필요하다.
-const EFFORT_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
+// 이 상태들은 클릭 시 오른쪽에 상세입력 폼을 띄운다. 본사근무는 "업무일지" 성격, 나머지는 고객사 방문 기록.
+const DETAIL_FORM_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+// 이 상태들은 프로젝트별 공수(工數) 집계 대상이라 프로젝트명 필드가 필요하다.
+const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
+// 이 상태들만 작업시작·작업완료 시간이 필수다(고객사 방문은 시간이 중요, 사내 업무일지는 내용이 더 중요).
+const REQUIRE_TIME_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 const WEEKLY_LIMIT_MINUTES = 52 * 60;
@@ -343,16 +345,25 @@ export default function EmployeeHome() {
         <div className="right-col-fill">
           {detailStatus && (
             <div className="card right-col-card">
-              <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 상세입력</h2>
-              <p style={{ fontSize: 12, color: '#e8590c', marginTop: -4, marginBottom: 10 }}>
-                * 작업시작·작업완료 시간은 필수입니다. 둘 다 입력해야 등록됩니다.
-              </p>
-              <label className="field-label">고객사명{detailStatus === 'NIGHT_WORK' ? '(내부 작업이면 비워두세요)' : ''}</label>
+              <h2>{STATUS_META[detailStatus].icon} {detailStatus === 'HQ_WORKING' ? '본사근무 업무일지' : `${STATUS_META[detailStatus].label} 상세입력`}</h2>
+              {REQUIRE_TIME_STATUSES.has(detailStatus) ? (
+                <p style={{ fontSize: 12, color: '#e8590c', marginTop: -4, marginBottom: 10 }}>
+                  * 작업시작·작업완료 시간은 필수입니다. 둘 다 입력해야 등록됩니다.
+                </p>
+              ) : (
+                <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+                  * 오늘 사내에서 어떤 업무를 하셨는지 간단히 남겨주세요.
+                </p>
+              )}
+              <label className="field-label">
+                {detailStatus === 'HQ_WORKING' ? '관련 프로젝트/고객사(선택)' : '고객사명'}
+                {detailStatus === 'NIGHT_WORK' ? '(내부 작업이면 비워두세요)' : ''}
+              </label>
               <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
 
               {EFFORT_STATUSES.has(detailStatus) && (
                 <>
-                  <label className="field-label">프로젝트명</label>
+                  <label className="field-label">프로젝트명{detailStatus === 'HQ_WORKING' ? '(선택)' : ''}</label>
                   <input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="예: 백업시스템 구축 2차" />
                 </>
               )}
@@ -366,24 +377,29 @@ export default function EmployeeHome() {
 
               <div style={{ display: 'flex', gap: 8 }}>
                 <div style={{ flex: 1 }}>
-                  <label className="field-label">작업시작</label>
+                  <label className="field-label">작업시작{REQUIRE_TIME_STATUSES.has(detailStatus) ? '' : '(선택)'}</label>
                   <input type="time" value={workStart} onChange={(e) => setWorkStart(e.target.value)} />
                 </div>
                 <div style={{ flex: 1 }}>
-                  <label className="field-label">작업완료</label>
+                  <label className="field-label">작업완료{REQUIRE_TIME_STATUSES.has(detailStatus) ? '' : '(선택)'}</label>
                   <input type="time" value={workEnd} onChange={(e) => setWorkEnd(e.target.value)} />
                 </div>
               </div>
 
-              <label className="field-label">작업내용</label>
+              <label className="field-label">{detailStatus === 'HQ_WORKING' ? '오늘 수행업무' : '작업내용'}</label>
               <textarea
                 className="detail-textarea right-col-textarea"
                 rows={3}
-                placeholder="예: 서버 점검 및 백업 정책 협의"
+                placeholder={detailStatus === 'HQ_WORKING' ? '예: 백업 정책서 작성, 사내 서버 점검' : '예: 서버 점검 및 백업 정책 협의'}
                 value={workDetail}
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
-              <button disabled={!workDetail.trim() || !workStart || !workEnd} onClick={submitDetailForm}>등록</button>
+              <button
+                disabled={!workDetail.trim() || (REQUIRE_TIME_STATUSES.has(detailStatus) && (!workStart || !workEnd))}
+                onClick={submitDetailForm}
+              >
+                등록
+              </button>
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
             </div>
           )}
