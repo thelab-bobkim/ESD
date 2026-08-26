@@ -6,6 +6,7 @@ import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
 import { checkLocationMatch } from '../../common/location';
+import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 
 export const attendanceRouter = Router();
 attendanceRouter.use(requireAuth);
@@ -58,6 +59,23 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   }
   if (existing.clockOutAt) {
     return res.status(400).json({ success: false, error: { code: 'ALREADY_CLOCKED_OUT', message: '이미 퇴근 처리되었습니다.' } });
+  }
+
+  // 출근 찍자마자 실수로(또는 급하게) 바로 퇴근을 눌러버리는 사고를 막기 위해, 최소근무시간을
+  // 채우기 전에는 퇴근을 막는다(정책값 — 관리자가 나중에 조정 가능, 기본 8시간).
+  const minMinutes = (await getPolicyNumber('MIN_HOURS_BEFORE_CLOCKOUT', 8)) * 60;
+  const elapsedMinutes = Math.round((Date.now() - existing.clockInAt.getTime()) / 60000);
+  if (elapsedMinutes < minMinutes) {
+    const remain = minMinutes - elapsedMinutes;
+    const remainH = Math.floor(remain / 60);
+    const remainM = remain % 60;
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'MIN_WORK_TIME_NOT_MET',
+        message: `아직 최소 근무시간을 채우지 않았습니다. ${remainH}시간 ${remainM}분 더 근무 후 퇴근해주세요.`,
+      },
+    });
   }
 
   const clockOutAt = new Date();
