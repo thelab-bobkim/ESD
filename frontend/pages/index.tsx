@@ -28,7 +28,9 @@ const DETAIL_FORM_STATUSES = new Set([
 // 이 상태들은 처음 누르면 상세폼 없이 즉시 등록된다(상황판이 바로 반영됨). 이미 그 상태인데 다시
 // 누르면 그때 상세폼이 열려서 세부내용을 나중에 채워넣을 수 있다("작업 후 작성" 원칙).
 // 출장/휴가는 사전에 정해진 계획 정보라 예외로 항상 바로 폼을 띄운다(즉시등록 대상 아님).
-const QUICK_REGISTER_STATUSES = new Set(['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP']);
+// (예전에는 일부 상태를 "먼저 빈 채로 등록 → 나중에 내용 추가"로 처리했으나, 이제는 휴가처럼
+// 처음 클릭할 때부터 바로 상세폼을 띄워서 상태변경과 기록을 한 번에 끝낸다.)
+const QUICK_REGISTER_STATUSES = new Set<string>([]);
 // 이 상태들은 프로젝트별 공수(工數) 집계 대상이라 프로젝트명 필드가 필요하다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
 // 이 상태들은 "고객사명 + 업무내용"만 간단히 입력하는 단순폼이다(프로젝트/작업유형/시간 불필요).
@@ -384,6 +386,15 @@ export default function EmployeeHome() {
           <h1 style={{ marginBottom: 0 }}>DSTI-TSB</h1>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          {isAdminAccount && (
+            <button
+              className="secondary"
+              style={{ width: 'auto', margin: 0, whiteSpace: 'nowrap' }}
+              onClick={() => router.push('/admin/dashboard')}
+            >
+              관리자 화면
+            </button>
+          )}
           <button
             className="secondary"
             style={{ width: 'auto', margin: 0, whiteSpace: 'nowrap' }}
@@ -620,7 +631,7 @@ export default function EmployeeHome() {
             <div className="card right-col-card">
               <h2>🚙 이동경로 추가</h2>
               <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
-                * 이미 '이동중'으로 등록되어 있습니다. 어디서 어디로 이동하시는지 남겨주세요.
+                * 어디서 어디로 이동하시는지 남겨주세요. 등록하면 바로 "이동중" 상태로 반영됩니다.
               </p>
               <label className="field-label">출발지</label>
               <input value={movingFrom} onChange={(e) => setMovingFrom(e.target.value)} placeholder="예: 본사" />
@@ -633,10 +644,9 @@ export default function EmployeeHome() {
 
           {detailStatus && SIMPLE_CLIENT_STATUSES.has(detailStatus) && (
             <div className="card right-col-card">
-              <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 내용 추가</h2>
+              <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 등록</h2>
               <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
-                * 이미 '{STATUS_META[detailStatus].label}'(으)로 등록되어 있습니다.
-                {detailStatus === 'REMOTE' ? ' 어떤 고객을 지원하고 계신지 남겨주세요.' : ' 어떤 업무로 상주 중이신지 남겨주세요.'}
+                * {detailStatus === 'REMOTE' ? '어떤 고객을 지원하고 계신지 남겨주세요.' : '어떤 업무로 상주 중이신지 남겨주세요.'} 등록하면 바로 상태가 반영됩니다.
               </p>
               <label className="field-label">{detailStatus === 'REMOTE' ? '지원 고객사' : '고객사명'}</label>
               <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
@@ -655,9 +665,9 @@ export default function EmployeeHome() {
 
           {detailStatus && !SIMPLE_CLIENT_STATUSES.has(detailStatus) && !['BUSINESS_TRIP', 'ON_LEAVE', 'MOVING'].includes(detailStatus) && (
             <div className="card right-col-card">
-              <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 내용 추가</h2>
+              <h2>{STATUS_META[detailStatus].icon} {detailStatus === 'HQ_WORKING' ? '본사근무 업무일지' : `${STATUS_META[detailStatus].label} 등록`}</h2>
               <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
-                * 이미 '{STATUS_META[detailStatus].label}'(으)로 등록되어 있습니다. 작업이 마무리됐으면 여기서 내용/완료시간을 채워주세요.
+                * 내용을 입력하고 등록하면 바로 '{STATUS_META[detailStatus].label}' 상태로 반영됩니다. 완료시간은 몰라도(진행중이면) 비워두고 등록 가능합니다.
               </p>
               <label className="field-label">
                 {detailStatus === 'HQ_WORKING' ? '관련 프로젝트/고객사(선택)' : '고객사명'}

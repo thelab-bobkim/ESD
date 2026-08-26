@@ -29,8 +29,9 @@ export default function LoginPage() {
         router.push('/change-password');
         return;
       }
-      const isAdmin = data.user.roles.some((r) => ['HR_ADMIN', 'SYSTEM_ADMIN', 'TEAM_LEAD', 'PILOT_MANAGER'].includes(r));
-      router.push(isAdmin ? '/admin/dashboard' : '/');
+      // 관리자 권한이 있어도 우선 클라이언트(직원) 화면으로 보낸다. 관리자 화면은 그 안의
+      // 버튼을 눌러서 별도로 들어가게 한다 — 관리자도 본인 상태를 등록/테스트할 일이 많아서.
+      router.push('/');
     } catch (err) {
       setError(err instanceof Error ? err.message : '로그인에 실패했습니다.');
     } finally {

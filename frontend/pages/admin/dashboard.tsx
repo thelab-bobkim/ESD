@@ -42,10 +42,6 @@ const MACRO_GROUPS: { key: string; label: string; icon: string; color: string; s
   { key: 'UNKNOWN', label: '미확인', icon: '❔', color: '#e03131', statuses: ['UNKNOWN'] },
 ];
 
-interface ActivityRow {
-  userId: string; name: string; department: string; status: string; changedAt: string; source: string; note: string | null;
-}
-
 interface EmployeeRow {
   userId: string; name: string; department: string; client: string | null; workType: string;
   status: string | null; statusChangedAt: string | null; statusSource: string | null; statusNote: string | null; lastConfirmedAt: string | null;
@@ -75,17 +71,12 @@ export default function AdminDashboard() {
   const [search, setSearch] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [justRefreshed, setJustRefreshed] = useState(false);
-  const [activity, setActivity] = useState<ActivityRow[] | null>(null);
 
   async function load() {
     setRefreshing(true);
     try {
-      const [b, a] = await Promise.all([
-        apiFetch<CompanyBoard>('/dashboard/company'),
-        apiFetch<ActivityRow[]>('/dashboard/recent-activity?limit=20'),
-      ]);
+      const b = await apiFetch<CompanyBoard>('/dashboard/company');
       setBoard(b);
-      setActivity(a);
       setLastUpdated(new Date());
       setError(null);
       setJustRefreshed(true);
@@ -311,88 +302,63 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      <div className="dashboard-layout">
-        <div>
-          <div className="board">
-            {['CLOCKED_OUT', ...STATUS_ORDER].map((code) => {
-              const meta = STATUS_META[code];
-              const employees = grouped[code];
-              const isExpanded = expandedColumns[code] ?? employees.length <= 5;
-              return (
-                <div className="board-column" key={code} style={{ borderTopColor: meta.color }}>
-                  <div
-                    className="board-column-header"
-                    style={{ cursor: employees.length > 0 ? 'pointer' : 'default' }}
-                    onClick={() => employees.length > 0 && toggleColumn(code)}
-                  >
-                    <span>
-                      {employees.length > 0 && <span style={{ display: 'inline-block', width: 12, transform: isExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▸</span>}
-                      {' '}{meta.icon} {meta.label}
-                    </span>
-                    <span className="count">{employees.length}</span>
+      <div className="board">
+        {['CLOCKED_OUT', ...STATUS_ORDER]
+          .filter((code) => (grouped[code]?.length ?? 0) > 0)
+          .map((code) => {
+            const meta = STATUS_META[code];
+            const employees = grouped[code];
+            const isExpanded = expandedColumns[code] ?? employees.length <= 5;
+            return (
+              <div className="board-column" key={code} style={{ borderTopColor: meta.color }}>
+                <div
+                  className="board-column-header"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => toggleColumn(code)}
+                >
+                  <span>
+                    <span style={{ display: 'inline-block', width: 12, transform: isExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>▸</span>
+                    {' '}{meta.icon} {meta.label}
+                  </span>
+                  <span className="count">{employees.length}</span>
+                </div>
+                {!isExpanded && (
+                  <div className="board-empty" style={{ cursor: 'pointer' }} onClick={() => toggleColumn(code)}>
+                    {employees.length}명 — 클릭하여 펼치기
                   </div>
-                  {employees.length === 0 && <div className="board-empty">해당 없음</div>}
-                  {employees.length > 0 && !isExpanded && (
-                    <div className="board-empty" style={{ cursor: 'pointer' }} onClick={() => toggleColumn(code)}>
-                      {employees.length}명 — 클릭하여 펼치기
-                    </div>
-                  )}
-                  {isExpanded && employees.map((e) => (
-                    <div className="employee-chip" key={e.userId}>
-                      <div className="chip-row">
-                        <div className="chip-avatar" style={{ background: meta.color }}>{e.name.slice(-2)}</div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div className="name">
-                            {e.name}
-                            {e.statusSource === 'SYSTEM' && (
-                              <span style={{ marginLeft: 6, fontSize: 10, color: '#868e96', fontWeight: 400 }}>(자동추정)</span>
-                            )}
-                          </div>
-                          <div className="meta">
-                            {e.department}
-                            {code === 'RESIDENT_ONSITE' && e.client ? ` · ${e.client}` : ''}
-                          </div>
+                )}
+                {isExpanded && employees.map((e) => (
+                  <div className="employee-chip" key={e.userId}>
+                    <div className="chip-row">
+                      <div className="chip-avatar" style={{ background: meta.color }}>{e.name.slice(-2)}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="name">
+                          {e.name}
+                          {e.statusSource === 'SYSTEM' && (
+                            <span style={{ marginLeft: 6, fontSize: 10, color: '#868e96', fontWeight: 400 }}>(자동추정)</span>
+                          )}
+                        </div>
+                        <div className="meta">
+                          {e.department}
+                          {code === 'RESIDENT_ONSITE' && e.client ? ` · ${e.client}` : ''}
                         </div>
                       </div>
-                      {code !== 'CLOCKED_OUT' && e.statusNote && <div className="meta" style={{ color: '#1c1f24', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
-                      {code === 'CLOCKED_OUT' && e.status && STATUS_META[e.status] && (
-                        <div className="meta">마지막 상태: {STATUS_META[e.status].icon} {STATUS_META[e.status].label}</div>
-                      )}
-                      {e.locationMatch !== null && (
-                        <div className="meta" style={{ color: e.locationMatch ? '#2f9e44' : '#e03131', fontWeight: 600 }}>
-                          {e.locationMatch ? '📍 위치 확인됨' : `📍 위치 불일치 (약 ${e.locationDistanceMeters}m)`}
-                        </div>
-                      )}
-                      <div className="meta">{code === 'CLOCKED_OUT' ? `퇴근 ${timeAgo(e.clockOutAt)}` : timeAgo(e.statusChangedAt)}</div>
                     </div>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="dashboard-side">
-          <div className="card" style={{ marginBottom: 0 }}>
-            <h2>🟢 최근 활동</h2>
-            {!activity && <div className="board-empty">불러오는 중...</div>}
-            {activity && activity.length === 0 && <div className="board-empty">오늘 아직 활동이 없습니다.</div>}
-            {activity && activity.map((a, i) => {
-              const meta = STATUS_META[a.status] ?? STATUS_META.UNKNOWN;
-              return (
-                <div className="activity-row" key={`${a.userId}-${a.changedAt}-${i}`}>
-                  <span className="activity-icon">{meta.icon}</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="activity-line">
-                      <strong>{a.name}</strong>님이 <span style={{ color: meta.color, fontWeight: 600 }}>{meta.label}</span>(으)로
-                    </div>
-                    <div className="activity-time">{a.department} · {timeAgo(a.changedAt)}</div>
+                    {code !== 'CLOCKED_OUT' && e.statusNote && <div className="meta" style={{ color: '#1c1f24', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
+                    {code === 'CLOCKED_OUT' && e.status && STATUS_META[e.status] && (
+                      <div className="meta">마지막 상태: {STATUS_META[e.status].icon} {STATUS_META[e.status].label}</div>
+                    )}
+                    {e.locationMatch !== null && (
+                      <div className="meta" style={{ color: e.locationMatch ? '#2f9e44' : '#e03131', fontWeight: 600 }}>
+                        {e.locationMatch ? '📍 위치 확인됨' : `📍 위치 불일치 (약 ${e.locationDistanceMeters}m)`}
+                      </div>
+                    )}
+                    <div className="meta">{code === 'CLOCKED_OUT' ? `퇴근 ${timeAgo(e.clockOutAt)}` : timeAgo(e.statusChangedAt)}</div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+                ))}
+              </div>
+            );
+          })}
       </div>
     </div>
   );

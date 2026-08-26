@@ -6,9 +6,15 @@ import { requireAuth, requireRole } from '../../common/guards/auth';
 export const dashboardRouter = Router();
 dashboardRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'));
 
-/** attendance.routes.ts의 todayDateOnly()와 동일한 "자정(UTC)" 기준 날짜 계산 */
-function dateOnlyUTC(d: Date = new Date()): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+/**
+ * "오늘"의 날짜 경계를 계산한다. attendance.routes.ts의 todayDateOnly()와 동일하게, 자정이 아니라
+ * 새벽 3시(KST)를 하루의 경계로 삼는다(야간작업자 고려). 특정 날짜를 직접 넘기면 그 값을 그대로 쓴다.
+ */
+function dateOnlyUTC(d?: Date): Date {
+  if (d) return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const now = new Date();
+  const kstShifted = new Date(now.getTime() + (9 - 3) * 60 * 60 * 1000);
+  return new Date(Date.UTC(kstShifted.getUTCFullYear(), kstShifted.getUTCMonth(), kstShifted.getUTCDate()));
 }
 
 /**

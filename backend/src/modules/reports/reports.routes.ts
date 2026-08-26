@@ -77,16 +77,18 @@ reportsRouter.get('/effort-summary', async (req, res) => {
 
   const fromDate = new Date(from);
   const toDate = new Date(to);
-  const logs = await fetchLogs(fromDate, toDate);
+  // 고객사명이 없는 기록(사내 업무일지 등)은 이 "고객사별" 리포트에서 제외한다 —
+  // 아직 전사 도입 전이라 "(미지정)" 묶음이 관리적으로 의미가 없기 때문.
+  const logs = (await fetchLogs(fromDate, toDate)).filter((l) => l.clientName && l.clientName.trim());
 
   // 전기간(직전 동일 길이 구간) 대비 증감을 보여주기 위해 이전 구간도 같이 집계한다.
   const periodMs = toDate.getTime() - fromDate.getTime() + 24 * 60 * 60 * 1000;
   const prevTo = new Date(fromDate.getTime() - 24 * 60 * 60 * 1000);
   const prevFrom = new Date(prevTo.getTime() - periodMs + 24 * 60 * 60 * 1000);
-  const prevLogs = await fetchLogs(prevFrom, prevTo);
+  const prevLogs = (await fetchLogs(prevFrom, prevTo)).filter((l) => l.clientName && l.clientName.trim());
   const prevByClient = new Map<string, number>();
   for (const l of prevLogs) {
-    const key = l.clientName || '(미지정)';
+    const key = l.clientName;
     prevByClient.set(key, (prevByClient.get(key) ?? 0) + (l.minutes ?? 0));
   }
 
