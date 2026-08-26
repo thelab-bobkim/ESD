@@ -223,6 +223,18 @@ attendanceRouter.get('/hq-location', async (_req, res) => {
 });
 
 /**
+ * 좌표가 등록된 고객사 목록(이름/위도/경도만) — "이동중" 상태에서 고객사 도착을 감지해
+ * "고객사작업/미팅으로 등록하시겠어요?" 알림을 띄우는 기능용. 직원이면 누구나 조회 가능.
+ */
+attendanceRouter.get('/clients-with-location', async (_req, res) => {
+  const clients = await prisma.client.findMany({
+    where: { latitude: { not: null }, longitude: { not: null }, name: { not: { startsWith: 'SAMPLE_' } } },
+    select: { name: true, latitude: true, longitude: true },
+  });
+  return res.json({ success: true, data: clients });
+});
+
+/**
  * (관리자 리포트와 달리 본인 것만, 아무 권한이나 조회 가능)
  */
 attendanceRouter.get('/me/weekly', async (req, res) => {

@@ -77,7 +77,10 @@ export default function EmployeeHome() {
   const [showLocationConsent, setShowLocationConsent] = useState(false);
   const [hqLocation, setHqLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [showHqReturnPrompt, setShowHqReturnPrompt] = useState(false);
-  const hqPromptSnoozedUntilRef = useRef(0);  const [message, setMessage] = useState<string | null>(null);
+  const [clientLocations, setClientLocations] = useState<{ name: string; latitude: number; longitude: number }[]>([]);
+  const [arrivedClient, setArrivedClient] = useState<string | null>(null);
+  const hqPromptSnoozedUntilRef = useRef(0);
+  const clientPromptSnoozedUntilRef = useRef(0);  const [message, setMessage] = useState<string | null>(null);
   const [myStatus, setMyStatus] = useState<MeAttendance | null>(null);
   const currentStatus = myStatus?.latestStatus;
   const clockedOut = Boolean(myStatus?.record?.clockOutAt);
@@ -144,26 +147,42 @@ export default function EmployeeHome() {
         if (data.latitude != null && data.longitude != null) setHqLocation({ lat: data.latitude, lng: data.longitude });
       })
       .catch(() => {});
+    apiFetch<{ name: string; latitude: number; longitude: number }[]>('/attendance/clients-with-location')
+      .then(setClientLocations)
+      .catch(() => {});
   }, []);
 
   // 5분마다 위치를 확인해서, 본사 근처인데 아직 "본사근무"가 아니면 복귀 알림을 띄운다.
   // 위치는 이 순간에만 잠깐 확인하고 서버로 보내지 않으며(브라우저 안에서만 거리 계산), 강제로 상태를
   // 바꾸지 않고 직원이 직접 확인 버튼을 눌러야 상태가 바뀐다.
   useEffect(() => {
-    if (!hqLocation || !me?.locationConsentGiven) return;
-    const checkHqReturn = async () => {
-      if (Date.now() < hqPromptSnoozedUntilRef.current) return;
-      if (clockedOut || currentStatus?.status === 'HQ_WORKING') return;
-      const loc = await getCurrentLocation();
-      if (!loc) return;
-      const dist = distanceMeters(loc.lat, loc.lng, hqLocation.lat, hqLocation.lng);
-      if (dist <= 300) setShowHqReturnPrompt(true);
+    if (!me?.locationConsentGiven) return;
+    const checkArrival = async () => {
+      if (clockedOut) return;
+
+      // "이동중" 상태면 등록된 고객사 근처 도착을 감지해서 고객사작업/미팅 등록을 제안한다.
+      if (currentStatus?.status === 'MOVING' && clientLocations.length > 0 && Date.now() >= clientPromptSnoozedUntilRef.current) {
+        const loc = await getCurrentLocation();
+        if (loc) {
+          const nearby = clientLocations.find((c) => distanceMeters(loc.lat, loc.lng, c.latitude, c.longitude) <= 300);
+          if (nearby) { setArrivedClient(nearby.name); return; }
+        }
+      }
+
+      // 본사 복귀 감지
+      if (hqLocation && currentStatus?.status !== 'HQ_WORKING' && Date.now() >= hqPromptSnoozedUntilRef.current) {
+        const loc = await getCurrentLocation();
+        if (loc) {
+          const dist = distanceMeters(loc.lat, loc.lng, hqLocation.lat, hqLocation.lng);
+          if (dist <= 300) setShowHqReturnPrompt(true);
+        }
+      }
     };
-    const interval = setInterval(checkHqReturn, 5 * 60 * 1000);
-    const timeout = setTimeout(checkHqReturn, 30 * 1000); // 페이지 켠 직후에도 한 번 확인
+    const interval = setInterval(checkArrival, 5 * 60 * 1000);
+    const timeout = setTimeout(checkArrival, 30 * 1000); // 페이지 켠 직후에도 한 번 확인
     return () => { clearInterval(interval); clearTimeout(timeout); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hqLocation, me?.locationConsentGiven, currentStatus?.status, clockedOut]);
+  }, [hqLocation, clientLocations, me?.locationConsentGiven, currentStatus?.status, clockedOut]);
 
   async function run(action: () => Promise<unknown>, successMsg: string) {
     setMessage(null);
@@ -176,10 +195,10 @@ export default function EmployeeHome() {
     }
   }
 
-  function changeStatus(code: string) {
+  function changeStatus(code: string, prefilledClientName?: string) {
     if (DETAIL_FORM_STATUSES.has(code)) {
       setDetailStatus(code);
-      setClientName('');
+      setClientName(prefilledClientName ?? '');
       setProjectName('');
       setWorkStart(nowHHMM());
       setWorkEnd('');
@@ -296,6 +315,27 @@ export default function EmployeeHome() {
           </div>
         )}
       </div>
+
+      {arrivedClient && (
+        <div className="card col-full" style={{ background: '#eaf1ff', border: '1px solid #2f6feb' }}>
+          🚗 <strong>{arrivedClient}</strong>에 도착하신 것 같아요! 어떤 걸로 등록할까요?
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button style={{ width: 'auto', margin: 0 }} onClick={() => { const c = arrivedClient; setArrivedClient(null); changeStatus('CLIENT_WORK', c); }}>
+              🛠️ 고객사작업
+            </button>
+            <button style={{ width: 'auto', margin: 0 }} onClick={() => { const c = arrivedClient; setArrivedClient(null); changeStatus('CLIENT_MEETING', c); }}>
+              🤝 고객사미팅
+            </button>
+            <button
+              className="secondary"
+              style={{ width: 'auto', margin: 0 }}
+              onClick={() => { setArrivedClient(null); clientPromptSnoozedUntilRef.current = Date.now() + 60 * 60 * 1000; }}
+            >
+              아니요
+            </button>
+          </div>
+        </div>
+      )}
 
       {showHqReturnPrompt && (
         <div className="card col-full" style={{ background: '#eaf1ff', border: '1px solid #2f6feb' }}>
