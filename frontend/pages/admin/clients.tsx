@@ -8,6 +8,8 @@ interface ClientRow {
 }
 interface NewClientDraft { name: string; address: string; lat: number; lng: number; }
 
+interface HqLocation { latitude: number | null; longitude: number | null; }
+
 export default function AdminClientsPage() {
   const router = useRouter();
   const [clients, setClients] = useState<ClientRow[] | null>(null);
@@ -18,6 +20,28 @@ export default function AdminClientsPage() {
   const [showAddMap, setShowAddMap] = useState(false);
   const [newClientDraft, setNewClientDraft] = useState<NewClientDraft | null>(null);
   const [creating, setCreating] = useState(false);
+  const [hqLocation, setHqLocation] = useState<HqLocation | null>(null);
+  const [showHqMap, setShowHqMap] = useState(false);
+  const [savingHq, setSavingHq] = useState(false);
+
+  function loadHq() {
+    apiFetch<HqLocation>('/clients/hq-location').then(setHqLocation).catch(() => {});
+  }
+
+  async function saveHqLocation(lat: number, lng: number) {
+    setSavingHq(true);
+    try {
+      await apiFetch('/clients/hq-location', { method: 'PUT', body: JSON.stringify({ latitude: lat, longitude: lng }) });
+      loadHq();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '본사 위치 저장에 실패했습니다.');
+    } finally {
+      setSavingHq(false);
+      setShowHqMap(false);
+    }
+  }
+
+  useEffect(loadHq, []);
 
   function load() {
     apiFetch<ClientRow[]>('/clients')
@@ -97,6 +121,24 @@ export default function AdminClientsPage() {
         </div>
       </div>
       {error && <div className="error">{error}</div>}
+
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2>🏢 본사 위치 설정</h2>
+          <button style={{ width: 'auto', margin: 0 }} disabled={savingHq} onClick={() => setShowHqMap(true)}>
+            {savingHq ? '저장중...' : hqLocation?.latitude != null ? '🗺️ 위치 다시 설정' : '🗺️ 지도에서 본사 위치 설정'}
+          </button>
+        </div>
+        <p style={{ fontSize: 13, color: '#495057', lineHeight: 1.6, marginBottom: 0 }}>
+          여기에 본사 좌표를 등록해두면, <strong>고객사미팅/작업 후 직원이 본사로 복귀했을 때</strong> 앱이 자동으로 감지해서
+          "본사근무로 바꾸시겠어요?" 알림을 띄워줍니다 (자동으로 강제로 바뀌진 않고, 직원이 확인 버튼을 눌러야 바뀝니다).
+          {hqLocation?.latitude != null && (
+            <span style={{ display: 'block', marginTop: 6, color: '#2f9e44', fontWeight: 600 }}>
+              ✓ 등록됨 ({hqLocation.latitude.toFixed(5)}, {hqLocation.longitude?.toFixed(5)})
+            </span>
+          )}
+        </p>
+      </div>
 
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -194,6 +236,13 @@ export default function AdminClientsPage() {
             setNewClientDraft({ name: placeName || '', address: address || '', lat, lng });
             setShowAddMap(false);
           }}
+        />
+      )}
+
+      {showHqMap && (
+        <MapPickerModal
+          onClose={() => setShowHqMap(false)}
+          onSelect={(lat, lng) => saveHqLocation(lat, lng)}
         />
       )}
     </div>

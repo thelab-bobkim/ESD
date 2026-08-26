@@ -2,9 +2,36 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
+import { getPolicyString, setPolicyString } from '../../common/policy-engine/policy-engine';
 
 export const clientsRouter = Router();
 clientsRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN'));
+
+/** 본사 좌표 조회 — "본사 복귀 자동감지" 기능의 기준 좌표. 미등록이면 그 기능은 비활성화된다. */
+clientsRouter.get('/hq-location', async (_req, res) => {
+  const lat = await getPolicyString('HQ_LATITUDE', '');
+  const lng = await getPolicyString('HQ_LONGITUDE', '');
+  return res.json({
+    success: true,
+    data: { latitude: lat ? Number(lat) : null, longitude: lng ? Number(lng) : null },
+  });
+});
+
+const hqLocationSchema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+});
+
+/** 본사 좌표 등록/수정 */
+clientsRouter.put('/hq-location', async (req, res) => {
+  const parsed = hqLocationSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '위도/경도 값을 확인하세요.' } });
+  }
+  await setPolicyString('HQ_LATITUDE', String(parsed.data.latitude));
+  await setPolicyString('HQ_LONGITUDE', String(parsed.data.longitude));
+  return res.json({ success: true, data: parsed.data });
+});
 
 /** 고객사 목록 + 좌표 등록 여부 (위치대조 기능용 관리 화면). SAMPLE_ 테스트 고객사는 제외한다. */
 clientsRouter.get('/', async (_req, res) => {

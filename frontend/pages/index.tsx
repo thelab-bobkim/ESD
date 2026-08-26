@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
-import { getCurrentLocation } from '@/lib/geolocation';
+import { getCurrentLocation, distanceMeters } from '@/lib/geolocation';
 import LocationConsentModal from '@/components/LocationConsentModal';
 
 // 요청하신 배열: 재택/본사근무/고객사상주, 이동중/고객사미팅/고객사작업, 야간작업/대체휴무/휴가 (총 9개)
@@ -75,8 +75,12 @@ export default function EmployeeHome() {
   const router = useRouter();
   const [me, setMe] = useState<MeResponse | null>(null);
   const [showLocationConsent, setShowLocationConsent] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [hqLocation, setHqLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [showHqReturnPrompt, setShowHqReturnPrompt] = useState(false);
+  const hqPromptSnoozedUntilRef = useRef(0);  const [message, setMessage] = useState<string | null>(null);
   const [myStatus, setMyStatus] = useState<MeAttendance | null>(null);
+  const currentStatus = myStatus?.latestStatus;
+  const clockedOut = Boolean(myStatus?.record?.clockOutAt);
   const [weekly, setWeekly] = useState<WeeklySummary | null>(null);
 
   // 고객사미팅/고객사작업/야간작업 공용 상세입력 폼 상태
@@ -132,6 +136,34 @@ export default function EmployeeHome() {
       .catch(() => router.push('/login'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
+
+  // 본사 좌표를 한 번 불러온다(등록 안 돼있으면 아래 감지 자체를 안 함).
+  useEffect(() => {
+    apiFetch<{ latitude: number | null; longitude: number | null }>('/attendance/hq-location')
+      .then((data) => {
+        if (data.latitude != null && data.longitude != null) setHqLocation({ lat: data.latitude, lng: data.longitude });
+      })
+      .catch(() => {});
+  }, []);
+
+  // 5분마다 위치를 확인해서, 본사 근처인데 아직 "본사근무"가 아니면 복귀 알림을 띄운다.
+  // 위치는 이 순간에만 잠깐 확인하고 서버로 보내지 않으며(브라우저 안에서만 거리 계산), 강제로 상태를
+  // 바꾸지 않고 직원이 직접 확인 버튼을 눌러야 상태가 바뀐다.
+  useEffect(() => {
+    if (!hqLocation || !me?.locationConsentGiven) return;
+    const checkHqReturn = async () => {
+      if (Date.now() < hqPromptSnoozedUntilRef.current) return;
+      if (clockedOut || currentStatus?.status === 'HQ_WORKING') return;
+      const loc = await getCurrentLocation();
+      if (!loc) return;
+      const dist = distanceMeters(loc.lat, loc.lng, hqLocation.lat, hqLocation.lng);
+      if (dist <= 300) setShowHqReturnPrompt(true);
+    };
+    const interval = setInterval(checkHqReturn, 5 * 60 * 1000);
+    const timeout = setTimeout(checkHqReturn, 30 * 1000); // 페이지 켠 직후에도 한 번 확인
+    return () => { clearInterval(interval); clearTimeout(timeout); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hqLocation, me?.locationConsentGiven, currentStatus?.status, clockedOut]);
 
   async function run(action: () => Promise<unknown>, successMsg: string) {
     setMessage(null);
@@ -201,9 +233,6 @@ export default function EmployeeHome() {
 
   if (!me) return <div className="page">불러오는 중...</div>;
 
-  const currentStatus = myStatus?.latestStatus;
-  const clockedOut = Boolean(myStatus?.record?.clockOutAt);
-
   return (
     <div className="employee-shell">
       <Head>
@@ -267,6 +296,33 @@ export default function EmployeeHome() {
           </div>
         )}
       </div>
+
+      {showHqReturnPrompt && (
+        <div className="card col-full" style={{ background: '#eaf1ff', border: '1px solid #2f6feb' }}>
+          🏢 본사에 도착하신 것 같아요! 상태를 "본사근무"로 바꾸시겠어요?
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button
+              style={{ width: 'auto', margin: 0 }}
+              onClick={() => {
+                setShowHqReturnPrompt(false);
+                changeStatus('HQ_WORKING');
+              }}
+            >
+              네, 본사근무로 바꿀게요
+            </button>
+            <button
+              className="secondary"
+              style={{ width: 'auto', margin: 0 }}
+              onClick={() => {
+                setShowHqReturnPrompt(false);
+                hqPromptSnoozedUntilRef.current = Date.now() + 60 * 60 * 1000; // 1시간 동안 다시 안 물어봄
+              }}
+            >
+              아니요, 아직이에요
+            </button>
+          </div>
+        </div>
+      )}
 
       {message && <div className="card col-full" style={{ background: '#eef7ee' }}>{message}</div>}
 

@@ -6,7 +6,7 @@ import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
 import { checkLocationMatch } from '../../common/location';
-import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
+import { getPolicyNumber, getPolicyString } from '../../common/policy-engine/policy-engine';
 
 export const attendanceRouter = Router();
 attendanceRouter.use(requireAuth);
@@ -209,6 +209,20 @@ attendanceRouter.get('/me', async (req, res) => {
 
 /**
  * 본인의 이번 주(월~일) 누적 근무시간 — 주52시간제를 본인이 스스로 챙길 수 있게 보여준다.
+/**
+ * 본사 좌표 조회 — "고객사 미팅/작업 후 본사로 복귀하면 자동으로 알려주기" 기능용.
+ * 직원이면 누구나 조회 가능(관리자 전용 라우터의 /clients/hq-location과 같은 값을 읽기 전용으로 제공).
+ */
+attendanceRouter.get('/hq-location', async (_req, res) => {
+  const lat = await getPolicyString('HQ_LATITUDE', '');
+  const lng = await getPolicyString('HQ_LONGITUDE', '');
+  return res.json({
+    success: true,
+    data: { latitude: lat ? Number(lat) : null, longitude: lng ? Number(lng) : null },
+  });
+});
+
+/**
  * (관리자 리포트와 달리 본인 것만, 아무 권한이나 조회 가능)
  */
 attendanceRouter.get('/me/weekly', async (req, res) => {

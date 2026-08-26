@@ -57,12 +57,11 @@ export async function getPolicyBoolean(key: string, fallback = false, department
   return entry.value === 'true';
 }
 
-export async function getPolicyJSON<T = unknown>(key: string, fallback: T, departmentId?: string): Promise<T> {
-  const entry = await getRaw(key, departmentId);
-  if (!entry) return fallback;
-  try {
-    return JSON.parse(entry.value) as T;
-  } catch {
-    return fallback;
-  }
+export async function setPolicyString(key: string, value: string, departmentId?: string): Promise<void> {
+  await prisma.policySetting.upsert({
+    where: { key_scopeDepartmentId: { key, scopeDepartmentId: departmentId ?? null } },
+    update: { value, valueType: 'string' },
+    create: { key, value, valueType: 'string', scopeDepartmentId: departmentId ?? null },
+  });
+  invalidatePolicyCache();
 }
