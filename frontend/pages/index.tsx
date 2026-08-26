@@ -22,10 +22,11 @@ const STATUS_ORDER = ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIE
 
 // 이 상태들은 클릭 시 오른쪽에 상세입력 폼을 띄운다. 본사근무는 "업무일지" 성격, 나머지는 고객사 방문 기록.
 const DETAIL_FORM_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+// 이 상태들은 처음 누르면 상세폼 없이 즉시 등록된다(상황판이 바로 반영됨). 이미 그 상태인데 다시
+// 누르면 그때 상세폼이 열려서 작업내용 등을 나중에 채워넣을 수 있다("작업 후 작성" 원칙).
+const QUICK_REGISTER_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 // 이 상태들은 프로젝트별 공수(工數) 집계 대상이라 프로젝트명 필드가 필요하다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
-// 이 상태들만 작업시작·작업완료 시간이 필수다(고객사 방문은 시간이 중요, 사내 업무일지는 내용이 더 중요).
-const REQUIRE_TIME_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 const WEEKLY_LIMIT_MINUTES = 52 * 60;
@@ -196,6 +197,19 @@ export default function EmployeeHome() {
   }
 
   function changeStatus(code: string, prefilledClientName?: string) {
+    const alreadyInThisStatus = currentStatus?.status === code;
+
+    // 고객사미팅/고객사작업은 처음 누르면 상세폼 없이 바로 등록해서 상황판에 즉시 반영한다.
+    // ("작업내용은 작업 후에 작성" — 시작하는 시점엔 아직 쓸 내용이 없는 게 당연하므로.)
+    if (QUICK_REGISTER_STATUSES.has(code) && !alreadyInThisStatus) {
+      const body: Record<string, unknown> = { status: code, effort: { clientName: prefilledClientName || undefined, startTime: nowHHMM() } };
+      run(
+        () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+        `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 (작업내용은 같은 아이콘을 다시 눌러서 추가하실 수 있어요)`
+      );
+      return;
+    }
+
     if (DETAIL_FORM_STATUSES.has(code)) {
       setDetailStatus(code);
       setClientName(prefilledClientName ?? '');
@@ -441,14 +455,14 @@ export default function EmployeeHome() {
         <div className="right-col-fill">
           {detailStatus && (
             <div className="card right-col-card">
-              <h2>{STATUS_META[detailStatus].icon} {detailStatus === 'HQ_WORKING' ? '본사근무 업무일지' : `${STATUS_META[detailStatus].label} 상세입력`}</h2>
-              {REQUIRE_TIME_STATUSES.has(detailStatus) ? (
-                <p style={{ fontSize: 12, color: '#e8590c', marginTop: -4, marginBottom: 10 }}>
-                  * 작업시작·작업완료 시간은 필수입니다. 둘 다 입력해야 등록됩니다.
+              <h2>{STATUS_META[detailStatus].icon} {detailStatus === 'HQ_WORKING' ? '본사근무 업무일지' : `${STATUS_META[detailStatus].label} 내용 추가`}</h2>
+              {detailStatus === 'HQ_WORKING' ? (
+                <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+                  * 오늘 사내에서 어떤 업무를 하셨는지 간단히 남겨주세요.
                 </p>
               ) : (
                 <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
-                  * 오늘 사내에서 어떤 업무를 하셨는지 간단히 남겨주세요.
+                  * 이미 '{STATUS_META[detailStatus].label}'(으)로 등록되어 있습니다. 작업내용/완료시간을 채워서 기록을 보완해주세요.
                 </p>
               )}
               <label className="field-label">
@@ -473,11 +487,11 @@ export default function EmployeeHome() {
 
               <div style={{ display: 'flex', gap: 8 }}>
                 <div style={{ flex: 1 }}>
-                  <label className="field-label">작업시작{REQUIRE_TIME_STATUSES.has(detailStatus) ? '' : '(선택)'}</label>
+                  <label className="field-label">작업시작</label>
                   <input type="time" value={workStart} onChange={(e) => setWorkStart(e.target.value)} />
                 </div>
                 <div style={{ flex: 1 }}>
-                  <label className="field-label">작업완료{REQUIRE_TIME_STATUSES.has(detailStatus) ? '' : '(선택)'}</label>
+                  <label className="field-label">작업완료(선택 — 진행중이면 비워두세요)</label>
                   <input type="time" value={workEnd} onChange={(e) => setWorkEnd(e.target.value)} />
                 </div>
               </div>
@@ -491,7 +505,7 @@ export default function EmployeeHome() {
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
               <button
-                disabled={!workDetail.trim() || (REQUIRE_TIME_STATUSES.has(detailStatus) && (!workStart || !workEnd))}
+                disabled={!workDetail.trim() || !workStart}
                 onClick={submitDetailForm}
               >
                 등록
