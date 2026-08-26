@@ -127,10 +127,11 @@ attendanceRouter.post('/status', async (req, res) => {
   const userId = req.authUser!.userId;
   const { status, note, effort, location } = parsed.data;
 
-  // 고객사미팅/고객사작업/야간작업은 작업시작·작업완료 시간이 필수다(진행중 상태로 남기지 않도록).
+  // 고객사미팅/고객사작업/야간작업은 작업시작 시간만 있으면 등록 가능하다(막 시작한 시점엔 완료시간을
+  // 알 수 없는 게 당연하므로). 완료시간은 나중에 다시 등록해서 채우면 된다("진행중" 허용).
   const REQUIRE_TIME_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
-  if (REQUIRE_TIME_STATUSES.has(status) && (!effort?.startTime || !effort?.endTime)) {
-    return res.status(400).json({ success: false, error: { code: 'TIME_REQUIRED', message: '작업시작·작업완료 시간을 모두 입력해야 합니다.' } });
+  if (REQUIRE_TIME_STATUSES.has(status) && !effort?.startTime) {
+    return res.status(400).json({ success: false, error: { code: 'TIME_REQUIRED', message: '작업시작 시간을 입력해야 합니다.' } });
   }
 
   // 위치대조: 입력한 고객사명과 등록된 고객사를 이름으로 매칭해서 좌표를 비교한다.
