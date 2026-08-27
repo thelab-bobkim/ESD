@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
-import { getCurrentLocation, distanceMeters } from '@/lib/geolocation';
+import { getCurrentLocation, distanceMeters, reverseGeocode } from '@/lib/geolocation';
 import LocationConsentModal from '@/components/LocationConsentModal';
 
 // 요청하신 배열: 재택/본사근무/고객사상주, 이동중/고객사미팅/고객사작업, 야간작업/대체휴무/휴가 (총 9개)
@@ -102,6 +102,7 @@ export default function EmployeeHome() {
   const [showLocationConsent, setShowLocationConsent] = useState(false);
   const [hqLocation, setHqLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [showHqReturnPrompt, setShowHqReturnPrompt] = useState(false);
+  const [showAltDayOffPrompt, setShowAltDayOffPrompt] = useState(false);
   const [clientLocations, setClientLocations] = useState<{ name: string; latitude: number; longitude: number }[]>([]);
   const [arrivedClient, setArrivedClient] = useState<string | null>(null);
   const hqPromptSnoozedUntilRef = useRef(0);
@@ -121,6 +122,7 @@ export default function EmployeeHome() {
   const [workEnd, setWorkEnd] = useState('');
   const [workType, setWorkType] = useState(WORK_TYPE_OPTIONS[0]);
   const [workDetail, setWorkDetail] = useState('');
+  const [workReason, setWorkReason] = useState(''); // 육하원칙 중 "왜(목적/사유)"
   // 출장 전용 필드 (목적지/기간/목적)
   const [tripDestination, setTripDestination] = useState('');
   const [tripStart, setTripStart] = useState('');
@@ -244,6 +246,7 @@ export default function EmployeeHome() {
     setWorkEnd('');
     setWorkType(code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : WORK_TYPE_OPTIONS[0]);
     setWorkDetail('');
+    setWorkReason('');
     setTripDestination('');
     setTripStart(nowDateTimeLocal());
     setTripEnd('');
@@ -346,7 +349,7 @@ export default function EmployeeHome() {
       return;
     }
 
-    const note = `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail}`;
+    const note = `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail} | 목적: ${workReason}`;
     const body: Record<string, unknown> = { status: code, note };
     if (DETAIL_FORM_STATUSES.has(code)) {
       body.effort = {
@@ -355,7 +358,7 @@ export default function EmployeeHome() {
         workType,
         startTime: workStart,
         endTime: workEnd || undefined,
-        description: workDetail,
+        description: `${workDetail} (목적: ${workReason})`,
       };
     }
     // 고객사미팅/고객사작업은 등록 순간 위치를 확인해서 등록된 고객사 위치와 대조한다(동의한 경우에만).
@@ -363,6 +366,24 @@ export default function EmployeeHome() {
       const loc = await getCurrentLocation();
       if (loc) body.location = loc;
     }
+
+    if (code === 'NIGHT_WORK') {
+      // 야간작업 완료 등록은 응답의 대체휴무 권고 여부를 바로 확인해야 해서 run()을 안 거치고 직접 호출한다.
+      setMessage(null);
+      try {
+        const res = await apiFetch<{ statusLog: unknown; nightWork: { altDayOffRecommended?: boolean } | null }>(
+          '/attendance/status', { method: 'POST', body: JSON.stringify(body) }
+        );
+        setMessage(`상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`);
+        refreshMyStatus();
+        if (res.nightWork?.altDayOffRecommended) setShowAltDayOffPrompt(true);
+      } catch (err) {
+        setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+      }
+      setDetailStatus(null);
+      return;
+    }
+
     run(
       () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
       `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`
@@ -477,6 +498,26 @@ export default function EmployeeHome() {
         </div>
       )}
 
+      {showAltDayOffPrompt && (
+        <div className="card col-full" style={{ background: '#eaf1ff', border: '1px solid #2f6feb' }}>
+          🌙 오늘 저녁 9시 이후 6시간 이상 야간근무 하셨네요! 대체휴무로 전환해두시겠어요? (관리자 승인 후 최종 확정됩니다)
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button
+              style={{ width: 'auto', margin: 0 }}
+              onClick={() => {
+                setShowAltDayOffPrompt(false);
+                changeStatus('ALT_DAY_OFF');
+              }}
+            >
+              네, 대체휴무 등록할게요
+            </button>
+            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={() => setShowAltDayOffPrompt(false)}>
+              나중에요
+            </button>
+          </div>
+        </div>
+      )}
+
       {showHqReturnPrompt && (
         <div className="card col-full" style={{ background: '#eaf1ff', border: '1px solid #2f6feb' }}>
           🏢 본사에 도착하신 것 같아요! 상태를 "본사근무"로 바꾸시겠어요?
@@ -528,12 +569,22 @@ export default function EmployeeHome() {
             <button
               className={myStatus?.record?.clockOutAt ? 'done' : 'secondary'}
               disabled={!myStatus?.record?.clockInAt || Boolean(myStatus?.record?.clockOutAt)}
-              onClick={() => run(() => apiFetch('/attendance/clock-out', { method: 'POST' }), '퇴근 처리되었습니다. 오늘도 수고하셨어요!')}
+              onClick={() =>
+                run(async () => {
+                  let locationAddress: string | undefined;
+                  if (me?.locationConsentGiven) {
+                    const loc = await getCurrentLocation();
+                    if (loc) locationAddress = (await reverseGeocode(loc.lat, loc.lng)) ?? undefined;
+                  }
+                  return apiFetch('/attendance/clock-out', { method: 'POST', body: JSON.stringify(locationAddress ? { locationAddress } : {}) });
+                }, '퇴근 처리되었습니다. 오늘도 수고하셨어요!')
+              }
             >
               {myStatus?.record?.clockOutAt ? `✓ 퇴근 완료 · ${fmtClock(myStatus.record.clockOutAt)}` : '퇴근'}
             </button>
             <p style={{ fontSize: 11, color: '#adb5bd', marginTop: 4, marginBottom: 8 }}>
               * "본사근무/고객사상주/고객사미팅/고객사작업" 상태로 바꾸거나 도착체크를 하면 출근시각이 자동으로 기록됩니다. 퇴근 버튼을 눌러야 그날 근무가 확정됩니다.
+              <br />⚠️ <strong>본사를 거치지 않고 고객사로 바로 출근(직출)하는 날은 "출근" 버튼을 먼저 누르지 마세요.</strong> 이동시간은 근로시간에 포함되지 않으므로, 고객사 도착 후 "고객사작업/고객사미팅"을 눌러야 그 시점부터 정확히 근무시간이 계산됩니다.
             </p>
             <button className="secondary" disabled={pushLoading} onClick={togglePush}>
               {pushLoading ? '처리 중...' : pushSubscribed ? '🔔 출근 알림 끄기' : '🔕 출근 알림 켜기(오전 9시)'}
@@ -697,15 +748,15 @@ export default function EmployeeHome() {
               </p>
               <label className="field-label">{detailStatus === 'REMOTE' ? '지원 고객사' : '고객사명'}</label>
               <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
-              <label className="field-label">업무내용</label>
+              <label className="field-label">업무내용(무엇을/어떻게 — 최소 10자)</label>
               <textarea
                 className="detail-textarea right-col-textarea"
                 rows={3}
-                placeholder={detailStatus === 'REMOTE' ? '예: OO상사 원격 장애대응' : '예: 서버 정기점검 및 모니터링'}
+                placeholder={detailStatus === 'REMOTE' ? '예: OO상사 방화벽 원격 장애대응 진행' : '예: 서버 정기점검 및 모니터링 대시보드 확인'}
                 value={workDetail}
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
-              <button disabled={!workDetail.trim()} onClick={submitDetailForm}>등록</button>
+              <button disabled={workDetail.trim().length < 10} onClick={submitDetailForm}>등록</button>
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
             </div>
           )}
@@ -753,16 +804,22 @@ export default function EmployeeHome() {
                 </div>
               </div>
 
-              <label className="field-label">{detailStatus === 'HQ_WORKING' ? '오늘 수행업무' : '작업내용'}</label>
+              <label className="field-label">{detailStatus === 'HQ_WORKING' ? '오늘 수행업무(무엇을/어떻게 — 최소 10자)' : '작업내용(무엇을/어떻게 — 최소 10자)'}</label>
               <textarea
                 className="detail-textarea right-col-textarea"
                 rows={3}
-                placeholder={detailStatus === 'HQ_WORKING' ? '예: 기술지원 - 백업 정책서 작성' : '예: 서버 점검 및 백업 정책 협의'}
+                placeholder={detailStatus === 'HQ_WORKING' ? '예: 기술지원으로 백업 정책서를 신규 작성했음' : '예: 서버 3대 정기점검 후 백업 정책을 재협의함'}
                 value={workDetail}
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
+              <label className="field-label">목적/사유(왜)</label>
+              <input
+                value={workReason}
+                onChange={(e) => setWorkReason(e.target.value)}
+                placeholder="예: 정기 유지보수 계약에 따른 월간 점검"
+              />
               <button
-                disabled={!workDetail.trim() || !workStart}
+                disabled={workDetail.trim().length < 10 || !workReason.trim() || !workStart}
                 onClick={submitDetailForm}
               >
                 등록

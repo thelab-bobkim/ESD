@@ -40,5 +40,11 @@ export async function recordNightWork(userId: string, startedAt: Date, endedAt: 
     }
   }
 
-  return { session: updated, leaveConversionCandidate };
+  // 포괄임금제 대상 본사 인력: 저녁 9시 이후 시작해서 6시간 이상 근무했으면 대체휴무를 권고한다.
+  // 시스템이 조용히 자동 처리하지는 않는다(근로기준법상 보상휴가는 근로자 동의가 필요) —
+  // 대신 직원에게 즉시 알려주고, 본인이 확인 버튼 한 번으로 확정하게 한다.
+  const startHourKST = (session.startedAt.getUTCHours() + 9) % 24;
+  const altDayOffRecommended = startHourKST >= 21 && workedMinutes >= 6 * 60;
+
+  return { session: updated, leaveConversionCandidate, workedMinutes, altDayOffRecommended };
 }

@@ -224,6 +224,8 @@ model AttendanceRecord {
   correctionReason    String?   @map("correction_reason")
   // 다우오피스 동기화로 채워진 값인지 여부. 수동 정정본(MANUAL)은 동기화가 덮어쓰지 않는다.
   dataSource          DataSource @default(MANUAL) @map("data_source")
+  // 퇴근 시점 위치 — 좌표는 저장하지 않고, 역지오코딩된 "주소 텍스트"만 저장한다(직원 동의 필요, core_principles 원칙 유지).
+  clockOutLocation    String?    @map("clock_out_location")
 
   breakSessions BreakSession[]
 

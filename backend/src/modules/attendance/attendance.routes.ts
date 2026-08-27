@@ -26,6 +26,23 @@ attendanceRouter.post('/clock-in', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'ALREADY_CLOCKED_IN', message: '이미 출근 처리되었습니다.' } });
   }
 
+  // 직출(본사 미경유) 시 이동시간이 근로시간에 섞이지 않도록, "이동중" 상태에서는 수동 출근 등록을 막는다.
+  // 고객사 도착 후 "고객사작업/고객사미팅" 등록 시 그 시점부터 자동으로 출근 처리된다.
+  const { start: preDayStart, end: preDayEnd } = realDayWindow(workDate);
+  const latestTodayStatus = await prisma.statusChangeLog.findFirst({
+    where: { userId, changedAt: { gte: preDayStart, lt: preDayEnd } },
+    orderBy: { changedAt: 'desc' },
+  });
+  if (latestTodayStatus?.status === 'MOVING') {
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'STILL_MOVING',
+        message: '이동시간은 근로시간에 포함되지 않습니다. 고객사 도착 후 "고객사작업/고객사미팅"을 눌러주세요 — 그 시점부터 자동으로 출근 처리됩니다.',
+      },
+    });
+  }
+
   const record = existing
     ? await prisma.attendanceRecord.update({ where: { id: existing.id }, data: { clockInAt: new Date() } })
     : await prisma.attendanceRecord.create({ data: { userId, workDate, clockInAt: new Date() } });
@@ -49,6 +66,8 @@ attendanceRouter.post('/clock-in', async (req, res) => {
 attendanceRouter.post('/clock-out', async (req, res) => {
   const userId = req.authUser!.userId;
   const workDate = todayDateOnly();
+  // 좌표는 절대 안 받고, 클라이언트에서 역지오코딩한 "주소 텍스트"만 받는다(직원 동의된 경우에만 전송됨).
+  const clockOutLocation = typeof req.body?.locationAddress === 'string' ? req.body.locationAddress.slice(0, 200) : undefined;
 
   const existing = await prisma.attendanceRecord.findUnique({
     where: { userId_workDate: { userId, workDate } },
@@ -88,7 +107,7 @@ attendanceRouter.post('/clock-out', async (req, res) => {
 
   const record = await prisma.attendanceRecord.update({
     where: { id: existing.id },
-    data: { clockOutAt, totalWorkedMinutes },
+    data: { clockOutAt, totalWorkedMinutes, ...(clockOutLocation ? { clockOutLocation } : {}) },
   });
 
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes } });

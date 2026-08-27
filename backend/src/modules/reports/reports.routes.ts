@@ -258,6 +258,7 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
     department: r.user.department.name,
     clockInAt: r.clockInAt,
     clockOutAt: r.clockOutAt,
+    clockOutLocation: r.clockOutLocation,
     totalWorkedMinutes: r.totalWorkedMinutes,
   }));
   return res.json({ success: true, data: { date: parsed.data.date, rows } });
@@ -314,6 +315,7 @@ reportsRouter.get('/daily-timeline', async (req, res) => {
       department: user.department.name,
       clockInAt: record?.clockInAt ?? null,
       clockOutAt: record?.clockOutAt ?? null,
+      clockOutLocation: record?.clockOutLocation ?? null,
       totalWorkedMinutes: record?.totalWorkedMinutes ?? null,
       timeline,
     },

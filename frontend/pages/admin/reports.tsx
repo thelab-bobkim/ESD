@@ -31,14 +31,14 @@ interface WorktimeSummary { from: string; to: string; rows: WorktimeRow[]; }
 
 interface AttendanceDetailRow {
   userId: string; employeeNo: string; name: string; department: string;
-  clockInAt: string | null; clockOutAt: string | null; totalWorkedMinutes: number | null;
+  clockInAt: string | null; clockOutAt: string | null; clockOutLocation: string | null; totalWorkedMinutes: number | null;
 }
 interface AttendanceDetail { date: string; rows: AttendanceDetailRow[]; }
 
 interface TimelineEntry { status: string; changedAt: string; note: string | null; durationMinutes: number; ongoing: boolean; }
 interface DailyTimeline {
   date: string; name: string; department: string;
-  clockInAt: string | null; clockOutAt: string | null; totalWorkedMinutes: number | null;
+  clockInAt: string | null; clockOutAt: string | null; clockOutLocation: string | null; totalWorkedMinutes: number | null;
   timeline: TimelineEntry[];
 }
 
@@ -291,7 +291,16 @@ export default function AdminReportsPage() {
                     </td>
                     <td>{r.department}</td>
                     <td>{fmtTime(r.clockInAt)}</td>
-                    <td>{r.clockOutAt ? fmtTime(r.clockOutAt) : <span style={{ color: '#f08c00', fontWeight: 600 }}>● 진행중</span>}</td>
+                    <td>
+                      {r.clockOutAt ? (
+                        <>
+                          {fmtTime(r.clockOutAt)}
+                          {r.clockOutLocation && <div style={{ fontSize: 11, color: '#868e96' }}>📍 {r.clockOutLocation}</div>}
+                        </>
+                      ) : (
+                        <span style={{ color: '#f08c00', fontWeight: 600 }}>● 진행중</span>
+                      )}
+                    </td>
                     <td>{r.totalWorkedMinutes != null ? hoursLabel(r.totalWorkedMinutes) : '-'}</td>
                   </tr>
                 ))}
@@ -460,6 +469,7 @@ export default function AdminReportsPage() {
                 <p style={{ fontSize: 13, color: '#495057' }}>
                   {timeline.department} · 출근 {fmtTime(timeline.clockInAt)} · 퇴근 {timeline.clockOutAt ? fmtTime(timeline.clockOutAt) : '진행중'}
                   {timeline.totalWorkedMinutes != null && ` · 근무시간 ${hoursLabel(timeline.totalWorkedMinutes)}`}
+                  {timeline.clockOutLocation && ` · 📍 ${timeline.clockOutLocation}`}
                 </p>
                 {timeline.timeline.length === 0 && <div className="board-empty">이 날짜에 등록된 상태 변경이 없습니다.</div>}
                 {timeline.timeline.map((t, i) => {
