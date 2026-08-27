@@ -260,15 +260,9 @@ export default function EmployeeHome() {
 
   function changeStatus(code: string, prefilledClientName?: string) {
     const alreadyInThisStatus = currentStatus?.status === code;
-
-    // 지금 상태의 내용(note)을 아직 안 채웠는데 다른 상태로 넘어가려 하면 막고, 그 상태의
-    // 입력폼을 대신 열어준다 — "내용입력이 끝나야 다음 상태로 넘어갈 수 있다" 원칙.
-    if (currentStatus && !currentStatus.note && !alreadyInThisStatus) {
-      const pendingLabel = STATUS_META[currentStatus.status]?.label ?? currentStatus.status;
-      setMessage(`⚠️ 먼저 '${pendingLabel}'의 내용을 입력해주세요. 내용을 등록해야 다른 상태로 바꿀 수 있어요.`);
-      openDetailForm(currentStatus.status);
-      return;
-    }
+    // 직전 상태의 내용을 아직 안 채운 채로 다른 상태로 넘어가는 경우, 막지는 않되(사용자가 화면에
+    // 갇히면 안 되므로) "직전 것도 잊지 마세요" 정도의 부드러운 리마인더만 붙여준다.
+    const pendingPrev = currentStatus && !currentStatus.note && !alreadyInThisStatus ? currentStatus : null;
 
     // 즉시등록 대상은 처음 누르면 상세폼 없이 바로 등록해서 상황판에 즉시 반영한다.
     // ("세부내용은 나중에 작성" — 시작하는 시점엔 아직 쓸 내용이 없는 게 당연하므로.)
@@ -282,7 +276,9 @@ export default function EmployeeHome() {
       }
       run(
         () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-        `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요.`
+        pendingPrev
+          ? `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요. (직전 '${STATUS_META[pendingPrev.status]?.label ?? pendingPrev.status}' 내용도 잊지 말고 채워주세요!)`
+          : `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요.`
       );
       // 상태변경과 동시에 세부내용 입력폼도 바로 아래에 띄운다(두 번 누를 필요 없게).
       openDetailForm(code, prefilledClientName);
