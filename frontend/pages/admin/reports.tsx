@@ -98,6 +98,33 @@ function shiftAnchor(period: Period, anchor: Date, dir: 1 | -1): Date {
   return d;
 }
 
+function AttendanceRowTr({ r, onClick, hideDept }: { r: AttendanceDetailRow; onClick: () => void; hideDept?: boolean }) {
+  return (
+    <tr style={{ cursor: 'pointer' }} onClick={onClick}>
+      <td>
+        <div className="chip-row">
+          <div className="chip-avatar" style={{ background: r.clockOutAt ? '#2f9e44' : '#f08c00' }}>{r.name.slice(-2)}</div>
+          {r.name}
+          <span style={{ fontSize: 11, color: '#2f6feb', marginLeft: 4 }}>상세보기 ▸</span>
+        </div>
+      </td>
+      {!hideDept && <td>{r.department}</td>}
+      <td>{fmtTime(r.clockInAt)}</td>
+      <td>
+        {r.clockOutAt ? (
+          <>
+            {fmtTime(r.clockOutAt)}
+            {r.clockOutLocation && <div style={{ fontSize: 11, color: '#868e96' }}>📍 {r.clockOutLocation}</div>}
+          </>
+        ) : (
+          <span style={{ color: '#f08c00', fontWeight: 600 }}>● 진행중</span>
+        )}
+      </td>
+      <td>{r.totalWorkedMinutes != null ? hoursLabel(r.totalWorkedMinutes) : '-'}</td>
+    </tr>
+  );
+}
+
 export default function AdminReportsPage() {
   const router = useRouter();
   const [period, setPeriod] = useState<Period>('day');
@@ -112,6 +139,7 @@ export default function AdminReportsPage() {
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [timelineTarget, setTimelineTarget] = useState<{ userId: string; date: string } | null>(null);
+  const [groupByDept, setGroupByDept] = useState(true);
   const [timeline, setTimeline] = useState<DailyTimeline | null>(null);
 
   function openTimeline(userId: string, date: string) {
@@ -177,6 +205,23 @@ export default function AdminReportsPage() {
     const inProgress = attendanceDetail.rows.filter((r) => r.clockInAt && !r.clockOutAt).length;
     const done = attendanceDetail.rows.filter((r) => r.clockOutAt).length;
     return { total, inProgress, done };
+  }, [attendanceDetail]);
+
+  // 부서별 보기 — 조직도(부서명) 기준으로 묶어서, 부서명은 가나다순 / 부서 안에서는 출근시각순으로 보여준다.
+  const attendanceByDept = useMemo(() => {
+    if (!attendanceDetail) return null;
+    const map = new Map<string, AttendanceDetailRow[]>();
+    for (const r of attendanceDetail.rows) {
+      const key = r.department || '(부서 미지정)';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(r);
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0], 'ko'))
+      .map(([department, rows]) => ({
+        department,
+        rows: [...rows].sort((a, b) => (a.clockInAt ?? '').localeCompare(b.clockInAt ?? '')),
+      }));
   }, [attendanceDetail]);
 
   const periodSummary = useMemo(() => {
@@ -266,47 +311,54 @@ export default function AdminReportsPage() {
       {/* 하루 단위: 출퇴근 상세표 */}
       {isSingleDay && (
         <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <h2>🕒 출퇴근 현황 — {rangeLabel}</h2>
-            <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
-              CSV 내려받기
-            </button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                style={{ width: 'auto', margin: 0 }}
+                className={groupByDept ? undefined : 'secondary'}
+                onClick={() => setGroupByDept((v) => !v)}
+              >
+                {groupByDept ? '👥 부서별 보기 중' : '📋 전체 목록 보기 중'}
+              </button>
+              <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
+                CSV 내려받기
+              </button>
+            </div>
           </div>
           {!attendanceDetail && <div className="board-empty">불러오는 중...</div>}
           {attendanceDetail && attendanceDetail.rows.length === 0 && <div className="board-empty">이 날짜에 출근 기록이 없습니다.</div>}
-          {attendanceDetail && attendanceDetail.rows.length > 0 && (
+
+          {attendanceDetail && attendanceDetail.rows.length > 0 && !groupByDept && (
             <table>
               <thead>
                 <tr><th>이름</th><th>부서</th><th>출근</th><th>퇴근</th><th>근무시간</th></tr>
               </thead>
               <tbody>
                 {attendanceDetail.rows.map((r) => (
-                  <tr key={r.userId} style={{ cursor: 'pointer' }} onClick={() => openTimeline(r.userId, attendanceDetail.date)}>
-                    <td>
-                      <div className="chip-row">
-                        <div className="chip-avatar" style={{ background: r.clockOutAt ? '#2f9e44' : '#f08c00' }}>{r.name.slice(-2)}</div>
-                        {r.name}
-                        <span style={{ fontSize: 11, color: '#2f6feb', marginLeft: 4 }}>상세보기 ▸</span>
-                      </div>
-                    </td>
-                    <td>{r.department}</td>
-                    <td>{fmtTime(r.clockInAt)}</td>
-                    <td>
-                      {r.clockOutAt ? (
-                        <>
-                          {fmtTime(r.clockOutAt)}
-                          {r.clockOutLocation && <div style={{ fontSize: 11, color: '#868e96' }}>📍 {r.clockOutLocation}</div>}
-                        </>
-                      ) : (
-                        <span style={{ color: '#f08c00', fontWeight: 600 }}>● 진행중</span>
-                      )}
-                    </td>
-                    <td>{r.totalWorkedMinutes != null ? hoursLabel(r.totalWorkedMinutes) : '-'}</td>
-                  </tr>
+                  <AttendanceRowTr key={r.userId} r={r} onClick={() => openTimeline(r.userId, attendanceDetail.date)} />
                 ))}
               </tbody>
             </table>
           )}
+
+          {attendanceByDept && attendanceByDept.length > 0 && groupByDept && attendanceByDept.map(({ department, rows }) => (
+            <div key={department} style={{ marginBottom: 18 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: '#2f6feb', margin: '10px 0 4px' }}>
+                🏷️ {department} <span style={{ color: '#868e96', fontWeight: 400 }}>({rows.length}명)</span>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>이름</th><th>출근</th><th>퇴근</th><th>근무시간</th></tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <AttendanceRowTr key={r.userId} r={r} onClick={() => openTimeline(r.userId, attendanceDetail!.date)} hideDept />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
         </div>
       )}
 
