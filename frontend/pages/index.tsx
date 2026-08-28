@@ -37,6 +37,8 @@ const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK'])
 const SIMPLE_CLIENT_STATUSES = new Set(['REMOTE', 'RESIDENT_ONSITE']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
+// 고객사미팅은 "작업"이 아니라 "미팅"이라 유형 대신 목적으로 구분한다.
+const MEETING_PURPOSE_OPTIONS = ['백업미팅', '식사', '신규방문', '프로젝트미팅', '기타'];
 // 본사근무는 고객사 작업과 성격이 달라서(기술지원/셀프스터디 등) 별도 유형 목록을 쓴다.
 const HQ_WORK_TYPE_OPTIONS = ['기술지원', '셀프스터디', '교육', '문서작성', '내부미팅', '기타'];
 const WEEKLY_LIMIT_MINUTES = 52 * 60;
@@ -250,7 +252,7 @@ export default function EmployeeHome() {
     setProjectName('');
     setWorkStart(nowHHMM());
     setWorkEnd('');
-    setWorkType(code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : WORK_TYPE_OPTIONS[0]);
+    setWorkType(code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : code === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS[0] : WORK_TYPE_OPTIONS[0]);
     setWorkDetail('');
     setWorkReason('');
     setTripDestination('');
@@ -355,7 +357,9 @@ export default function EmployeeHome() {
       return;
     }
 
-    const note = `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail} | 목적: ${workReason}`;
+    const note = code === 'CLIENT_MEETING'
+      ? `미팅목적: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 미팅주제: ${workDetail} | 목적: ${workReason}`
+      : `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail} | 목적: ${workReason}`;
     const body: Record<string, unknown> = { status: code, note };
     if (DETAIL_FORM_STATUSES.has(code)) {
       body.effort = {
@@ -807,29 +811,31 @@ export default function EmployeeHome() {
                 </>
               )}
 
-              <label className="field-label">작업 유형</label>
+              <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅목적' : '작업 유형'}</label>
               <select className="field-select" value={workType} onChange={(e) => setWorkType(e.target.value)}>
-                {(detailStatus === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS : WORK_TYPE_OPTIONS).map((opt) => (
+                {(detailStatus === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS : detailStatus === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS : WORK_TYPE_OPTIONS).map((opt) => (
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>
 
               <div style={{ display: 'flex', gap: 8 }}>
                 <div style={{ flex: 1 }}>
-                  <label className="field-label">작업시작</label>
+                  <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅시작' : '작업시작'}</label>
                   <input type="time" value={workStart} onChange={(e) => setWorkStart(e.target.value)} />
                 </div>
                 <div style={{ flex: 1 }}>
-                  <label className="field-label">작업완료(선택 — 진행중이면 비워두세요)</label>
+                  <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅완료(선택 — 진행중이면 비워두세요)' : '작업완료(선택 — 진행중이면 비워두세요)'}</label>
                   <input type="time" value={workEnd} onChange={(e) => setWorkEnd(e.target.value)} />
                 </div>
               </div>
 
-              <label className="field-label">{detailStatus === 'HQ_WORKING' ? '오늘 수행업무(무엇을/어떻게 — 최소 10자)' : '작업내용(무엇을/어떻게 — 최소 10자)'}</label>
+              <label className="field-label">
+                {detailStatus === 'HQ_WORKING' ? '오늘 수행업무(무엇을/어떻게 — 최소 10자)' : detailStatus === 'CLIENT_MEETING' ? '미팅주제(무엇을/어떻게 — 최소 10자)' : '작업내용(무엇을/어떻게 — 최소 10자)'}
+              </label>
               <textarea
                 className="detail-textarea right-col-textarea"
                 rows={3}
-                placeholder={detailStatus === 'HQ_WORKING' ? '예: 기술지원으로 백업 정책서를 신규 작성했음' : '예: 서버 3대 정기점검 후 백업 정책을 재협의함'}
+                placeholder={detailStatus === 'HQ_WORKING' ? '예: 기술지원으로 백업 정책서를 신규 작성했음' : detailStatus === 'CLIENT_MEETING' ? '예: 2026년도 유지보수 계약 조건 협의' : '예: 서버 3대 정기점검 후 백업 정책을 재협의함'}
                 value={workDetail}
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
