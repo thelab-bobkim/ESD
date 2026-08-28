@@ -269,7 +269,7 @@ export default function EmployeeHome() {
     setTimeout(() => detailFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   }
 
-  function changeStatus(code: string, prefilledClientName?: string) {
+  async function changeStatus(code: string, prefilledClientName?: string) {
     const alreadyInThisStatus = currentStatus?.status === code;
     // 직전 상태의 내용을 아직 안 채운 채로 다른 상태로 넘어가는 경우, 막지는 않되(사용자가 화면에
     // 갇히면 안 되므로) "직전 것도 잊지 마세요" 정도의 부드러운 리마인더만 붙여준다.
@@ -284,6 +284,12 @@ export default function EmployeeHome() {
       }
       if (code === 'BUSINESS_TRIP') {
         body.businessTrip = { destination: '(추후 입력)', purpose: '(추후 입력)', startAt: new Date().toISOString() };
+      }
+      // 본사근무는 실제로 본사에 있는지 위치로 확인한다(동의한 경우만) — 아니면 서버에서 막고
+      // 고객사미팅/작업으로 유도한다.
+      if (code === 'HQ_WORKING' && me?.locationConsentGiven) {
+        const loc = await getCurrentLocation();
+        if (loc) body.location = loc;
       }
       run(
         () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),

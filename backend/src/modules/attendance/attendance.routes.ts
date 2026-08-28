@@ -187,6 +187,25 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'TIME_REQUIRED', message: '작업시작 시간을 입력해야 합니다.' } });
   }
 
+  // 본사근무 등록: 위치정보가 있고 본사 좌표가 등록되어 있는데 본사와 멀리 떨어져 있으면,
+  // "출근" 버튼과 동일하게 본사근무 등록 자체를 막고 고객사미팅/고객사작업으로 유도한다.
+  if (status === 'HQ_WORKING' && location) {
+    const hqLat = await getPolicyString('HQ_LATITUDE', '');
+    const hqLng = await getPolicyString('HQ_LONGITUDE', '');
+    if (hqLat && hqLng) {
+      const hqMatch = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) });
+      if (hqMatch && !hqMatch.locationMatch) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'AWAY_FROM_HQ',
+            message: `현재 위치가 본사에서 약 ${hqMatch.locationDistanceMeters}m 떨어져 있어요. 본사근무 대신 "고객사미팅" 또는 "고객사작업"으로 등록해주세요.`,
+          },
+        });
+      }
+    }
+  }
+
   // 위치대조: 입력한 고객사명과 등록된 고객사를 이름으로 매칭해서 좌표를 비교한다.
   // 매칭되는 고객사가 없거나 좌표 미등록/위치권한 없음이면 그냥 null(확인 안 함)로 둔다.
   let locationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
