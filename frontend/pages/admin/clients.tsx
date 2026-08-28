@@ -14,7 +14,7 @@ export default function AdminClientsPage() {
   const router = useRouter();
   const [clients, setClients] = useState<ClientRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState<Record<string, { lat: string; lng: string }>>({});
+  const [editing, setEditing] = useState<Record<string, { name: string; address: string; lat: string; lng: string }>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [mapTargetId, setMapTargetId] = useState<string | null>(null);
@@ -25,6 +25,17 @@ export default function AdminClientsPage() {
   const [showHqMap, setShowHqMap] = useState(false);
   const [savingHq, setSavingHq] = useState(false);
   const [search, setSearch] = useState('');
+  const [sortKey, setSortKey] = useState<'name' | 'address'>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+
+  function toggleSort(key: 'name' | 'address') {
+    if (sortKey === key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+  }
 
   function loadHq() {
     apiFetch<HqLocation>('/clients/hq-location').then(setHqLocation).catch(() => {});
@@ -51,9 +62,9 @@ export default function AdminClientsPage() {
         // 혹시 서버 정렬이 안 먹었을 경우를 대비해 화면에서도 한글 로케일 기준으로 한 번 더 정렬한다.
         const sorted = [...data].sort((a, b) => a.name.localeCompare(b.name, 'ko'));
         setClients(sorted);
-        const initial: Record<string, { lat: string; lng: string }> = {};
+        const initial: Record<string, { name: string; address: string; lat: string; lng: string }> = {};
         sorted.forEach((c) => {
-          initial[c.id] = { lat: c.latitude?.toString() ?? '', lng: c.longitude?.toString() ?? '' };
+          initial[c.id] = { name: c.name, address: c.address, lat: c.latitude?.toString() ?? '', lng: c.longitude?.toString() ?? '' };
         });
         setEditing(initial);
       })
@@ -65,12 +76,12 @@ export default function AdminClientsPage() {
 
   useEffect(load, []);
 
-  async function saveCoordsValue(id: string, lat: number, lng: number, address?: string) {
+  async function saveCoordsValue(id: string, lat: number, lng: number, address?: string, name?: string) {
     setSaving(id);
     try {
       await apiFetch(`/clients/${id}/coordinates`, {
         method: 'PUT',
-        body: JSON.stringify({ latitude: lat, longitude: lng, ...(address ? { address } : {}) }),
+        body: JSON.stringify({ latitude: lat, longitude: lng, ...(address ? { address } : {}), ...(name ? { name } : {}) }),
       });
       load();
     } catch (err) {
@@ -81,7 +92,11 @@ export default function AdminClientsPage() {
   }
 
   async function saveCoords(id: string) {
-    const { lat, lng } = editing[id] ?? { lat: '', lng: '' };
+    const { name, address, lat, lng } = editing[id] ?? { name: '', address: '', lat: '', lng: '' };
+    if (!name.trim() || !address.trim()) {
+      setError('고객사명과 주소를 모두 입력해주세요.');
+      return;
+    }
     if (!lat.trim() || !lng.trim()) {
       setError('위도/경도를 모두 입력해주세요.');
       return;
@@ -91,7 +106,7 @@ export default function AdminClientsPage() {
       return;
     }
     setError(null);
-    await saveCoordsValue(id, Number(lat), Number(lng));
+    await saveCoordsValue(id, Number(lat), Number(lng), address, name);
   }
 
   async function deleteClient(id: string, name: string) {
@@ -135,7 +150,14 @@ export default function AdminClientsPage() {
   }
 
   const mapTargetClient = clients?.find((c) => c.id === mapTargetId) ?? null;
-  const visibleClients = clients?.filter((c) => c.name.includes(search) || c.address.includes(search)) ?? null;
+  const visibleClients = clients
+    ? clients
+        .filter((c) => c.name.includes(search) || c.address.includes(search))
+        .sort((a, b) => {
+          const cmp = a[sortKey].localeCompare(b[sortKey], 'ko');
+          return sortDir === 'asc' ? cmp : -cmp;
+        })
+    : null;
 
   return (
     <div className="admin-shell">
@@ -214,13 +236,33 @@ export default function AdminClientsPage() {
         {visibleClients && visibleClients.length > 0 && (
           <table>
             <thead>
-              <tr><th>고객사명</th><th>주소</th><th>위도</th><th>경도</th><th>상태</th><th></th></tr>
+              <tr>
+                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('name')}>
+                  고객사명 {sortKey === 'name' ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}
+                </th>
+                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('address')}>
+                  주소 {sortKey === 'address' ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}
+                </th>
+                <th>위도</th><th>경도</th><th>상태</th><th></th>
+              </tr>
             </thead>
             <tbody>
               {visibleClients.map((c) => (
                 <tr key={c.id}>
-                  <td>{c.name}</td>
-                  <td style={{ fontSize: 12, color: '#868e96' }}>{c.address}</td>
+                  <td>
+                    <input
+                      style={{ margin: 0, width: 140 }}
+                      value={editing[c.id]?.name ?? ''}
+                      onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], name: e.target.value } }))}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      style={{ margin: 0, width: 220, fontSize: 12, color: '#495057' }}
+                      value={editing[c.id]?.address ?? ''}
+                      onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], address: e.target.value } }))}
+                    />
+                  </td>
                   <td>
                     <input
                       style={{ margin: 0, width: 150 }}
@@ -240,9 +282,6 @@ export default function AdminClientsPage() {
                   <td>{c.hasCoordinates ? <span style={{ color: '#2f9e44' }}>✓ 등록됨</span> : <span style={{ color: '#adb5bd' }}>미등록</span>}</td>
                   <td>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      <button style={{ width: 'auto', margin: 0 }} onClick={() => setMapTargetId(c.id)}>
-                        🗺️ 지도에서 찾기
-                      </button>
                       <button style={{ width: 'auto', margin: 0 }} className="secondary" disabled={saving === c.id} onClick={() => saveCoords(c.id)}>
                         {saving === c.id ? '저장중...' : '직접입력 저장'}
                       </button>

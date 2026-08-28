@@ -103,15 +103,16 @@ clientsRouter.delete('/:id', async (req, res) => {
 const updateCoordsSchema = z.object({
   latitude: z.number().min(-90).max(90).nullable(),
   longitude: z.number().min(-180).max(180).nullable(),
-  // 지도에서 검색해서 찾은 주소가 있으면 같이 갱신한다(선택값 — 직접입력 저장 시엔 안 넘어옴).
+  // 지도에서 검색해서 찾은 값이거나, 직접입력 저장에서 고객사명/주소를 같이 고친 경우 넘어온다.
+  name: z.string().min(1).optional(),
   address: z.string().optional(),
 });
 
-/** 고객사 좌표 등록/수정 — 위치대조에 쓸 기준 좌표. 지도(구글맵 등)에서 조회한 값을 그대로 입력하면 된다. */
+/** 고객사 정보(고객사명/주소/좌표) 전체 수정 — "직접입력 저장"에서 한 줄 전체를 고칠 때 쓴다. */
 clientsRouter.put('/:id/coordinates', async (req, res) => {
   const parsed = updateCoordsSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '위도/경도 값을 확인하세요.' } });
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '입력값을 확인하세요.' } });
   }
   const client = await prisma.client.findUnique({ where: { id: req.params.id } });
   if (!client) {
@@ -122,6 +123,7 @@ clientsRouter.put('/:id/coordinates', async (req, res) => {
     data: {
       latitude: parsed.data.latitude,
       longitude: parsed.data.longitude,
+      ...(parsed.data.name ? { name: parsed.data.name } : {}),
       ...(parsed.data.address ? { address: parsed.data.address } : {}),
     },
   });
