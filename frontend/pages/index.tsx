@@ -294,7 +294,7 @@ export default function EmployeeHome() {
       run(
         () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
         pendingPrev
-          ? `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요. (직전 '${STATUS_META[pendingPrev.status]?.label ?? pendingPrev.status}' 내용도 잊지 말고 채워주세요!)`
+          ? `⚠️ 상태가 '${STATUS_META[code].label}'(으)로 변경됐지만, 직전 '${STATUS_META[pendingPrev.status]?.label ?? pendingPrev.status}' 내용을 아직 안 채우셨어요! 잊지 말고 채워주세요.`
           : `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요.`
       );
       // 상태변경과 동시에 세부내용 입력폼도 바로 아래에 띄운다(두 번 누를 필요 없게).
@@ -615,8 +615,11 @@ export default function EmployeeHome() {
             </button>
             <p style={{ fontSize: 11, color: '#adb5bd', marginTop: 4, marginBottom: 8 }}>
               * "본사근무/고객사상주/고객사미팅/고객사작업" 상태로 바꾸거나 도착체크를 하면 출근시각이 자동으로 기록됩니다. 퇴근 버튼을 눌러야 그날 근무가 확정됩니다.
-              <br />⚠️ <strong>본사를 거치지 않고 고객사로 바로 출근(직출)하는 날은 "출근" 버튼을 먼저 누르지 마세요.</strong> 이동시간은 근로시간에 포함되지 않으므로, 고객사 도착 후 "고객사작업/고객사미팅"을 눌러야 그 시점부터 정확히 근무시간이 계산됩니다.
             </p>
+            <div style={{ background: '#fff4e6', border: '1px solid #ffa94d', borderRadius: 8, padding: '10px 12px', marginBottom: 8, fontSize: 13, color: '#c2410c', fontWeight: 600, lineHeight: 1.5 }}>
+              ⚠️ 본사를 거치지 않고 고객사로 바로 출근(직출)하는 날은 "출근" 버튼을 먼저 누르지 마세요.
+              <span style={{ fontWeight: 400 }}> 이동시간은 근로시간에 포함되지 않으므로, 고객사 도착 후 "고객사작업/고객사미팅"을 눌러야 그 시점부터 정확히 근무시간이 계산됩니다.</span>
+            </div>
             <button className="secondary" disabled={pushLoading} onClick={togglePush}>
               {pushLoading ? '처리 중...' : pushSubscribed ? '🔔 출근 알림 끄기' : '🔕 출근 알림 켜기(오전 9시)'}
             </button>
@@ -676,7 +679,7 @@ export default function EmployeeHome() {
           {detailStatus === 'BUSINESS_TRIP' && (
             <div className="card right-col-card">
               <h2>✈️ 출장 등록</h2>
-              <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+              <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
                 * 목적지·출발일시·목적은 필수입니다. 복귀예정일시는 몰라도 비워두고 등록 가능합니다.
               </p>
               <label className="field-label">목적지</label>
@@ -711,7 +714,7 @@ export default function EmployeeHome() {
           {detailStatus === 'ON_LEAVE' && (
             <div className="card right-col-card">
               <h2>🌴 휴가 등록</h2>
-              <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+              <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
                 * 휴가 시작일·종료일은 필수입니다. 행선지·비상연락처는 남겨두시면 급한 연락에 도움이 됩니다.
               </p>
               <div style={{ display: 'flex', gap: 8 }}>
@@ -736,7 +739,7 @@ export default function EmployeeHome() {
           {detailStatus === 'ALT_DAY_OFF' && (
             <div className="card right-col-card">
               <h2>🏖️ 대체휴무 등록</h2>
-              <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+              <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
                 * 대체휴무 사용일은 필수입니다. 여러 날 쓰신다면 종료일도 같이 넣어주세요.
               </p>
               <div style={{ display: 'flex', gap: 8 }}>
@@ -759,7 +762,7 @@ export default function EmployeeHome() {
           {detailStatus === 'MOVING' && (
             <div className="card right-col-card">
               <h2>🚙 이동경로 추가</h2>
-              <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+              <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
                 * 어디서 어디로 이동하시는지 남겨주세요. 등록하면 바로 "이동중" 상태로 반영됩니다.
               </p>
               <label className="field-label">출발지</label>
@@ -774,7 +777,7 @@ export default function EmployeeHome() {
           {detailStatus && SIMPLE_CLIENT_STATUSES.has(detailStatus) && (
             <div className="card right-col-card">
               <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 등록</h2>
-              <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+              <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
                 * {detailStatus === 'REMOTE' ? '어떤 고객을 지원하고 계신지 남겨주세요.' : '어떤 업무로 상주 중이신지 남겨주세요.'} 등록하면 바로 상태가 반영됩니다.
               </p>
               <label className="field-label">{detailStatus === 'REMOTE' ? '지원 고객사' : '고객사명'}</label>
@@ -796,11 +799,11 @@ export default function EmployeeHome() {
             <div className="card right-col-card">
               <h2>{STATUS_META[detailStatus].icon} {detailStatus === 'HQ_WORKING' ? '본사근무 업무일지' : QUICK_REGISTER_STATUSES.has(detailStatus) ? `${STATUS_META[detailStatus].label} 내용 추가` : `${STATUS_META[detailStatus].label} 등록`}</h2>
               {QUICK_REGISTER_STATUSES.has(detailStatus) ? (
-                <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+                <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
                   * 이미 '{STATUS_META[detailStatus].label}'(으)로 등록되어 있습니다. 작업이 마무리됐으면 여기서 내용/완료시간을 채워주세요.
                 </p>
               ) : (
-                <p style={{ fontSize: 12, color: '#868e96', marginTop: -4, marginBottom: 10 }}>
+                <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
                   * 내용을 입력하고 등록하면 바로 '{STATUS_META[detailStatus].label}' 상태로 반영됩니다. 완료시간은 몰라도(진행중이면) 비워두고 등록 가능합니다.
                 </p>
               )}
