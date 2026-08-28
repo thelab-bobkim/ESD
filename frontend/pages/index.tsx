@@ -107,6 +107,7 @@ export default function EmployeeHome() {
   const [arrivedClient, setArrivedClient] = useState<string | null>(null);
   const hqPromptSnoozedUntilRef = useRef(0);
   const clientPromptSnoozedUntilRef = useRef(0);  const [message, setMessage] = useState<string | null>(null);
+  const [messageIsError, setMessageIsError] = useState(false);
   const [myStatus, setMyStatus] = useState<MeAttendance | null>(null);
   const currentStatus = myStatus?.latestStatus;
   const clockedOut = Boolean(myStatus?.record?.clockOutAt);
@@ -156,13 +157,16 @@ export default function EmployeeHome() {
         await unsubscribeFromPush();
         setPushSubscribed(false);
         setMessage('출근 알림을 껐습니다.');
+        setMessageIsError(false);
       } else {
         await subscribeToPush();
         setPushSubscribed(true);
         setMessage('출근 알림을 켰습니다. 매일 오전 9시까지 상태를 등록하지 않으면 알려드립니다.');
+        setMessageIsError(false);
       }
     } catch (err) {
       setMessage(err instanceof Error ? err.message : '알림 설정에 실패했습니다.');
+      setMessageIsError(true);
     } finally {
       setPushLoading(false);
     }
@@ -229,12 +233,14 @@ export default function EmployeeHome() {
 
   async function run(action: () => Promise<unknown>, successMsg: string) {
     setMessage(null);
+    setMessageIsError(false);
     try {
       await action();
       setMessage(successMsg);
       refreshMyStatus();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+      setMessageIsError(true);
     }
   }
 
@@ -370,6 +376,7 @@ export default function EmployeeHome() {
     if (code === 'NIGHT_WORK') {
       // 야간작업 완료 등록은 응답의 대체휴무 권고 여부를 바로 확인해야 해서 run()을 안 거치고 직접 호출한다.
       setMessage(null);
+      setMessageIsError(false);
       try {
         const res = await apiFetch<{ statusLog: unknown; nightWork: { altDayOffRecommended?: boolean } | null }>(
           '/attendance/status', { method: 'POST', body: JSON.stringify(body) }
@@ -379,6 +386,7 @@ export default function EmployeeHome() {
         if (res.nightWork?.altDayOffRecommended) setShowAltDayOffPrompt(true);
       } catch (err) {
         setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+        setMessageIsError(true);
       }
       setDetailStatus(null);
       return;
@@ -548,7 +556,11 @@ export default function EmployeeHome() {
       {message && (
         <div
           className="card col-full"
-          style={{ background: message.startsWith('⚠️') ? '#fff4e6' : '#eef7ee', color: message.startsWith('⚠️') ? '#e8590c' : undefined, fontWeight: message.startsWith('⚠️') ? 600 : undefined }}
+          style={{
+            background: message.startsWith('⚠️') || messageIsError ? '#fff4e6' : '#eef7ee',
+            color: message.startsWith('⚠️') || messageIsError ? '#e8590c' : undefined,
+            fontWeight: message.startsWith('⚠️') || messageIsError ? 600 : undefined,
+          }}
         >
           {message}
         </div>
@@ -562,7 +574,16 @@ export default function EmployeeHome() {
             <button
               className={myStatus?.record?.clockInAt ? 'done' : ''}
               disabled={Boolean(myStatus?.record?.clockInAt)}
-              onClick={() => run(() => apiFetch('/attendance/clock-in', { method: 'POST' }), '출근 처리되었습니다.')}
+              onClick={() =>
+                run(async () => {
+                  let location: { lat: number; lng: number } | undefined;
+                  if (me?.locationConsentGiven) {
+                    const loc = await getCurrentLocation();
+                    if (loc) location = loc;
+                  }
+                  return apiFetch('/attendance/clock-in', { method: 'POST', body: JSON.stringify(location ? { location } : {}) });
+                }, '출근 처리되었습니다.')
+              }
             >
               {myStatus?.record?.clockInAt ? `✓ 출근 완료 · ${fmtClock(myStatus.record.clockInAt)}` : '출근'}
             </button>

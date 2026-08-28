@@ -20,6 +20,8 @@ const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK'])
 attendanceRouter.post('/clock-in', async (req, res) => {
   const userId = req.authUser!.userId;
   const workDate = todayDateOnly();
+  // 좌표는 저장하지 않고, 본사와의 거리 비교에만 즉시 사용하고 폐기한다.
+  const location = req.body?.location as { lat: number; lng: number } | undefined;
 
   const existing = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate } } });
   if (existing?.clockInAt) {
@@ -41,6 +43,25 @@ attendanceRouter.post('/clock-in', async (req, res) => {
         message: '이동시간은 근로시간에 포함되지 않습니다. 고객사 도착 후 "고객사작업/고객사미팅"을 눌러주세요 — 그 시점부터 자동으로 출근 처리됩니다.',
       },
     });
+  }
+
+  // 직출(본사 미경유): 위치정보가 있고 본사 좌표가 등록되어 있는데 본사와 멀리 떨어져 있으면,
+  // "출근" 버튼으로 본사근무 처리해버리지 않고 고객사미팅/고객사작업으로 유도한다.
+  if (location) {
+    const hqLat = await getPolicyString('HQ_LATITUDE', '');
+    const hqLng = await getPolicyString('HQ_LONGITUDE', '');
+    if (hqLat && hqLng) {
+      const match = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) });
+      if (match && !match.locationMatch) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'AWAY_FROM_HQ',
+            message: `현재 위치가 본사에서 약 ${match.locationDistanceMeters}m 떨어져 있어요. 본사로 출근하는 게 아니라면, "출근" 버튼 대신 고객사 도착 후 "고객사미팅" 또는 "고객사작업"을 눌러 진행해주세요 — 그 시점부터 자동으로 출근 처리됩니다.`,
+          },
+        });
+      }
+    }
   }
 
   const record = existing
