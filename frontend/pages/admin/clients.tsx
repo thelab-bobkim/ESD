@@ -16,6 +16,7 @@ export default function AdminClientsPage() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Record<string, { lat: string; lng: string }>>({});
   const [saving, setSaving] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [mapTargetId, setMapTargetId] = useState<string | null>(null);
   const [showAddMap, setShowAddMap] = useState(false);
   const [newClientDraft, setNewClientDraft] = useState<NewClientDraft | null>(null);
@@ -23,6 +24,7 @@ export default function AdminClientsPage() {
   const [hqLocation, setHqLocation] = useState<HqLocation | null>(null);
   const [showHqMap, setShowHqMap] = useState(false);
   const [savingHq, setSavingHq] = useState(false);
+  const [search, setSearch] = useState('');
 
   function loadHq() {
     apiFetch<HqLocation>('/clients/hq-location').then(setHqLocation).catch(() => {});
@@ -46,9 +48,11 @@ export default function AdminClientsPage() {
   function load() {
     apiFetch<ClientRow[]>('/clients')
       .then((data) => {
-        setClients(data);
+        // 혹시 서버 정렬이 안 먹었을 경우를 대비해 화면에서도 한글 로케일 기준으로 한 번 더 정렬한다.
+        const sorted = [...data].sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+        setClients(sorted);
         const initial: Record<string, { lat: string; lng: string }> = {};
-        data.forEach((c) => {
+        sorted.forEach((c) => {
           initial[c.id] = { lat: c.latitude?.toString() ?? '', lng: c.longitude?.toString() ?? '' };
         });
         setEditing(initial);
@@ -78,8 +82,29 @@ export default function AdminClientsPage() {
 
   async function saveCoords(id: string) {
     const { lat, lng } = editing[id] ?? { lat: '', lng: '' };
-    if (!lat.trim() || !lng.trim()) return;
+    if (!lat.trim() || !lng.trim()) {
+      setError('위도/경도를 모두 입력해주세요.');
+      return;
+    }
+    if (Number.isNaN(Number(lat)) || Number.isNaN(Number(lng))) {
+      setError('위도/경도는 숫자로 입력해주세요.');
+      return;
+    }
+    setError(null);
     await saveCoordsValue(id, Number(lat), Number(lng));
+  }
+
+  async function deleteClient(id: string, name: string) {
+    if (!window.confirm(`"${name}" 고객사를 목록에서 삭제하시겠어요? 되돌릴 수 없습니다.`)) return;
+    setDeleting(id);
+    try {
+      await apiFetch(`/clients/${id}`, { method: 'DELETE' });
+      load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '삭제에 실패했습니다.');
+    } finally {
+      setDeleting(null);
+    }
   }
 
   async function createClient() {
@@ -110,6 +135,7 @@ export default function AdminClientsPage() {
   }
 
   const mapTargetClient = clients?.find((c) => c.id === mapTargetId) ?? null;
+  const visibleClients = clients?.filter((c) => c.name.includes(search) || c.address.includes(search)) ?? null;
 
   return (
     <div className="admin-shell">
@@ -168,25 +194,36 @@ export default function AdminClientsPage() {
       )}
 
       <div className="card">
-        <h2>고객사 목록</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <h2>고객사 목록 {clients && `(총 ${clients.length}곳, 이름순 정렬)`}</h2>
+          <input
+            style={{ margin: 0, width: 220 }}
+            placeholder="고객사명/주소 검색"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
         <p style={{ fontSize: 12, color: '#868e96', marginTop: -6 }}>
-          각 줄의 "🗺️ 지도에서 찾기"를 눌러서 좌표를 다시 등록/수정할 수 있습니다.
+          각 줄의 "🗺️ 지도에서 찾기"를 눌러서 좌표를 다시 등록/수정하거나, 위도/경도 칸을 직접 고쳐서 "직접입력 저장"을 눌러도 됩니다.
         </p>
         {!clients && <div className="board-empty">불러오는 중...</div>}
         {clients && clients.length === 0 && <div className="board-empty">등록된 고객사가 없습니다. 위에서 새로 등록해주세요.</div>}
-        {clients && clients.length > 0 && (
+        {visibleClients && clients && clients.length > 0 && visibleClients.length === 0 && (
+          <div className="board-empty">검색 결과가 없습니다.</div>
+        )}
+        {visibleClients && visibleClients.length > 0 && (
           <table>
             <thead>
               <tr><th>고객사명</th><th>주소</th><th>위도</th><th>경도</th><th>상태</th><th></th></tr>
             </thead>
             <tbody>
-              {clients.map((c) => (
+              {visibleClients.map((c) => (
                 <tr key={c.id}>
                   <td>{c.name}</td>
                   <td style={{ fontSize: 12, color: '#868e96' }}>{c.address}</td>
                   <td>
                     <input
-                      style={{ margin: 0, width: 100 }}
+                      style={{ margin: 0, width: 150 }}
                       value={editing[c.id]?.lat ?? ''}
                       placeholder="37.5665"
                       onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], lat: e.target.value } }))}
@@ -194,7 +231,7 @@ export default function AdminClientsPage() {
                   </td>
                   <td>
                     <input
-                      style={{ margin: 0, width: 100 }}
+                      style={{ margin: 0, width: 150 }}
                       value={editing[c.id]?.lng ?? ''}
                       placeholder="126.9780"
                       onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], lng: e.target.value } }))}
@@ -202,12 +239,19 @@ export default function AdminClientsPage() {
                   </td>
                   <td>{c.hasCoordinates ? <span style={{ color: '#2f9e44' }}>✓ 등록됨</span> : <span style={{ color: '#adb5bd' }}>미등록</span>}</td>
                   <td>
-                    <div style={{ display: 'flex', gap: 6 }}>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       <button style={{ width: 'auto', margin: 0 }} onClick={() => setMapTargetId(c.id)}>
                         🗺️ 지도에서 찾기
                       </button>
                       <button style={{ width: 'auto', margin: 0 }} className="secondary" disabled={saving === c.id} onClick={() => saveCoords(c.id)}>
                         {saving === c.id ? '저장중...' : '직접입력 저장'}
+                      </button>
+                      <button
+                        style={{ width: 'auto', margin: 0, background: '#fff0f0', color: '#e03131' }}
+                        disabled={deleting === c.id}
+                        onClick={() => deleteClient(c.id, c.name)}
+                      >
+                        {deleting === c.id ? '삭제중...' : '🗑️ 삭제'}
                       </button>
                     </div>
                   </td>

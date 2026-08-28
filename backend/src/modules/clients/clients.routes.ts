@@ -76,6 +76,30 @@ clientsRouter.post('/', async (req, res) => {
   return res.json({ success: true, data: created });
 });
 
+/** 고객사 삭제 — 배정된 직원이나 도착체크 이력이 있으면 막는다(데이터 무결성 보호). */
+clientsRouter.delete('/:id', async (req, res) => {
+  const client = await prisma.client.findUnique({ where: { id: req.params.id } });
+  if (!client) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '고객사를 찾을 수 없습니다.' } });
+  }
+  const assignedCount = await prisma.user.count({ where: { assignedClientId: req.params.id } });
+  if (assignedCount > 0) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'CLIENT_IN_USE', message: `이 고객사에 배정된 직원이 ${assignedCount}명 있어 삭제할 수 없습니다. 먼저 배정을 해제해주세요.` },
+    });
+  }
+  const checkinCount = await prisma.residentCheckin.count({ where: { clientId: req.params.id } });
+  if (checkinCount > 0) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'CLIENT_HAS_HISTORY', message: '이 고객사에 도착체크 이력이 있어 삭제할 수 없습니다(근태기록 보존을 위함). 좌표만 비워두거나 이름을 정리하는 걸 권장드립니다.' },
+    });
+  }
+  await prisma.client.delete({ where: { id: req.params.id } });
+  return res.json({ success: true, data: { deleted: true } });
+});
+
 const updateCoordsSchema = z.object({
   latitude: z.number().min(-90).max(90).nullable(),
   longitude: z.number().min(-180).max(180).nullable(),
