@@ -83,12 +83,21 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   return res.json({ success: true, data: record });
 });
 
+// 위치 확보 실패 사유 — 프론트가 이 값 중 하나로 보내면 그대로 저장한다. 안 보내거나(구버전 클라이언트)
+// 목록에 없는 값이면 null(사유 미상)로 저장한다 — 과거 데이터와의 호환을 깨지 않기 위함.
+const LOCATION_CAPTURE_STATUSES = new Set(['OK', 'NO_CONSENT', 'PERMISSION_DENIED', 'TIMEOUT', 'UNSUPPORTED', 'GEOCODE_FAILED']);
+
 /** 퇴근 처리 — 그날의 "실질 근무"를 확정한다(주52시간 집계의 기준이 되는 실근무시간 계산) */
 attendanceRouter.post('/clock-out', async (req, res) => {
   const userId = req.authUser!.userId;
   const workDate = todayDateOnly();
   // 좌표는 절대 안 받고, 클라이언트에서 역지오코딩한 "주소 텍스트"만 받는다(직원 동의된 경우에만 전송됨).
   const clockOutLocation = typeof req.body?.locationAddress === 'string' ? req.body.locationAddress.slice(0, 200) : undefined;
+  // 위치가 없을 때 "왜" 없는지(권한거부/타임아웃/미동의 등) — 상황판에서 빈 값과 구분해서 보여주기 위함.
+  const rawLocationStatus = typeof req.body?.locationStatus === 'string' ? req.body.locationStatus : undefined;
+  const clockOutLocationStatus = rawLocationStatus && LOCATION_CAPTURE_STATUSES.has(rawLocationStatus)
+    ? (rawLocationStatus as 'OK' | 'NO_CONSENT' | 'PERMISSION_DENIED' | 'TIMEOUT' | 'UNSUPPORTED' | 'GEOCODE_FAILED')
+    : undefined;
 
   const existing = await prisma.attendanceRecord.findUnique({
     where: { userId_workDate: { userId, workDate } },
@@ -128,7 +137,12 @@ attendanceRouter.post('/clock-out', async (req, res) => {
 
   const record = await prisma.attendanceRecord.update({
     where: { id: existing.id },
-    data: { clockOutAt, totalWorkedMinutes, ...(clockOutLocation ? { clockOutLocation } : {}) },
+    data: {
+      clockOutAt,
+      totalWorkedMinutes,
+      ...(clockOutLocation ? { clockOutLocation } : {}),
+      ...(clockOutLocationStatus ? { clockOutLocationStatus } : {}),
+    },
   });
 
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes } });

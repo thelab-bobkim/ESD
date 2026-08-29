@@ -5,6 +5,8 @@ import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
 import { getCurrentLocation, distanceMeters, reverseGeocode } from '@/lib/geolocation';
 import LocationConsentModal from '@/components/LocationConsentModal';
+import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
+import PastDayCorrectionCard, { type PendingCorrectionRow } from '@/components/PastDayCorrectionCard';
 
 // 요청하신 배열: 재택/본사근무/고객사상주, 이동중/고객사미팅/고객사작업, 야간작업/대체휴무/휴가 (총 9개)
 const STATUS_META: Record<string, { label: string; icon: string }> = {
@@ -142,10 +144,16 @@ export default function EmployeeHome() {
   const detailFormRef = useRef<HTMLDivElement | null>(null);
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
+  const [pendingCorrections, setPendingCorrections] = useState<PendingCorrectionRow[]>([]);
+  const [showClockOutConfirm, setShowClockOutConfirm] = useState(false);
+  // 아직 신청조차 안 했거나, 신청했다가 반려된 지난 근무일이 하나라도 있으면 상태 아이콘을 잠근다.
+  // 승인 대기중(PENDING)인 것은 이미 본인이 조치했으므로 잠그지 않는다.
+  const mustResolvePastCorrection = pendingCorrections.some((r) => !r.latestRequest || r.latestRequest.status === 'REJECTED');
 
   function refreshMyStatus() {
     apiFetch<MeAttendance>('/attendance/me').then(setMyStatus).catch(() => {});
     apiFetch<WeeklySummary>('/attendance/me/weekly').then(setWeekly).catch(() => {});
+    apiFetch<PendingCorrectionRow[]>('/attendance-correction/pending').then(setPendingCorrections).catch(() => {});
   }
 
   useEffect(() => {
@@ -158,12 +166,12 @@ export default function EmployeeHome() {
       if (pushSubscribed) {
         await unsubscribeFromPush();
         setPushSubscribed(false);
-        setMessage('출근 알림을 껐습니다.');
+        setMessage('출퇴근 알림을 껐습니다.');
         setMessageIsError(false);
       } else {
         await subscribeToPush();
         setPushSubscribed(true);
-        setMessage('출근 알림을 켰습니다. 매일 오전 9시까지 상태를 등록하지 않으면 알려드립니다.');
+        setMessage('출퇴근 알림을 켰습니다. 오전 9시까지 상태 등록을 안 하셨거나, 저녁에 퇴근을 안 누르셨으면 알려드립니다.');
         setMessageIsError(false);
       }
     } catch (err) {
@@ -495,6 +503,8 @@ export default function EmployeeHome() {
         )}
       </div>
 
+      <PastDayCorrectionCard rows={pendingCorrections} onSubmitted={refreshMyStatus} />
+
       {arrivedClient && (
         <div className="card col-full" style={{ background: '#eaf1ff', border: '1px solid #2f6feb' }}>
           🚗 <strong>{arrivedClient}</strong>에 도착하신 것 같아요! 어떤 걸로 등록할까요?
@@ -600,19 +610,27 @@ export default function EmployeeHome() {
             <button
               className={myStatus?.record?.clockOutAt ? 'done' : 'secondary'}
               disabled={!myStatus?.record?.clockInAt || Boolean(myStatus?.record?.clockOutAt)}
-              onClick={() =>
-                run(async () => {
-                  let locationAddress: string | undefined;
-                  if (me?.locationConsentGiven) {
-                    const loc = await getCurrentLocation();
-                    if (loc) locationAddress = (await reverseGeocode(loc.lat, loc.lng)) ?? undefined;
-                  }
-                  return apiFetch('/attendance/clock-out', { method: 'POST', body: JSON.stringify(locationAddress ? { locationAddress } : {}) });
-                }, '퇴근 처리되었습니다. 오늘도 수고하셨어요!')
-              }
+              onClick={() => setShowClockOutConfirm(true)}
             >
               {myStatus?.record?.clockOutAt ? `✓ 퇴근 완료 · ${fmtClock(myStatus.record.clockOutAt)}` : '퇴근'}
             </button>
+            {showClockOutConfirm && myStatus?.record?.clockInAt && (
+              <ClockOutConfirmModal
+                clockInAt={myStatus.record.clockInAt}
+                locationConsentGiven={Boolean(me?.locationConsentGiven)}
+                onCancel={() => setShowClockOutConfirm(false)}
+                onConfirm={async ({ locationAddress, locationStatus }) => {
+                  await run(
+                    () => apiFetch('/attendance/clock-out', {
+                      method: 'POST',
+                      body: JSON.stringify({ ...(locationAddress ? { locationAddress } : {}), locationStatus }),
+                    }),
+                    '퇴근 처리되었습니다. 오늘도 수고하셨어요!'
+                  );
+                  setShowClockOutConfirm(false);
+                }}
+              />
+            )}
             <p style={{ fontSize: 11, color: '#adb5bd', marginTop: 4, marginBottom: 8 }}>
               * "본사근무/고객사상주/고객사미팅/고객사작업" 상태로 바꾸거나 도착체크를 하면 출근시각이 자동으로 기록됩니다. 퇴근 버튼을 눌러야 그날 근무가 확정됩니다.
             </p>
@@ -621,7 +639,7 @@ export default function EmployeeHome() {
               <span style={{ fontWeight: 400 }}> 이동시간은 근로시간에 포함되지 않으므로, 고객사 도착 후 "고객사작업/고객사미팅"을 눌러야 그 시점부터 정확히 근무시간이 계산됩니다.</span>
             </div>
             <button className="secondary" disabled={pushLoading} onClick={togglePush}>
-              {pushLoading ? '처리 중...' : pushSubscribed ? '🔔 출근 알림 끄기' : '🔕 출근 알림 켜기(오전 9시)'}
+              {pushLoading ? '처리 중...' : pushSubscribed ? '🔔 출퇴근 알림 끄기' : '🔕 출퇴근 알림 켜기(출근 오전 9시·퇴근 저녁)'}
             </button>
           </div>
 
@@ -640,7 +658,11 @@ export default function EmployeeHome() {
             <div className="status-icon-grid">
               {STATUS_ORDER.map((code) => {
                 // 퇴근(낮근무 종료) 후에도 야간작업자는 계속 상태를 등록해야 하니 예외로 둔다.
-                const isLocked = clockedOut && code !== 'NIGHT_WORK' && !isAdminAccount;
+                // 지난 근무일 퇴근 미해결 건이 있으면(정정 신청 전까지) 야간작업 예외 없이 전부 잠근다 —
+                // 오늘 상태를 계속 쌓아가기 전에 어제 문제부터 정리하게 하기 위함.
+                const isLocked = mustResolvePastCorrection
+                  ? !isAdminAccount
+                  : clockedOut && code !== 'NIGHT_WORK' && !isAdminAccount;
                 return (
                   <div
                     key={code}

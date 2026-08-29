@@ -7,6 +7,7 @@ import { attendanceRouter } from './modules/attendance/attendance.routes';
 import { residentRouter } from './modules/resident/resident.routes';
 import { nightWorkRouter } from './modules/night-work/night-work.routes';
 import { leaveConversionRouter } from './modules/leave-conversion/leave-conversion.routes';
+import { attendanceCorrectionRouter } from './modules/attendance-correction/attendance-correction.routes';
 import { approvalRouter } from './modules/approval/approval.routes';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes';
 import { usersRouter } from './modules/users/users.routes';
@@ -60,6 +61,7 @@ export function createApp() {
   app.use('/api/v1/resident', residentRouter);
   app.use('/api/v1/night-work', nightWorkRouter);
   app.use('/api/v1/leave-conversion', leaveConversionRouter);
+  app.use('/api/v1/attendance-correction', attendanceCorrectionRouter);
   app.use('/api/v1/approval', approvalRouter);
   app.use('/api/v1/dashboard', dashboardRouter);
   app.use('/api/v1/users', usersRouter);

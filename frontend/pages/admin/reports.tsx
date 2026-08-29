@@ -98,12 +98,24 @@ function shiftAnchor(period: Period, anchor: Date, dir: 1 | -1): Date {
   return d;
 }
 
-function AttendanceRowTr({ r, onClick, hideDept }: { r: AttendanceDetailRow; onClick: () => void; hideDept?: boolean }) {
+// 하루의 경계는 자정이 아니라 새벽 3시(KST) — backend attendance-helpers.ts의 todayDateOnly()와
+// 동일한 규칙. "진행중"이 오늘(정상)인지 지난 근무일(미해결 문제)인지 구분하는 데 쓴다.
+function todayWorkDateKST(): string {
+  const now = new Date();
+  const kstShifted = new Date(now.getTime() + (9 - 3) * 60 * 60 * 1000);
+  const y = kstShifted.getUTCFullYear();
+  const mo = String(kstShifted.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(kstShifted.getUTCDate()).padStart(2, '0');
+  return `${y}-${mo}-${d}`;
+}
+
+function AttendanceRowTr({ r, date, onClick, hideDept }: { r: AttendanceDetailRow; date: string; onClick: () => void; hideDept?: boolean }) {
+  const isPastDayUnresolved = !r.clockOutAt && date < todayWorkDateKST();
   return (
     <tr style={{ cursor: 'pointer' }} onClick={onClick}>
       <td>
         <div className="chip-row">
-          <div className="chip-avatar" style={{ background: r.clockOutAt ? '#2f9e44' : '#f08c00' }}>{r.name.slice(-2)}</div>
+          <div className="chip-avatar" style={{ background: r.clockOutAt ? '#2f9e44' : isPastDayUnresolved ? '#e03131' : '#f08c00' }}>{r.name.slice(-2)}</div>
           {r.name}
           <span style={{ fontSize: 11, color: '#2f6feb', marginLeft: 4 }}>상세보기 ▸</span>
         </div>
@@ -116,6 +128,8 @@ function AttendanceRowTr({ r, onClick, hideDept }: { r: AttendanceDetailRow; onC
             {fmtTime(r.clockOutAt)}
             {r.clockOutLocation && <div style={{ fontSize: 11, color: '#868e96' }}>📍 {r.clockOutLocation}</div>}
           </>
+        ) : isPastDayUnresolved ? (
+          <span style={{ color: '#e03131', fontWeight: 600 }}>⚠ 미해결(지난 근무일)</span>
         ) : (
           <span style={{ color: '#f08c00', fontWeight: 600 }}>● 진행중</span>
         )}
@@ -336,7 +350,7 @@ export default function AdminReportsPage() {
               </thead>
               <tbody>
                 {attendanceDetail.rows.map((r) => (
-                  <AttendanceRowTr key={r.userId} r={r} onClick={() => openTimeline(r.userId, attendanceDetail.date)} />
+                  <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail.date} onClick={() => openTimeline(r.userId, attendanceDetail.date)} />
                 ))}
               </tbody>
             </table>
@@ -353,7 +367,7 @@ export default function AdminReportsPage() {
                 </thead>
                 <tbody>
                   {rows.map((r) => (
-                    <AttendanceRowTr key={r.userId} r={r} onClick={() => openTimeline(r.userId, attendanceDetail!.date)} hideDept />
+                    <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail!.date} onClick={() => openTimeline(r.userId, attendanceDetail!.date)} hideDept />
                   ))}
                 </tbody>
               </table>

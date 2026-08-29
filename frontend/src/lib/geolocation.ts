@@ -77,3 +77,51 @@ export function getCurrentLocation(): Promise<{ lat: number; lng: number } | nul
     );
   });
 }
+
+/** 백엔드의 LocationCaptureStatus(Prisma enum)와 값을 맞춘다. */
+export type LocationCaptureStatus = 'OK' | 'NO_CONSENT' | 'PERMISSION_DENIED' | 'TIMEOUT' | 'UNSUPPORTED' | 'GEOCODE_FAILED';
+
+export interface LocationCaptureResult {
+  status: LocationCaptureStatus;
+  address: string | null;
+}
+
+const LOCATION_FAILURE_LABEL: Record<Exclude<LocationCaptureStatus, 'OK'>, string> = {
+  NO_CONSENT: '위치정보 수집에 동의하지 않으셨어요',
+  PERMISSION_DENIED: '브라우저에서 위치 권한이 거부되어 있어요',
+  TIMEOUT: '위치 확인이 시간 내에 응답하지 않았어요',
+  UNSUPPORTED: '이 기기/브라우저는 위치 확인을 지원하지 않아요',
+  GEOCODE_FAILED: '좌표는 확인했지만 주소로 변환하지 못했어요',
+};
+
+export function locationFailureLabel(status: Exclude<LocationCaptureStatus, 'OK'>): string {
+  return LOCATION_FAILURE_LABEL[status];
+}
+
+/**
+ * 퇴근 확인 모달 전용 — getCurrentLocation()과 달리 "왜" 위치를 못 가져왔는지까지 구분해서 돌려준다.
+ * locationConsentGiven이 false면 애초에 브라우저에 물어보지도 않고 NO_CONSENT로 즉시 반환한다
+ * (동의 안 한 사용자에게 갑자기 권한 팝업을 띄우지 않기 위함 — 동의 흐름은 LocationConsentModal에서만).
+ */
+export async function getCurrentLocationDetailed(locationConsentGiven: boolean): Promise<LocationCaptureResult> {
+  if (!locationConsentGiven) return { status: 'NO_CONSENT', address: null };
+  if (typeof navigator === 'undefined' || !navigator.geolocation) return { status: 'UNSUPPORTED', address: null };
+
+  const coords = await new Promise<{ lat: number; lng: number } | { errorCode: number } | null>((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      (err) => resolve({ errorCode: err.code }),
+      { timeout: 8000, maximumAge: 60000 }
+    );
+  });
+
+  if (!coords) return { status: 'UNSUPPORTED', address: null };
+  if ('errorCode' in coords) {
+    // GeolocationPositionError: 1=PERMISSION_DENIED, 2=POSITION_UNAVAILABLE, 3=TIMEOUT
+    return { status: coords.errorCode === 3 ? 'TIMEOUT' : coords.errorCode === 1 ? 'PERMISSION_DENIED' : 'UNSUPPORTED', address: null };
+  }
+
+  const address = await reverseGeocode(coords.lat, coords.lng);
+  if (!address) return { status: 'GEOCODE_FAILED', address: null };
+  return { status: 'OK', address };
+}

@@ -234,6 +234,7 @@ export default function AdminDashboard() {
           <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/clients')}>고객사 위치관리</button>
           <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/calendar')}>캘린더</button>
           <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/reports')}>출퇴근·근로시간·공수</button>
+          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/approvals')}>✅ 승인함</button>
           <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/change-password')}>비밀번호 변경</button>
           <button className="secondary" style={{ width: 'auto' }} onClick={logout}>로그아웃</button>
         </div>

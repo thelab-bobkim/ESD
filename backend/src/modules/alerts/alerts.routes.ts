@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
+import { todayDateOnly } from '../../common/attendance-helpers';
 
 export const alertsRouter = Router();
 alertsRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'));
@@ -56,7 +57,22 @@ alertsRouter.get('/', async (req, res) => {
     }
   }
 
-  // 4) 상태 미확인: 고객사 상주자의 마지막 확인시각이 임계값 초과
+  // 4) 지난 근무일 퇴근 미해결: 날짜가 넘어갔는데도 퇴근 처리가 안 된 채 방치된 기록.
+  // 정정 신청(대기중 포함)이 이미 있으면 직원이 이미 조치 중이므로 중복 알림을 내지 않는다.
+  // 하루의 경계는 자정이 아니라 새벽 3시(KST)이므로 반드시 todayDateOnly()를 써야 한다 —
+  // 위 workDate(UTC 자정 기준)를 그대로 쓰면 새벽 3시 이전에는 하루 일찍 "미해결"로 오탐될 수 있다.
+  const todayForCorrection = todayDateOnly();
+  const staleOpenRecords = await prisma.attendanceRecord.findMany({
+    where: { workDate: { lt: todayForCorrection }, clockInAt: { not: null }, clockOutAt: null },
+    include: { correctionRequests: { where: { status: { in: ['PENDING', 'APPROVED'] } }, take: 1 } },
+  });
+  for (const r of staleOpenRecords) {
+    if (r.correctionRequests.length === 0) {
+      alerts.push({ ruleCode: 'PAST_DAY_UNRESOLVED_CLOCKOUT', userId: r.userId, relatedId: r.id, severity: 'WARNING' });
+    }
+  }
+
+  // 5) 상태 미확인: 고객사 상주자의 마지막 확인시각이 임계값 초과
   const recentCheckins = await prisma.residentCheckin.findMany({ orderBy: { checkinAt: 'desc' }, take: 200 });
   const latestByUser = new Map<string, (typeof recentCheckins)[number]>();
   for (const c of recentCheckins) {

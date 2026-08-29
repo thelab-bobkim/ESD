@@ -187,6 +187,7 @@ model User {
   pushSubscriptions      PushSubscription[]
   approvalRequestsMade   ApprovalRequest[] @relation("Requester")
   approvalRequestsDecided ApprovalRequest[] @relation("Approver")
+  attendanceCorrectionRequests AttendanceCorrectionRequest[]
 
   @@map("users")
 }
@@ -226,11 +227,51 @@ model AttendanceRecord {
   dataSource          DataSource @default(MANUAL) @map("data_source")
   // 퇴근 시점 위치 — 좌표는 저장하지 않고, 역지오코딩된 "주소 텍스트"만 저장한다(직원 동의 필요, core_principles 원칙 유지).
   clockOutLocation    String?    @map("clock_out_location")
+  // 퇴근 위치가 왜 비어있는지(권한거부/타임아웃/미동의 등)를 구분해서 저장한다 —
+  // 상황판에서 "빈 값"과 "확인했지만 못 구했음"을 구분해서 보여주기 위함.
+  clockOutLocationStatus LocationCaptureStatus? @map("clock_out_location_status")
 
   breakSessions BreakSession[]
+  correctionRequests AttendanceCorrectionRequest[]
 
   @@unique([userId, workDate])
   @@map("attendance_records")
+}
+
+// 퇴근 시 위치정보를 못 가져온 이유. OK 이외의 값은 clockOutLocation이 비어있는 이유를 설명한다.
+enum LocationCaptureStatus {
+  OK
+  NO_CONSENT
+  PERMISSION_DENIED
+  TIMEOUT
+  UNSUPPORTED
+  GEOCODE_FAILED
+}
+
+// 퇴근을 못 누르고 날짜가 넘어간 근태를, 직원이 스스로 시각/사유를 입력해 정정 신청하는 건.
+// 시스템이 임의로 퇴근시각을 확정하지 않는다는 원칙(대체휴무 자동전환과 동일한 원칙)에 따라,
+// 반드시 직원 본인의 신청 + 승인권자의 승인(ApprovalRequest, type=ATTENDANCE_CORRECTION)을 거쳐야
+// attendance_records에 반영된다 (approval.routes.ts 참고).
+model AttendanceCorrectionRequest {
+  id                 String                     @id @default(uuid())
+  userId             String                     @map("user_id")
+  user               User                       @relation(fields: [userId], references: [id])
+  attendanceRecordId String                     @map("attendance_record_id")
+  attendanceRecord   AttendanceRecord           @relation(fields: [attendanceRecordId], references: [id])
+  proposedClockOutAt DateTime                   @map("proposed_clock_out_at")
+  reason             String
+  status             AttendanceCorrectionStatus @default(PENDING)
+  createdAt          DateTime                   @default(now()) @map("created_at")
+
+  approvalRequest ApprovalRequest?
+
+  @@map("attendance_correction_requests")
+}
+
+enum AttendanceCorrectionStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 model BreakSession {
@@ -344,6 +385,9 @@ model ApprovalRequest {
 
   leaveConversionRequestId String?                 @unique @map("leave_conversion_request_id")
   leaveConversionRequest   LeaveConversionRequest?  @relation(fields: [leaveConversionRequestId], references: [id])
+
+  attendanceCorrectionRequestId String?                       @unique @map("attendance_correction_request_id")
+  attendanceCorrectionRequest   AttendanceCorrectionRequest?  @relation(fields: [attendanceCorrectionRequestId], references: [id])
 
   @@map("approval_requests")
 }

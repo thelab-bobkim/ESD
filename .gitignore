@@ -1,0 +1,26 @@
+# 의존성 — npm install로 언제든 재생성됨, 절대 커밋하지 않는다.
+node_modules/
+
+# 빌드 산출물
+backend/dist/
+frontend/.next/
+frontend/out/
+
+# TypeScript 증분빌드 캐시 — 빌드할 때마다 바뀌는 파일이라 버전관리 대상이 아님.
+*.tsbuildinfo
+
+# 로컬 환경변수 — 실제 비밀값이 든 파일은 절대 커밋하지 않는다(예시 파일은 추적 유지).
+.env
+.env.local
+.env.prod
+backend/.env
+frontend/.env.local
+!.env.example
+!.env.prod.example
+!backend/.env.example
+!frontend/.env.example
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+*.log
