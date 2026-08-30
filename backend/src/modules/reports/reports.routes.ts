@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
-import { realDayWindow } from '../../common/attendance-helpers';
+import { realDayWindow, todayDateOnly } from '../../common/attendance-helpers';
+import { recordAuditLog } from '../../common/audit';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN', 'TEAM_LEAD'));
@@ -320,4 +321,96 @@ reportsRouter.get('/daily-timeline', async (req, res) => {
       timeline,
     },
   });
+});
+
+/**
+ * 지난 근무일인데 아직 퇴근이 확정 안 된 직원 목록 — 본인이 정정 신청을 못 하거나(예: 새벽 3시
+ * 창을 넘겨 OUT_OF_RANGE로 막히는 경우) 깜빡 잊은 경우를 관리자가 찾아서 직접 처리할 수 있게 한다.
+ * 오늘 근무일은 아직 진행 중일 수 있으므로 제외한다(어제까지만 대상).
+ */
+reportsRouter.get('/unresolved-clockouts', async (req, res) => {
+  const today = todayDateOnly();
+  const records = await prisma.attendanceRecord.findMany({
+    where: {
+      clockInAt: { not: null },
+      clockOutAt: null,
+      workDate: { lt: today },
+      user: { name: { not: { startsWith: 'SAMPLE_' } } },
+    },
+    include: { user: { include: { department: true } } },
+    orderBy: { workDate: 'asc' },
+  });
+  const rows = records.map((r) => ({
+    recordId: r.id,
+    userId: r.userId,
+    employeeNo: r.user.employeeNo,
+    name: r.user.name,
+    department: r.user.department.name,
+    workDate: r.workDate.toISOString().slice(0, 10),
+    clockInAt: r.clockInAt,
+  }));
+  return res.json({ success: true, data: { rows } });
+});
+
+const forceClockOutSchema = z.object({
+  clockOutAt: z.string().min(1), // datetime-local 또는 ISO 문자열(KST 기준으로 입력받아 그대로 Date 변환)
+  reason: z.string().min(1),
+});
+
+/**
+ * 관리자가 미퇴근 근무일을 직접 확정한다. 직원 본인의 신청 없이 진행되는 유일한 예외 경로라,
+ * 반드시 사유를 남기고(isCorrected/correctionReason) 감사로그에도 actor를 남긴다 — "시스템이 임의로
+ * 확정하지 않는다"는 원칙은 지키되, 사람(관리자)이 책임지고 결정하는 것까지 막지는 않는다.
+ */
+reportsRouter.post('/unresolved-clockouts/:recordId/force-clock-out', async (req, res) => {
+  const parsed = forceClockOutSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '퇴근시각과 사유를 모두 입력해주세요.' } });
+  }
+  const { recordId } = req.params;
+  const { clockOutAt: clockOutAtRaw, reason } = parsed.data;
+
+  const existing = await prisma.attendanceRecord.findUnique({
+    where: { id: recordId },
+    include: { breakSessions: true },
+  });
+  if (!existing || !existing.clockInAt) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '근태 기록을 찾을 수 없습니다.' } });
+  }
+  if (existing.clockOutAt) {
+    return res.status(400).json({ success: false, error: { code: 'ALREADY_CLOCKED_OUT', message: '이미 퇴근 처리된 기록입니다.' } });
+  }
+
+  const clockOutAt = new Date(clockOutAtRaw);
+  if (Number.isNaN(clockOutAt.getTime()) || clockOutAt <= existing.clockInAt) {
+    return res.status(400).json({ success: false, error: { code: 'OUT_OF_RANGE', message: '퇴근 시각은 출근 이후여야 합니다.' } });
+  }
+
+  const totalBreakMinutes = existing.breakSessions.reduce((sum, b) => {
+    if (!b.endAt) return sum;
+    return sum + Math.round((b.endAt.getTime() - b.startAt.getTime()) / 60000);
+  }, 0);
+  const grossMinutes = Math.round((clockOutAt.getTime() - existing.clockInAt.getTime()) / 60000);
+  const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes);
+
+  const record = await prisma.attendanceRecord.update({
+    where: { id: existing.id },
+    data: {
+      clockOutAt,
+      totalWorkedMinutes,
+      isCorrected: true,
+      correctionReason: `[관리자 직접 확정] ${reason}`,
+    },
+  });
+
+  await recordAuditLog({
+    actorUserId: req.authUser!.userId,
+    actionType: 'CORRECT',
+    targetType: 'attendance_record',
+    targetId: record.id,
+    beforeValue: { clockOutAt: null },
+    afterValue: { clockOutAt, totalWorkedMinutes, reason },
+  });
+
+  return res.json({ success: true, data: record });
 });

@@ -51,6 +51,11 @@ interface EffortClientRow {
 }
 interface EffortSummary { from: string; to: string; clients: EffortClientRow[]; }
 
+interface UnresolvedClockoutRow {
+  recordId: string; userId: string; employeeNo: string; name: string; department: string;
+  workDate: string; clockInAt: string;
+}
+
 function fmt(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -62,6 +67,11 @@ function hoursLabel(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return `${h}시간 ${m}분`;
+}
+/** <input type="datetime-local">에 넣을 값 (YYYY-MM-DDTHH:MM, 로컬시간 기준) */
+function toDateTimeLocal(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 function startOfWeek(d: Date): Date {
   const day = d.getDay();
@@ -155,6 +165,46 @@ export default function AdminReportsPage() {
   const [timelineTarget, setTimelineTarget] = useState<{ userId: string; date: string } | null>(null);
   const [groupByDept, setGroupByDept] = useState(true);
   const [timeline, setTimeline] = useState<DailyTimeline | null>(null);
+  const [unresolvedClockouts, setUnresolvedClockouts] = useState<UnresolvedClockoutRow[] | null>(null);
+  const [forceClockOutTarget, setForceClockOutTarget] = useState<string | null>(null);
+  const [forceClockOutTime, setForceClockOutTime] = useState('');
+  const [forceClockOutReason, setForceClockOutReason] = useState('');
+  const [forceClockOutSubmitting, setForceClockOutSubmitting] = useState(false);
+
+  function refreshUnresolvedClockouts() {
+    apiFetch<{ rows: UnresolvedClockoutRow[] }>('/reports/unresolved-clockouts')
+      .then((res) => setUnresolvedClockouts(res.rows))
+      .catch((err) => setError(err instanceof Error ? err.message : '미퇴근 목록을 불러오지 못했습니다.'));
+  }
+
+  useEffect(() => {
+    refreshUnresolvedClockouts();
+  }, []);
+
+  function openForceClockOut(row: UnresolvedClockoutRow) {
+    setForceClockOutTarget(row.recordId);
+    // 기본값: 출근 후 8시간(일반적인 하루치 근무) — 관리자가 실제 시각으로 바꿔서 입력한다.
+    setForceClockOutTime(toDateTimeLocal(new Date(new Date(row.clockInAt).getTime() + 8 * 60 * 60 * 1000)));
+    setForceClockOutReason('');
+  }
+
+  async function submitForceClockOut() {
+    if (!forceClockOutTarget || !forceClockOutTime || !forceClockOutReason.trim()) return;
+    setForceClockOutSubmitting(true);
+    setError(null);
+    try {
+      await apiFetch(`/reports/unresolved-clockouts/${forceClockOutTarget}/force-clock-out`, {
+        method: 'POST',
+        body: JSON.stringify({ clockOutAt: forceClockOutTime, reason: forceClockOutReason.trim() }),
+      });
+      setForceClockOutTarget(null);
+      refreshUnresolvedClockouts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '강제 퇴근 처리에 실패했습니다.');
+    } finally {
+      setForceClockOutSubmitting(false);
+    }
+  }
 
   function openTimeline(userId: string, date: string) {
     setTimelineTarget({ userId, date });
@@ -259,6 +309,58 @@ export default function AdminReportsPage() {
         </div>
       </div>
       {error && <div className="error">{error}</div>}
+
+      {unresolvedClockouts && unresolvedClockouts.length > 0 && (
+        <div className="card" style={{ background: '#fff4e6', border: '1px solid #ffa94d' }}>
+          <h2>🚪 미퇴근 확인 — 지난 근무일인데 아직 퇴근이 안 찍힌 직원 ({unresolvedClockouts.length}명)</h2>
+          <p style={{ fontSize: 13, color: '#868e96', marginTop: -4 }}>
+            새벽 3시 정정 신청 창을 넘겼거나 깜빡 잊은 경우입니다. 실제 종료 시각과 사유를 입력해 직접 확정할 수 있습니다.
+          </p>
+          <table>
+            <thead>
+              <tr><th>근무일</th><th>이름</th><th>부서</th><th>출근</th><th></th></tr>
+            </thead>
+            <tbody>
+              {unresolvedClockouts.map((row) => (
+                <tr key={row.recordId}>
+                  <td>{row.workDate}</td>
+                  <td>{row.name} ({row.employeeNo})</td>
+                  <td>{row.department}</td>
+                  <td>{fmtTime(row.clockInAt)}</td>
+                  <td>
+                    <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={() => openForceClockOut(row)}>
+                      강제 퇴근 처리
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {forceClockOutTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 28, maxWidth: 420, width: '100%' }}>
+            <h2 style={{ marginTop: 0 }}>🚪 강제 퇴근 처리</h2>
+            <p style={{ fontSize: 13, color: '#495057' }}>실제로 근무를 마친 시각과 사유를 입력해주세요. 이 기록은 정정 이력으로 남습니다.</p>
+            <label className="field-label">퇴근 시각</label>
+            <input type="datetime-local" value={forceClockOutTime} onChange={(e) => setForceClockOutTime(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', marginBottom: 12 }} />
+            <label className="field-label">사유</label>
+            <input
+              type="text"
+              value={forceClockOutReason}
+              onChange={(e) => setForceClockOutReason(e.target.value)}
+              placeholder="예: 본인 확인 결과 실제 익일 오전까지 근무, 정정 신청 창 초과로 관리자가 직접 확정"
+              style={{ width: '100%', boxSizing: 'border-box', marginBottom: 16 }}
+            />
+            <button disabled={forceClockOutSubmitting || !forceClockOutReason.trim()} onClick={submitForceClockOut}>
+              {forceClockOutSubmitting ? '처리 중...' : '확정'}
+            </button>
+            <button className="secondary" disabled={forceClockOutSubmitting} onClick={() => setForceClockOutTarget(null)}>취소</button>
+          </div>
+        </div>
+      )}
 
       <div className="toolbar">
         {(Object.keys(PERIOD_LABELS) as Period[]).map((p) => (
