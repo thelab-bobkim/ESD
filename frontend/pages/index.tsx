@@ -729,11 +729,9 @@ export default function EmployeeHome() {
               />
             )}
             <div style={{ background: '#fff4e6', border: '1px solid #ffa94d', borderRadius: 8, padding: '10px 12px', marginBottom: 8, fontSize: 13, color: '#c2410c', fontWeight: 600, lineHeight: 1.6 }}>
-              ⚠️ "본사근무/고객사상주/고객사미팅/고객사작업" 상태로 바꾸거나 도착체크를 하면 그 순간이 출근시각으로 자동 기록됩니다.
+              ⚠️ 출근은 자동이에요 — 상태를 누르면 그 순간이 출근시각이 됩니다.
               <span style={{ fontWeight: 400 }}>
-                {' '}본사를 거치지 않고 고객사로 바로 출근(직출)하는 날은 "출근" 버튼을 먼저 누르지 마세요 — 이동시간은 근무시간에 포함되지 않으므로, 고객사 도착 후 "고객사작업/고객사미팅"을 눌러야 그 시점부터 정확히 계산됩니다.
-                {' '}(고객사작업/미팅은 등록된 그 고객사 위치와 대조되며, 본사가 아니라 방문한 고객사와의 거리가 기준입니다.)
-                {' '}하루 일과를 마치면 반드시 "퇴근" 버튼을 눌러야 그날 근무가 확정됩니다.
+                {' '}고객사로 바로 가는 날은 "출근" 버튼 대신, 도착 후 상태를 눌러주세요. 하루를 마치면 꼭 "퇴근"을 눌러야 근무가 확정돼요.
               </span>
             </div>
             <button className="secondary" disabled={pushLoading} onClick={togglePush}>
@@ -742,7 +740,7 @@ export default function EmployeeHome() {
           </div>
 
           <div className="card">
-            <h2>지금 뭐 하고 계세요?</h2>
+            <h2>지금 상태를 콕! 눌러주세요 — 근무기록이 자동으로 쌓여요 😊</h2>
             {clockedOut && !isAdminAccount && (
               <div className="board-empty" style={{ marginBottom: 8, color: '#f08c00', fontWeight: 600 }}>
                 🔒 퇴근 처리되어 상태를 더 이상 바꿀 수 없습니다 (야간작업은 계속 등록 가능해요). 내일 다시 만나요!
