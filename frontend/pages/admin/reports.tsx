@@ -555,6 +555,22 @@ export default function AdminReportsPage() {
                     </div>
                   );
                 })}
+                {/* 목록 맨 아래에 퇴근도 같은 형식(아이콘/시간/부가정보 한 줄)으로 보여준다 —
+                    위쪽 요약줄("출근 .. · 퇴근 ..")과 별개로, 몇 시에 어디서 퇴근했는지 더 자세히 볼 수 있게. */}
+                {timeline.clockOutAt && (
+                  <div style={{ display: 'flex', gap: 12, padding: '10px 0', borderBottom: '1px solid #f1f3f5' }}>
+                    <div style={{ fontSize: 20 }}>🚪</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <strong style={{ color: '#2f6feb' }}>퇴근</strong>
+                        <span style={{ fontSize: 13, color: '#495057' }}>{fmtTime(timeline.clockOutAt)}</span>
+                      </div>
+                      {timeline.clockOutLocation && (
+                        <div style={{ fontSize: 12, color: '#868e96', marginTop: 2, fontStyle: 'italic' }}>“📍 {timeline.clockOutLocation}”</div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </>
             )}
             <button className="secondary" style={{ marginTop: 12 }} onClick={() => { setTimelineTarget(null); setTimeline(null); }}>닫기</button>
