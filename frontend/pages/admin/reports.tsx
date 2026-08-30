@@ -30,7 +30,7 @@ interface WorktimeRow {
 interface WorktimeSummary { from: string; to: string; rows: WorktimeRow[]; }
 
 interface AttendanceDetailRow {
-  userId: string; employeeNo: string; name: string; department: string;
+  recordId: string; userId: string; employeeNo: string; name: string; department: string;
   clockInAt: string | null; clockOutAt: string | null; clockOutLocation: string | null; totalWorkedMinutes: number | null;
 }
 interface AttendanceDetail { date: string; rows: AttendanceDetailRow[]; }
@@ -50,11 +50,6 @@ interface EffortClientRow {
   projects: EffortProjectRow[];
 }
 interface EffortSummary { from: string; to: string; clients: EffortClientRow[]; }
-
-interface UnresolvedClockoutRow {
-  recordId: string; userId: string; employeeNo: string; name: string; department: string;
-  workDate: string; clockInAt: string;
-}
 
 function fmt(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -119,7 +114,12 @@ function todayWorkDateKST(): string {
   return `${y}-${mo}-${d}`;
 }
 
-function AttendanceRowTr({ r, date, onClick, hideDept }: { r: AttendanceDetailRow; date: string; onClick: () => void; hideDept?: boolean }) {
+function AttendanceRowTr({
+  r, date, onClick, hideDept, onForceClockOut,
+}: {
+  r: AttendanceDetailRow; date: string; onClick: () => void; hideDept?: boolean;
+  onForceClockOut: (row: { recordId: string; clockInAt: string | null }) => void;
+}) {
   const isPastDayUnresolved = !r.clockOutAt && date < todayWorkDateKST();
   return (
     <tr style={{ cursor: 'pointer' }} onClick={onClick}>
@@ -139,7 +139,13 @@ function AttendanceRowTr({ r, date, onClick, hideDept }: { r: AttendanceDetailRo
             {r.clockOutLocation && <div style={{ fontSize: 11, color: '#868e96' }}>📍 {r.clockOutLocation}</div>}
           </>
         ) : isPastDayUnresolved ? (
-          <span style={{ color: '#e03131', fontWeight: 600 }}>⚠ 미해결(지난 근무일)</span>
+          <span
+            style={{ color: '#e03131', fontWeight: 600, textDecoration: 'underline', cursor: 'pointer' }}
+            title="클릭해서 실제 퇴근 시각을 입력하고 정정합니다"
+            onClick={(e) => { e.stopPropagation(); onForceClockOut({ recordId: r.recordId, clockInAt: r.clockInAt }); }}
+          >
+            ⚠ 미해결(지난 근무일) — 클릭해서 정정
+          </span>
         ) : (
           <span style={{ color: '#f08c00', fontWeight: 600 }}>● 진행중</span>
         )}
@@ -165,27 +171,27 @@ export default function AdminReportsPage() {
   const [timelineTarget, setTimelineTarget] = useState<{ userId: string; date: string } | null>(null);
   const [groupByDept, setGroupByDept] = useState(true);
   const [timeline, setTimeline] = useState<DailyTimeline | null>(null);
-  const [unresolvedClockouts, setUnresolvedClockouts] = useState<UnresolvedClockoutRow[] | null>(null);
   const [forceClockOutTarget, setForceClockOutTarget] = useState<string | null>(null);
   const [forceClockOutTime, setForceClockOutTime] = useState('');
   const [forceClockOutReason, setForceClockOutReason] = useState('');
   const [forceClockOutSubmitting, setForceClockOutSubmitting] = useState(false);
 
-  function refreshUnresolvedClockouts() {
-    apiFetch<{ rows: UnresolvedClockoutRow[] }>('/reports/unresolved-clockouts')
-      .then((res) => setUnresolvedClockouts(res.rows))
-      .catch((err) => setError(err instanceof Error ? err.message : '미퇴근 목록을 불러오지 못했습니다.'));
-  }
-
-  useEffect(() => {
-    refreshUnresolvedClockouts();
-  }, []);
-
-  function openForceClockOut(row: UnresolvedClockoutRow) {
+  // "⚠ 미해결(지난 근무일)" 표시를 클릭하면 연다 — 별도 목록 화면을 따로 두지 않고,
+  // 이미 보고 있는 출퇴근 현황 표에서 바로 정정할 수 있게 한다.
+  function openForceClockOut(row: { recordId: string; clockInAt: string | null }) {
+    if (!row.clockInAt) return;
     setForceClockOutTarget(row.recordId);
     // 기본값: 출근 후 8시간(일반적인 하루치 근무) — 관리자가 실제 시각으로 바꿔서 입력한다.
     setForceClockOutTime(toDateTimeLocal(new Date(new Date(row.clockInAt).getTime() + 8 * 60 * 60 * 1000)));
     setForceClockOutReason('');
+  }
+
+  function refreshCurrentView() {
+    if (isSingleDay) {
+      apiFetch<AttendanceDetail>(`/reports/attendance-detail?date=${effectiveFrom}`).then(setAttendanceDetail).catch(() => {});
+    } else {
+      apiFetch<WorktimeSummary>(`/reports/worktime-summary?from=${effectiveFrom}&to=${effectiveTo}`).then(setWorktime).catch(() => {});
+    }
   }
 
   async function submitForceClockOut() {
@@ -198,7 +204,7 @@ export default function AdminReportsPage() {
         body: JSON.stringify({ clockOutAt: forceClockOutTime, reason: forceClockOutReason.trim() }),
       });
       setForceClockOutTarget(null);
-      refreshUnresolvedClockouts();
+      refreshCurrentView();
     } catch (err) {
       setError(err instanceof Error ? err.message : '강제 퇴근 처리에 실패했습니다.');
     } finally {
@@ -309,35 +315,6 @@ export default function AdminReportsPage() {
         </div>
       </div>
       {error && <div className="error">{error}</div>}
-
-      {unresolvedClockouts && unresolvedClockouts.length > 0 && (
-        <div className="card" style={{ background: '#fff4e6', border: '1px solid #ffa94d' }}>
-          <h2>🚪 미퇴근 확인 — 지난 근무일인데 아직 퇴근이 안 찍힌 직원 ({unresolvedClockouts.length}명)</h2>
-          <p style={{ fontSize: 13, color: '#868e96', marginTop: -4 }}>
-            새벽 3시 정정 신청 창을 넘겼거나 깜빡 잊은 경우입니다. 실제 종료 시각과 사유를 입력해 직접 확정할 수 있습니다.
-          </p>
-          <table>
-            <thead>
-              <tr><th>근무일</th><th>이름</th><th>부서</th><th>출근</th><th></th></tr>
-            </thead>
-            <tbody>
-              {unresolvedClockouts.map((row) => (
-                <tr key={row.recordId}>
-                  <td>{row.workDate}</td>
-                  <td>{row.name} ({row.employeeNo})</td>
-                  <td>{row.department}</td>
-                  <td>{fmtTime(row.clockInAt)}</td>
-                  <td>
-                    <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={() => openForceClockOut(row)}>
-                      강제 퇴근 처리
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
 
       {forceClockOutTarget && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
@@ -452,7 +429,7 @@ export default function AdminReportsPage() {
               </thead>
               <tbody>
                 {attendanceDetail.rows.map((r) => (
-                  <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail.date} onClick={() => openTimeline(r.userId, attendanceDetail.date)} />
+                  <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail.date} onClick={() => openTimeline(r.userId, attendanceDetail.date)} onForceClockOut={openForceClockOut} />
                 ))}
               </tbody>
             </table>
@@ -469,7 +446,7 @@ export default function AdminReportsPage() {
                 </thead>
                 <tbody>
                   {rows.map((r) => (
-                    <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail!.date} onClick={() => openTimeline(r.userId, attendanceDetail!.date)} hideDept />
+                    <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail!.date} onClick={() => openTimeline(r.userId, attendanceDetail!.date)} onForceClockOut={openForceClockOut} hideDept />
                   ))}
                 </tbody>
               </table>

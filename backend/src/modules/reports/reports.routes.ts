@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
-import { realDayWindow, todayDateOnly } from '../../common/attendance-helpers';
+import { realDayWindow } from '../../common/attendance-helpers';
 import { recordAuditLog } from '../../common/audit';
 
 export const reportsRouter = Router();
@@ -253,6 +253,7 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
     orderBy: { clockInAt: 'asc' },
   });
   const rows = records.map((r) => ({
+    recordId: r.id,
     userId: r.userId,
     employeeNo: r.user.employeeNo,
     name: r.user.name,
@@ -321,35 +322,6 @@ reportsRouter.get('/daily-timeline', async (req, res) => {
       timeline,
     },
   });
-});
-
-/**
- * 지난 근무일인데 아직 퇴근이 확정 안 된 직원 목록 — 본인이 정정 신청을 못 하거나(예: 새벽 3시
- * 창을 넘겨 OUT_OF_RANGE로 막히는 경우) 깜빡 잊은 경우를 관리자가 찾아서 직접 처리할 수 있게 한다.
- * 오늘 근무일은 아직 진행 중일 수 있으므로 제외한다(어제까지만 대상).
- */
-reportsRouter.get('/unresolved-clockouts', async (req, res) => {
-  const today = todayDateOnly();
-  const records = await prisma.attendanceRecord.findMany({
-    where: {
-      clockInAt: { not: null },
-      clockOutAt: null,
-      workDate: { lt: today },
-      user: { name: { not: { startsWith: 'SAMPLE_' } } },
-    },
-    include: { user: { include: { department: true } } },
-    orderBy: { workDate: 'asc' },
-  });
-  const rows = records.map((r) => ({
-    recordId: r.id,
-    userId: r.userId,
-    employeeNo: r.user.employeeNo,
-    name: r.user.name,
-    department: r.user.department.name,
-    workDate: r.workDate.toISOString().slice(0, 10),
-    clockInAt: r.clockInAt,
-  }));
-  return res.json({ success: true, data: { rows } });
 });
 
 const forceClockOutSchema = z.object({
