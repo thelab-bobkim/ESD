@@ -331,19 +331,43 @@ attendanceRouter.post('/status', async (req, res) => {
 
   // 본사근무 등록: 위치정보가 있고 본사 좌표가 등록되어 있는데 본사와 멀리 떨어져 있으면,
   // "출근" 버튼과 동일하게 본사근무 등록 자체를 막고 고객사미팅/고객사작업으로 유도한다.
-  if (status === 'HQ_WORKING' && location) {
+  // 고객사작업/미팅과 동일한 원칙 — 위치는 잡혔는데 실제로 멀면 항상 차단하고, 위치 확보
+  // 자체가 실패(권한거부/타임아웃/미동의 등)했으면 오늘 첫 실패는 봐주되 그 다음부터는 실제
+  // 위치 일치를 요구한다. 이게 없으면 위치를 안 주는 것만으로 검증이 통째로 무력화된다.
+  let hqLocationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
+  if (status === 'HQ_WORKING') {
     const hqLat = await getPolicyString('HQ_LATITUDE', '');
     const hqLng = await getPolicyString('HQ_LONGITUDE', '');
     if (hqLat && hqLng) {
-      const hqMatch = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) });
-      if (hqMatch && !hqMatch.locationMatch) {
+      hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) });
+      if (hqLocationResult && !hqLocationResult.locationMatch) {
         return res.status(400).json({
           success: false,
           error: {
             code: 'AWAY_FROM_HQ',
-            message: `현재 위치가 본사에서 약 ${hqMatch.locationDistanceMeters}m 떨어져 있어요. 본사근무 대신 "고객사미팅" 또는 "고객사작업"으로 등록해주세요.`,
+            message: `현재 위치가 본사에서 약 ${hqLocationResult.locationDistanceMeters}m 떨어져 있어요. 본사근무 대신 "고객사미팅" 또는 "고객사작업"으로 등록해주세요.`,
           },
         });
+      }
+      if (!hqLocationResult) {
+        const { start: dayStartForHq, end: dayEndForHq } = realDayWindow(todayDateOnly());
+        const priorHqLocationFailures = await prisma.statusChangeLog.count({
+          where: {
+            userId,
+            status: 'HQ_WORKING',
+            changedAt: { gte: dayStartForHq, lt: dayEndForHq },
+            locationCaptureStatus: { notIn: ['OK'] },
+          },
+        });
+        if (priorHqLocationFailures >= 1) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'LOCATION_REQUIRED',
+              message: '오늘 이미 한 번 위치 확인 없이 본사근무로 등록하셨어요. 이번엔 위치 접근을 허용한 뒤 다시 시도해주세요.',
+            },
+          });
+        }
       }
     }
   }
@@ -401,10 +425,10 @@ attendanceRouter.post('/status', async (req, res) => {
       status,
       note,
       source: 'WEB',
-      locationMatch: locationResult?.locationMatch ?? null,
-      locationDistanceMeters: locationResult?.locationDistanceMeters ?? null,
+      locationMatch: (locationResult ?? hqLocationResult)?.locationMatch ?? null,
+      locationDistanceMeters: (locationResult ?? hqLocationResult)?.locationDistanceMeters ?? null,
       siteType: siteType ?? null,
-      locationCaptureStatus: LOCATION_CHECK_STATUSES.has(status) ? (locationCaptureStatus ?? null) : null,
+      locationCaptureStatus: (LOCATION_CHECK_STATUSES.has(status) || status === 'HQ_WORKING') ? (locationCaptureStatus ?? null) : null,
     },
   });
 

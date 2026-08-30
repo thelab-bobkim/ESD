@@ -335,11 +335,13 @@ export default function EmployeeHome() {
       if (code === 'BUSINESS_TRIP') {
         body.businessTrip = { destination: '(추후 입력)', purpose: '(추후 입력)', startAt: new Date().toISOString() };
       }
-      // 본사근무는 실제로 본사에 있는지 위치로 확인한다(동의한 경우만) — 아니면 서버에서 막고
-      // 고객사미팅/작업으로 유도한다.
-      if (code === 'HQ_WORKING' && me?.locationConsentGiven) {
-        const loc = await getCurrentLocation();
-        if (loc) body.location = loc;
+      // 본사근무는 실제로 본사에 있는지 위치로 확인한다 — 아니면 서버에서 막고 고객사미팅/작업으로
+      // 유도한다. 위치 확보 실패 사유(locationStatus)까지 같이 보내야 서버가 "오늘 첫 실패는
+      // 봐준다" 판단을 할 수 있다(고객사작업/미팅과 동일한 방식).
+      if (code === 'HQ_WORKING') {
+        const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+        if (coords) body.location = coords;
+        body.locationStatus = locStatus;
       }
       run(
         () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
@@ -442,10 +444,11 @@ export default function EmployeeHome() {
       const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
       if (coords) body.location = coords;
       body.locationStatus = locStatus;
-    } else if (EFFORT_STATUSES.has(code) && code !== 'REMOTE' && me?.locationConsentGiven) {
-      // REMOTE(재택)는 집에서 접속하는 게 정상이라 위치를 굳이 확인하지 않는다.
-      const loc = await getCurrentLocation();
-      if (loc) body.location = loc;
+    } else if (code === 'HQ_WORKING') {
+      // 본사근무도 고객사작업/미팅과 동일하게 위치 확보 실패 사유까지 같이 보낸다("오늘 첫 실패는 봐준다" 판단용).
+      const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+      if (coords) body.location = coords;
+      body.locationStatus = locStatus;
     }
 
     if (code === 'NIGHT_WORK') {
