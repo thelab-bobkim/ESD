@@ -34,9 +34,12 @@ const DETAIL_FORM_STATUSES = new Set([
 // 다른 상태로 넘어가려 하면 changeStatus()에서 막고 경고 후 그 상태의 입력폼을 대신 열어준다.
 const QUICK_REGISTER_STATUSES = new Set(DETAIL_FORM_STATUSES);
 // 이 상태들은 프로젝트별 공수(工數) 집계 대상이라 프로젝트명 필드가 필요하다.
-const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
+// REMOTE(재택)는 대부분 고객사에 원격 접속해서 작업하므로, 고객사작업과 동일하게 접속시작~종료를
+// 추적한다(백엔드 EFFORT_STATUSES와 반드시 같은 값을 유지해야 한다).
+const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE']);
 // 이 상태들은 "고객사명 + 업무내용"만 간단히 입력하는 단순폼이다(프로젝트/작업유형/시간 불필요).
-const SIMPLE_CLIENT_STATUSES = new Set(['REMOTE', 'RESIDENT_ONSITE']);
+// REMOTE는 접속시작~종료를 추적해야 해서 여기서 뺐다(2026-08-30, 엔지니어 공수 리포트 누락 문제 해결).
+const SIMPLE_CLIENT_STATUSES = new Set(['RESIDENT_ONSITE']);
 // 이 상태들은 "작업위치(원격/현장)"를 필수로, "작업인원/진행률·차수"를 선택으로 받는다 —
 // 백업팀 등의 야간/고객사 작업 보고서 형식(예: VERITAS 야간작업 보고 메일)을 참고해 추가한 필드.
 // 백엔드 attendance.routes.ts의 REQUIRE_SITE_TYPE_STATUSES와 반드시 같은 값을 유지해야 한다.
@@ -320,7 +323,7 @@ export default function EmployeeHome() {
     // ("세부내용은 나중에 작성" — 시작하는 시점엔 아직 쓸 내용이 없는 게 당연하므로.)
     if (QUICK_REGISTER_STATUSES.has(code) && !alreadyInThisStatus) {
       const body: Record<string, unknown> = { status: code };
-      if (['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK'].includes(code)) {
+      if (['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'REMOTE'].includes(code)) {
         body.effort = { clientName: prefilledClientName || undefined, startTime: nowHHMM() };
       }
       // 고객사미팅/고객사작업/야간작업은 작업위치(원격/현장)가 필수라, 우선 등록되는 이 시점에는
@@ -439,7 +442,8 @@ export default function EmployeeHome() {
       const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
       if (coords) body.location = coords;
       body.locationStatus = locStatus;
-    } else if (EFFORT_STATUSES.has(code) && me?.locationConsentGiven) {
+    } else if (EFFORT_STATUSES.has(code) && code !== 'REMOTE' && me?.locationConsentGiven) {
+      // REMOTE(재택)는 집에서 접속하는 게 정상이라 위치를 굳이 확인하지 않는다.
       const loc = await getCurrentLocation();
       if (loc) body.location = loc;
     }
@@ -914,7 +918,7 @@ export default function EmployeeHome() {
                 </p>
               )}
               <label className="field-label">
-                {detailStatus === 'HQ_WORKING' ? '관련 프로젝트/고객사(선택)' : '고객사명'}
+                {detailStatus === 'HQ_WORKING' ? '관련 프로젝트/고객사(선택)' : detailStatus === 'REMOTE' ? '지원 고객사' : '고객사명'}
                 {detailStatus === 'NIGHT_WORK' ? '(내부 작업이면 비워두세요)' : ''}
               </label>
               <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />

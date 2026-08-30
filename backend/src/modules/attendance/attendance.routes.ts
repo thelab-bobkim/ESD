@@ -12,9 +12,11 @@ export const attendanceRouter = Router();
 attendanceRouter.use(requireAuth);
 
 // 이 상태로 바뀌면 "실제 업무 시작"으로 보고 출근시각을 자동 인식한다(주52시간제 대응).
-const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP']);
-// 이 상태는 프로젝트별 공수(工數) 기록 대상이다.
-const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
+// REMOTE(재택)는 대부분 고객사에 원격 접속해서 작업하는 형태라, 접속 시작~종료를 다른 근무
+// 유형과 동일하게(고객사작업과 같은 방식으로) 추적하기 위해 포함시켰다.
+const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP', 'REMOTE']);
+// 이 상태는 프로젝트별 공수(工數) 기록 대상이다. REMOTE도 고객사작업과 동일하게 추적한다.
+const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE']);
 
 /** 출근 처리(수동) — 위 자동인식 대상이 아닌 경우를 위한 수동 버튼 */
 attendanceRouter.post('/clock-in', async (req, res) => {
@@ -258,6 +260,7 @@ const statusSchema = z.object({
 });
 
 // 이 상태들만 GPS 위치대조 대상이다(고객사 위치와 비교할 대상이 있는 경우만).
+// REMOTE(재택)는 집에서 원격 접속하는 게 정상이라 위치대조 대상에 넣지 않는다(의도적 제외).
 const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 // 이 상태들은 "원격/현장"을 반드시 골라야 한다 — 야간작업 보고서에도 현장 여부가 필요하고
 // (VERITAS 등 상주 백업팀의 야간 현장작업 사례), 고객사미팅/작업은 아래 직출퇴 판단에도 쓰인다.
@@ -269,7 +272,8 @@ const REQUIRE_LOCATION_ON_CLOCKOUT_IF_ONSITE = new Set(['CLIENT_MEETING', 'CLIEN
 const REQUIRE_LOCATION_ON_CLOCKOUT_ALWAYS = new Set(['RESIDENT_ONSITE']);
 // "정규 출근"으로 취급하는 상태 — 야간작업(NIGHT_WORK)은 제외. 저녁 정책시각 이후엔 이 상태들로
 // 출근을 새로 찍을 수 없고, 대신 야간작업으로 등록하도록 안내한다(REGULAR_WORK_END_HOUR 정책값).
-const REGULAR_CLOCK_IN_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'BUSINESS_TRIP']);
+// REMOTE도 이제 정규 근무시간 추적 대상이라 포함한다.
+const REGULAR_CLOCK_IN_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'BUSINESS_TRIP', 'REMOTE']);
 
 /** 현재 상태 변경. 업무 시작류 상태면 출근시각을 자동 인식하고, 고객사미팅/작업이면 공수기록도 남긴다. */
 attendanceRouter.post('/status', async (req, res) => {
@@ -290,9 +294,9 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'BUSINESS_TRIP_REQUIRED', message: '목적지·출발일시·목적을 모두 입력해야 합니다.' } });
   }
 
-  // 고객사미팅/고객사작업/야간작업은 작업시작 시간만 있으면 등록 가능하다(막 시작한 시점엔 완료시간을
+  // 고객사미팅/고객사작업/야간작업/재택은 작업시작 시간만 있으면 등록 가능하다(막 시작한 시점엔 완료시간을
   // 알 수 없는 게 당연하므로). 완료시간은 나중에 다시 등록해서 채우면 된다("진행중" 허용).
-  const REQUIRE_TIME_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+  const REQUIRE_TIME_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'REMOTE']);
   if (REQUIRE_TIME_STATUSES.has(status) && !effort?.startTime) {
     return res.status(400).json({ success: false, error: { code: 'TIME_REQUIRED', message: '작업시작 시간을 입력해야 합니다.' } });
   }
