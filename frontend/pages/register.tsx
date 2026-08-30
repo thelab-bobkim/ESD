@@ -20,8 +20,8 @@ export default function RegisterPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (newPassword.length < 8) {
-      setError('비밀번호는 8자 이상이어야 합니다.');
+    if (newPassword.length < 10) {
+      setError('비밀번호는 10자 이상이어야 합니다.');
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -63,7 +63,7 @@ export default function RegisterPage() {
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             type="password"
-            placeholder="사용할 비밀번호 (8자 이상)"
+            placeholder="사용할 비밀번호 (10자 이상)"
           />
           <input
             value={confirmPassword}

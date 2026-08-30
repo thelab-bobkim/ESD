@@ -170,6 +170,17 @@ model User {
   mustChangePassword Boolean         @default(false) @map("must_change_password")
   // 고객사 방문 위치대조 기능에 대한 동의 시각(최초 1회 명시적 동의) — null이면 아직 미동의.
   locationConsentAt  DateTime?       @map("location_consent_at")
+  // 개인정보 수집·이용 동의 시각(최초 1회 명시적 동의) — null이면 아직 미동의.
+  // 2026-08-30부터 앱 사용의 필수 전제조건(위치정보 동의와 함께)으로 운영 — index.tsx MandatoryConsentGate 참고.
+  privacyConsentAt   DateTime?       @map("privacy_consent_at")
+  // 2026-08-30 보안점검: 비밀번호 변경 시 이 값을 올려서, 그 전에 발급된 JWT를 전부 무효화한다
+  // (JWT는 상태를 안 갖는 토큰이라, 이 값이 없으면 비번을 바꿔도 예전 토큰이 만료 전까지 계속 유효했음).
+  // requireAuth가 매 요청마다 토큰 속 tokenVersion과 이 값을 비교한다 — common/guards/auth.ts 참고.
+  tokenVersion       Int             @default(0) @map("token_version")
+  // 2026-08-30 보안점검: 계정 단위 로그인 잠금(무차별 대입 방지, IP 기준 rate-limit과는 별개).
+  // 연속 실패 시 잠기고, 로그인 성공하면 둘 다 초기화된다 — auth.routes.ts /login 참고.
+  failedLoginAttempts Int            @default(0) @map("failed_login_attempts")
+  lockedUntil        DateTime?       @map("locked_until")
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 

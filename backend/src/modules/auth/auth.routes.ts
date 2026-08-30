@@ -9,7 +9,7 @@ export const authRouter = Router();
 const registerSchema = z.object({
   employeeNo: z.string().min(1),
   name: z.string().min(1),
-  newPassword: z.string().min(8, '비밀번호는 8자 이상이어야 합니다.'),
+  newPassword: z.string().min(10, '비밀번호는 10자 이상이어야 합니다.'),
 });
 
 /**
@@ -52,7 +52,7 @@ authRouter.post('/register-password', async (req, res) => {
   });
 
   const roles = user.userRoles.map((ur) => ur.role.code);
-  const token = signAccessToken({ userId: user.id, roles, departmentId: user.departmentId });
+  const token = signAccessToken({ userId: user.id, roles, departmentId: user.departmentId, tokenVersion: user.tokenVersion });
 
   return res.json({
     success: true,
@@ -69,6 +69,11 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+// 2026-08-30 보안점검: IP 기준 rate-limit(app.ts)과는 별개로, 계정 단위로도 무차별 대입을 막는다 —
+// 여러 IP로 나눠서 시도하는 공격은 IP 제한만으로는 못 막기 때문.
+const MAX_FAILED_LOGIN_ATTEMPTS = 5;
+const ACCOUNT_LOCK_DURATION_MS = 15 * 60_000;
+
 authRouter.post('/login', async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -83,13 +88,31 @@ authRouter.post('/login', async (req, res) => {
   if (!user) {
     return res.status(401).json({ success: false, error: { code: 'INVALID_CREDENTIALS', message: '아이디 또는 비밀번호가 올바르지 않습니다.' } });
   }
+  if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
+    const minutesLeft = Math.max(1, Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60_000));
+    return res.status(423).json({
+      success: false,
+      error: { code: 'ACCOUNT_LOCKED', message: `로그인 시도가 너무 많아 계정이 잠겼습니다. ${minutesLeft}분 후 다시 시도해주세요.` },
+    });
+  }
   const valid = await bcrypt.compare(password, user.passwordHash);
   if (!valid) {
+    const attempts = user.failedLoginAttempts + 1;
+    const shouldLock = attempts >= MAX_FAILED_LOGIN_ATTEMPTS;
+    await prisma.user.update({
+      where: { id: user.id },
+      data: shouldLock
+        ? { failedLoginAttempts: 0, lockedUntil: new Date(Date.now() + ACCOUNT_LOCK_DURATION_MS) }
+        : { failedLoginAttempts: attempts },
+    });
     return res.status(401).json({ success: false, error: { code: 'INVALID_CREDENTIALS', message: '아이디 또는 비밀번호가 올바르지 않습니다.' } });
+  }
+  if (user.failedLoginAttempts > 0 || user.lockedUntil) {
+    await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: 0, lockedUntil: null } });
   }
 
   const roles = user.userRoles.map((ur) => ur.role.code);
-  const token = signAccessToken({ userId: user.id, roles, departmentId: user.departmentId });
+  const token = signAccessToken({ userId: user.id, roles, departmentId: user.departmentId, tokenVersion: user.tokenVersion });
 
   return res.json({
     success: true,
@@ -130,6 +153,7 @@ authRouter.get('/me', requireAuth, async (req, res) => {
       roles: user.userRoles.map((ur) => ur.role.code),
       mustChangePassword: user.mustChangePassword,
       locationConsentGiven: user.locationConsentAt != null,
+      privacyConsentGiven: user.privacyConsentAt != null,
     },
   });
 });
@@ -138,6 +162,8 @@ authRouter.get('/me', requireAuth, async (req, res) => {
  * 고객사 방문 위치대조 기능에 대한 최초 동의 기록. 이미 동의했으면 그대로 둔다(재동의 불필요).
  * 위치정보보호법상 목적을 명시하고 명시적 동의를 받아야 하므로, 브라우저 권한창과 별개로
  * 이 동의 기록을 서버에 남겨 법적 근거로 삼는다.
+ * 2026-08-30부터 개인정보 동의와 함께 앱 사용의 필수 전제조건 — frontend의 MandatoryConsentGate가
+ * 두 동의를 모두 받기 전까지 앱 화면을 가린다(우회 불가, "나중에" 건너뛰기 없음).
  */
 authRouter.post('/location-consent', requireAuth, async (req, res) => {
   const userId = req.authUser!.userId;
@@ -151,9 +177,25 @@ authRouter.post('/location-consent', requireAuth, async (req, res) => {
   return res.json({ success: true, data: { consented: true } });
 });
 
+/**
+ * 개인정보 수집·이용에 대한 최초 동의 기록. 위치정보 동의와 마찬가지로 앱 사용의 필수 전제조건이다
+ * (2026-08-30, 엔지니어/과장급 전사 확산에 맞춰 도입). 이미 동의했으면 그대로 둔다(재동의 불필요).
+ */
+authRouter.post('/privacy-consent', requireAuth, async (req, res) => {
+  const userId = req.authUser!.userId;
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다.' } });
+  }
+  if (!user.privacyConsentAt) {
+    await prisma.user.update({ where: { id: userId }, data: { privacyConsentAt: new Date() } });
+  }
+  return res.json({ success: true, data: { consented: true } });
+});
+
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: z.string().min(8, '비밀번호는 8자 이상이어야 합니다.'),
+  newPassword: z.string().min(10, '비밀번호는 10자 이상이어야 합니다.'),
 });
 
 /** 본인 비밀번호 변경. 최초 로그인 강제 변경, 그리고 이후 자율 변경 둘 다 이 API를 쓴다. */
@@ -178,10 +220,19 @@ authRouter.post('/change-password', requireAuth, async (req, res) => {
   }
 
   const newHash = await bcrypt.hash(newPassword, 10);
-  await prisma.user.update({
+  // 2026-08-30 보안점검: 비밀번호를 바꾸면 tokenVersion을 올려서 이전에 발급된 모든 토큰(다른 기기 포함)을
+  // 즉시 무효화한다. 지금 요청에 쓰인 토큰도 예외가 아니므로, 새 tokenVersion으로 토큰을 다시 발급해서
+  // 돌려준다 — 프론트는 이 토큰으로 갈아끼워야 로그아웃되지 않고 계속 쓸 수 있다(change-password.tsx 참고).
+  const updated = await prisma.user.update({
     where: { id: userId },
-    data: { passwordHash: newHash, mustChangePassword: false },
+    data: { passwordHash: newHash, mustChangePassword: false, tokenVersion: { increment: 1 } },
+  });
+  const newToken = signAccessToken({
+    userId: updated.id,
+    roles: req.authUser!.roles,
+    departmentId: updated.departmentId,
+    tokenVersion: updated.tokenVersion,
   });
 
-  return res.json({ success: true, data: { changed: true } });
+  return res.json({ success: true, data: { changed: true, accessToken: newToken } });
 });

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, setToken } from '@/lib/api';
 
 interface MeResponse {
   name: string;
@@ -24,8 +24,8 @@ export default function ChangePasswordPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (newPassword.length < 8) {
-      setError('새 비밀번호는 8자 이상이어야 합니다.');
+    if (newPassword.length < 10) {
+      setError('새 비밀번호는 10자 이상이어야 합니다.');
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -34,10 +34,13 @@ export default function ChangePasswordPage() {
     }
     setLoading(true);
     try {
-      await apiFetch('/auth/change-password', {
+      // 비밀번호를 바꾸면 서버가 이전 토큰을 전부 무효화하고 새 토큰을 돌려준다 — 그걸 안 갈아끼우면
+      // 다음 화면에서 바로 "다시 로그인해야 합니다"로 튕겨나가므로 반드시 저장해야 한다.
+      const result = await apiFetch<{ changed: boolean; accessToken: string }>('/auth/change-password', {
         method: 'POST',
         body: JSON.stringify({ currentPassword, newPassword }),
       });
+      setToken(result.accessToken);
       const isAdmin = (me?.roles ?? []).some((r) => ['HR_ADMIN', 'SYSTEM_ADMIN', 'TEAM_LEAD', 'PILOT_MANAGER'].includes(r));
       router.push(isAdmin ? '/admin/dashboard' : '/');
     } catch (err) {
@@ -72,7 +75,7 @@ export default function ChangePasswordPage() {
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             type="password"
-            placeholder="새 비밀번호 (8자 이상)"
+            placeholder="새 비밀번호 (10자 이상)"
           />
           <input
             value={confirmPassword}
