@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch, clearToken } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
+import AdminHeader from '@/components/AdminHeader';
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 type ApprovalType = 'OVERTIME' | 'NIGHT_WORK' | 'LEAVE_CONVERSION' | 'ATTENDANCE_CORRECTION';
@@ -100,20 +101,10 @@ export default function ApprovalsPage() {
     }
   }
 
-  function logout() {
-    clearToken();
-    router.push('/login');
-  }
-
   return (
     <div className="admin-shell">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>✅ 승인함 — 대체휴무·근태정정</h1>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/dashboard')}>상황판으로</button>
-          <button className="secondary" style={{ width: 'auto' }} onClick={logout}>로그아웃</button>
-        </div>
-      </div>
+      <AdminHeader title="승인함" />
+      <p className="admin-page-subtitle">대체휴무 전환·연장/야간근무·지난 근무일 퇴근 정정 요청을 처리하세요.</p>
 
       <div style={{ display: 'flex', gap: 8, margin: '16px 0' }}>
         {TABS.map((t) => (

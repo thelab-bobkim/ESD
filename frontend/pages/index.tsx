@@ -740,7 +740,7 @@ export default function EmployeeHome() {
           </div>
 
           <div className="card">
-            <h2>지금 상태를 콕! 눌러주세요 — 근무기록이 자동으로 쌓여요 😊</h2>
+            <h2>지금 상태 콕! 눌러주세요. 근무기록은 여러분들에게 더 큰 혜택을 드릴 수 있어요.</h2>
             {clockedOut && !isAdminAccount && (
               <div className="board-empty" style={{ marginBottom: 8, color: '#f08c00', fontWeight: 600 }}>
                 🔒 퇴근 처리되어 상태를 더 이상 바꿀 수 없습니다 (야간작업은 계속 등록 가능해요). 내일 다시 만나요!

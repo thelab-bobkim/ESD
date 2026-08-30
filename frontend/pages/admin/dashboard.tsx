@@ -1,6 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch, clearToken } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
+import AdminHeader from '@/components/AdminHeader';
+
+/** 6자리 hex 색상에 알파를 입혀 옅은 배경톤을 만든다(아이콘 배지 배경용). */
+function softBg(hex: string, alphaHex = '20'): string {
+  return /^#[0-9a-fA-F]{6}$/.test(hex) ? `${hex}${alphaHex}` : hex;
+}
 
 // 상태별 표시 정보(라벨/아이콘/색상) — "지금 이 사람이 어디서 뭘 하고 있는지"를
 // 위치정보 없이도 직관적으로 보여주기 위한 매핑이다. 실제 좌표는 수집하지 않는다(core_principles).
@@ -221,24 +227,10 @@ export default function AdminDashboard() {
     setExpandedColumns((prev) => ({ ...prev, [code]: !prev[code] }));
   }
 
-  function logout() {
-    clearToken();
-    router.push('/login');
-  }
-
   return (
     <div className="admin-shell">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>전사 상황판 — 지금 누가 어디서 뭘 하고 있나</h1>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/clients')}>고객사 위치관리</button>
-          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/calendar')}>캘린더</button>
-          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/reports')}>출퇴근·근로시간·공수</button>
-          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/approvals')}>✅ 승인함</button>
-          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/change-password')}>비밀번호 변경</button>
-          <button className="secondary" style={{ width: 'auto' }} onClick={logout}>로그아웃</button>
-        </div>
-      </div>
+      <AdminHeader title="전사 상황판" />
+      <p className="admin-page-subtitle">지금 누가 어디서 뭘 하고 있는지 한눈에 확인하세요.</p>
       {error && <div className="error">{error}</div>}
 
       <div className="toolbar">
@@ -290,7 +282,11 @@ export default function AdminDashboard() {
             const n = macroCounts.get(g.key) ?? 0;
             const pct = stats.total > 0 ? Math.round((n / stats.total) * 100) : 0;
             return (
-              <div className="macro-tile" key={g.key} style={{ borderLeftColor: g.color }}>
+              <div
+                className="macro-tile"
+                key={g.key}
+                style={{ '--tile-color': g.color, '--tile-color-soft': softBg(g.color) } as CSSProperties}
+              >
                 <div className="macro-tile-icon">{g.icon}</div>
                 <div>
                   <div className="macro-tile-label">{g.label}</div>

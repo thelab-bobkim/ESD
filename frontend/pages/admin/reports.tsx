@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch, apiDownload, clearToken } from '@/lib/api';
+import { apiFetch, apiDownload } from '@/lib/api';
+import AdminHeader from '@/components/AdminHeader';
 
 const WEEKLY_LIMIT_MINUTES = 52 * 60; // 주52시간제 기준
 type Period = 'day' | 'week' | 'month' | 'year';
@@ -263,11 +264,6 @@ export default function AdminReportsPage() {
     setPeriod(p);
   }
 
-  function logout() {
-    clearToken();
-    router.push('/login');
-  }
-
   // 요약 카드 계산
   const daySummary = useMemo(() => {
     if (!attendanceDetail) return null;
@@ -307,13 +303,8 @@ export default function AdminReportsPage() {
 
   return (
     <div className="admin-shell">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>📋 출퇴근 · 근로시간 · 공수 리포트</h1>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/dashboard')}>상황판으로</button>
-          <button className="secondary" style={{ width: 'auto' }} onClick={logout}>로그아웃</button>
-        </div>
-      </div>
+      <AdminHeader title="출퇴근·근로시간·공수 리포트" />
+      <p className="admin-page-subtitle">기간별 출퇴근 현황과 고객사별 공수를 조회하고 내려받으세요.</p>
       {error && <div className="error">{error}</div>}
 
       {forceClockOutTarget && (

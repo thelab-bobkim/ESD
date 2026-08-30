@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch, clearToken } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
 import MapPickerModal from '@/components/MapPickerModal';
+import AdminHeader from '@/components/AdminHeader';
 
 interface ClientRow {
   id: string; name: string; address: string; latitude: number | null; longitude: number | null; hasCoordinates: boolean;
@@ -144,11 +145,6 @@ export default function AdminClientsPage() {
     }
   }
 
-  function logout() {
-    clearToken();
-    router.push('/login');
-  }
-
   const mapTargetClient = clients?.find((c) => c.id === mapTargetId) ?? null;
   const visibleClients = clients
     ? clients
@@ -161,13 +157,8 @@ export default function AdminClientsPage() {
 
   return (
     <div className="admin-shell">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>📍 고객사 위치(좌표) 관리</h1>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/dashboard')}>상황판으로</button>
-          <button className="secondary" style={{ width: 'auto' }} onClick={logout}>로그아웃</button>
-        </div>
-      </div>
+      <AdminHeader title="고객사 위치관리" />
+      <p className="admin-page-subtitle">고객사 좌표와 본사 위치를 등록해두면 현장 위치대조에 사용됩니다.</p>
       {error && <div className="error">{error}</div>}
 
       <div className="card">

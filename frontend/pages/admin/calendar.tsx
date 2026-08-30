@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch, clearToken } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
+import AdminHeader from '@/components/AdminHeader';
 
 const STATUS_META: Record<string, { label: string; icon: string; color: string }> = {
   HQ_WORKING: { label: '본사근무', icon: '🏢', color: '#2f9e44' },
@@ -93,20 +94,10 @@ export default function AdminCalendarPage() {
     setDayBoard(null);
   }
 
-  function logout() {
-    clearToken();
-    router.push('/login');
-  }
-
   return (
     <div className="admin-shell">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>상황판 캘린더</h1>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="secondary" style={{ width: 'auto' }} onClick={() => router.push('/admin/dashboard')}>상황판으로</button>
-          <button className="secondary" style={{ width: 'auto' }} onClick={logout}>로그아웃</button>
-        </div>
-      </div>
+      <AdminHeader title="상황판 캘린더" />
+      <p className="admin-page-subtitle">날짜를 눌러 그날의 출퇴근·상태 기록을 확인하세요.</p>
       {error && <div className="error">{error}</div>}
 
       <div className="card">
