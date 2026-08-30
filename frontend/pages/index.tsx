@@ -725,12 +725,13 @@ export default function EmployeeHome() {
                 }}
               />
             )}
-            <p style={{ fontSize: 11, color: '#adb5bd', marginTop: 4, marginBottom: 8 }}>
-              * "본사근무/고객사상주/고객사미팅/고객사작업" 상태로 바꾸거나 도착체크를 하면 출근시각이 자동으로 기록됩니다. 퇴근 버튼을 눌러야 그날 근무가 확정됩니다.
-            </p>
-            <div style={{ background: '#fff4e6', border: '1px solid #ffa94d', borderRadius: 8, padding: '10px 12px', marginBottom: 8, fontSize: 13, color: '#c2410c', fontWeight: 600, lineHeight: 1.5 }}>
-              ⚠️ 본사를 거치지 않고 고객사로 바로 출근(직출)하는 날은 "출근" 버튼을 먼저 누르지 마세요.
-              <span style={{ fontWeight: 400 }}> 이동시간은 근로시간에 포함되지 않으므로, 고객사 도착 후 "고객사작업/고객사미팅"을 눌러야 그 시점부터 정확히 근무시간이 계산됩니다.</span>
+            <div style={{ background: '#fff4e6', border: '1px solid #ffa94d', borderRadius: 8, padding: '10px 12px', marginBottom: 8, fontSize: 13, color: '#c2410c', fontWeight: 600, lineHeight: 1.6 }}>
+              ⚠️ "본사근무/고객사상주/고객사미팅/고객사작업" 상태로 바꾸거나 도착체크를 하면 그 순간이 출근시각으로 자동 기록됩니다.
+              <span style={{ fontWeight: 400 }}>
+                {' '}본사를 거치지 않고 고객사로 바로 출근(직출)하는 날은 "출근" 버튼을 먼저 누르지 마세요 — 이동시간은 근무시간에 포함되지 않으므로, 고객사 도착 후 "고객사작업/고객사미팅"을 눌러야 그 시점부터 정확히 계산됩니다.
+                {' '}(고객사작업/미팅은 등록된 그 고객사 위치와 대조되며, 본사가 아니라 방문한 고객사와의 거리가 기준입니다.)
+                {' '}하루 일과를 마치면 반드시 "퇴근" 버튼을 눌러야 그날 근무가 확정됩니다.
+              </span>
             </div>
             <button className="secondary" disabled={pushLoading} onClick={togglePush}>
               {pushLoading ? '처리 중...' : pushSubscribed ? '🔔 출퇴근 알림 끄기' : '🔕 출퇴근 알림 켜기(출근 오전 9시·퇴근 저녁)'}
