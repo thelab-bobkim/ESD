@@ -295,8 +295,19 @@ model StatusChangeLog {
   // 고객사미팅/고객사작업 등록 시 GPS 위치대조 결과. 원본 좌표는 저장하지 않고 결과만 남긴다.
   locationMatch          Boolean? @map("location_match")
   locationDistanceMeters Int?     @map("location_distance_meters")
+  // 원격/현장 여부 — 고객사미팅/고객사작업/야간작업 등록 시 필수 입력.
+  // 상태 종류와 무관하게 이 테이블 하나로 조회하므로(EffortLog/NightWorkSession은 상태별로 나뉘어 있음),
+  // "직출/직퇴 시 최종 퇴근 위치 필수" 판단(퇴근 처리 로직)이 여기 값을 기준으로 한다.
+  siteType  SiteType? @map("site_type")
 
   @@map("status_change_logs")
+}
+
+// 원격근무 vs 고객사 현장 — 직출/직퇴(본사 미경유) 시 이동시간이 근로시간에 섞이지 않도록
+// 최종 퇴근 위치를 필수로 받아야 하는지 판단하는 데 쓰인다(ONSITE인 경우만 해당).
+enum SiteType {
+  REMOTE
+  ONSITE
 }
 
 model ResidentCheckin {

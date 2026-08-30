@@ -37,6 +37,10 @@ const QUICK_REGISTER_STATUSES = new Set(DETAIL_FORM_STATUSES);
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
 // 이 상태들은 "고객사명 + 업무내용"만 간단히 입력하는 단순폼이다(프로젝트/작업유형/시간 불필요).
 const SIMPLE_CLIENT_STATUSES = new Set(['REMOTE', 'RESIDENT_ONSITE']);
+// 이 상태들은 "작업위치(원격/현장)"를 필수로, "작업인원/진행률·차수"를 선택으로 받는다 —
+// 백업팀 등의 야간/고객사 작업 보고서 형식(예: VERITAS 야간작업 보고 메일)을 참고해 추가한 필드.
+// 백엔드 attendance.routes.ts의 REQUIRE_SITE_TYPE_STATUSES와 반드시 같은 값을 유지해야 한다.
+const SITE_DETAIL_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 // 고객사미팅은 "작업"이 아니라 "미팅"이라 유형 대신 목적으로 구분한다.
@@ -128,6 +132,10 @@ export default function EmployeeHome() {
   const [workType, setWorkType] = useState(WORK_TYPE_OPTIONS[0]);
   const [workDetail, setWorkDetail] = useState('');
   const [workReason, setWorkReason] = useState(''); // 육하원칙 중 "왜(목적/사유)"
+  // 작업위치(원격/현장, 필수) · 작업인원(추가 투입 인원, 선택) · 진행률/차수(선택)
+  const [siteType, setSiteType] = useState<'ONSITE' | 'REMOTE'>('ONSITE');
+  const [personnel, setPersonnel] = useState('');
+  const [progressStage, setProgressStage] = useState('');
   // 출장 전용 필드 (목적지/기간/목적)
   const [tripDestination, setTripDestination] = useState('');
   const [tripStart, setTripStart] = useState('');
@@ -263,6 +271,9 @@ export default function EmployeeHome() {
     setWorkType(code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : code === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS[0] : WORK_TYPE_OPTIONS[0]);
     setWorkDetail('');
     setWorkReason('');
+    setSiteType('ONSITE');
+    setPersonnel('');
+    setProgressStage('');
     setTripDestination('');
     setTripStart(nowDateTimeLocal());
     setTripEnd('');
@@ -289,6 +300,12 @@ export default function EmployeeHome() {
       const body: Record<string, unknown> = { status: code };
       if (['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK'].includes(code)) {
         body.effort = { clientName: prefilledClientName || undefined, startTime: nowHHMM() };
+      }
+      // 고객사미팅/고객사작업/야간작업은 작업위치(원격/현장)가 필수라, 우선 등록되는 이 시점에는
+      // 안전한 기본값(현장)으로 채워두고, 실제 값은 아래 열리는 상세폼에서 다시 골라 등록하게 한다
+      // (상세폼 제출 시 최신 상태 로그로 다시 남으므로 그때의 값이 최종적으로 반영된다).
+      if (SITE_DETAIL_STATUSES.has(code)) {
+        body.siteType = 'ONSITE';
       }
       if (code === 'BUSINESS_TRIP') {
         body.businessTrip = { destination: '(추후 입력)', purpose: '(추후 입력)', startAt: new Date().toISOString() };
@@ -371,10 +388,18 @@ export default function EmployeeHome() {
       return;
     }
 
-    const note = code === 'CLIENT_MEETING'
+    // 작업위치(원격/현장, 필수) · 작업인원(선택) · 진행률/차수(선택) — 야간작업/고객사미팅/고객사작업만 해당.
+    if (SITE_DETAIL_STATUSES.has(code) && !siteType) return;
+    const siteDetailSuffix = SITE_DETAIL_STATUSES.has(code)
+      ? ` | 작업위치: ${siteType === 'ONSITE' ? '현장' : '원격'}${personnel ? ` | 작업인원: ${personnel}` : ''}${progressStage ? ` | 진행률/차수: ${progressStage}` : ''}`
+      : '';
+    const note = (code === 'CLIENT_MEETING'
       ? `미팅목적: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 미팅주제: ${workDetail} | 목적: ${workReason}`
-      : `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail} | 목적: ${workReason}`;
+      : `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail} | 목적: ${workReason}`) + siteDetailSuffix;
     const body: Record<string, unknown> = { status: code, note };
+    if (SITE_DETAIL_STATUSES.has(code)) {
+      body.siteType = siteType;
+    }
     if (DETAIL_FORM_STATUSES.has(code)) {
       body.effort = {
         clientName,
@@ -383,6 +408,7 @@ export default function EmployeeHome() {
         startTime: workStart,
         endTime: workEnd || undefined,
         description: `${workDetail} (목적: ${workReason})`,
+        ...(SITE_DETAIL_STATUSES.has(code) ? { personnel: personnel || undefined, progressStage: progressStage || undefined } : {}),
       };
     }
     // 고객사미팅/고객사작업은 등록 순간 위치를 확인해서 등록된 고객사 위치와 대조한다(동의한 경우에만).
@@ -876,8 +902,31 @@ export default function EmployeeHome() {
                 onChange={(e) => setWorkReason(e.target.value)}
                 placeholder="예: 정기 유지보수 계약에 따른 월간 점검"
               />
+
+              {SITE_DETAIL_STATUSES.has(detailStatus) && (
+                <>
+                  <label className="field-label">작업위치 (필수)</label>
+                  <select className="field-select" value={siteType} onChange={(e) => setSiteType(e.target.value as 'ONSITE' | 'REMOTE')}>
+                    <option value="ONSITE">🏬 현장(고객사 등)</option>
+                    <option value="REMOTE">🏠 원격</option>
+                  </select>
+                  {detailStatus !== 'NIGHT_WORK' && siteType === 'ONSITE' && (
+                    <p style={{ fontSize: 12, color: '#c2410c', marginTop: -6, marginBottom: 10 }}>
+                      ⚠️ 현장으로 등록하면, 이 작업을 마지막으로 퇴근할 때 위치 등록이 필수가 됩니다.
+                    </p>
+                  )}
+                  <label className="field-label">작업인원(본인 외 추가 투입 인원, 선택)</label>
+                  <input value={personnel} onChange={(e) => setPersonnel(e.target.value)} placeholder="예: 홍길동, 김철수" />
+                  <label className="field-label">진행률/차수(선택)</label>
+                  <input value={progressStage} onChange={(e) => setProgressStage(e.target.value)} placeholder="예: 2차 점검 중, 80% 완료" />
+                </>
+              )}
+
               <button
-                disabled={workDetail.trim().length < 10 || !workReason.trim() || !workStart}
+                disabled={
+                  workDetail.trim().length < 10 || !workReason.trim() || !workStart
+                  || (SITE_DETAIL_STATUSES.has(detailStatus) && !siteType)
+                }
                 onClick={submitDetailForm}
               >
                 등록

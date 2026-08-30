@@ -127,6 +127,28 @@ attendanceRouter.post('/clock-out', async (req, res) => {
     });
   }
 
+  // 직출/직퇴(본사 미경유) 위치 필수 확인 — 회사 지휘감독 하 이동(출장 등)을 제외하고,
+  // 서울·경기 등 대중교통 이동은 근로시간에 포함되지 않으므로 최종 고객사에서 퇴근을 찍을 때
+  // 실제 위치가 확인되어야 정확한 근무시간을 산출할 수 있다. 오늘 마지막으로 등록한 상태를 기준으로 판단한다.
+  const { start: clockOutDayStart, end: clockOutDayEnd } = realDayWindow(workDate);
+  const latestStatusToday = await prisma.statusChangeLog.findFirst({
+    where: { userId, changedAt: { gte: clockOutDayStart, lt: clockOutDayEnd } },
+    orderBy: { changedAt: 'desc' },
+  });
+  const requiresLocation = !!latestStatusToday && (
+    REQUIRE_LOCATION_ON_CLOCKOUT_ALWAYS.has(latestStatusToday.status)
+    || (REQUIRE_LOCATION_ON_CLOCKOUT_IF_ONSITE.has(latestStatusToday.status) && latestStatusToday.siteType === 'ONSITE')
+  );
+  if (requiresLocation && clockOutLocationStatus !== 'OK') {
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'LOCATION_REQUIRED_FOR_CLOCKOUT',
+        message: '고객사 현장에서 퇴근하는 경우 위치 확인이 필수입니다. 위치 접근을 허용한 뒤 다시 시도해주세요.',
+      },
+    });
+  }
+
   const clockOutAt = new Date();
   const totalBreakMinutes = existing.breakSessions.reduce((sum, b) => {
     if (!b.endAt) return sum;
@@ -157,7 +179,20 @@ const effortSchema = z.object({
   startTime: z.string().optional(), // "HH:MM" (KST)
   endTime: z.string().optional(), // "HH:MM" (KST), 없으면 진행중
   description: z.string().optional(),
+  // 작업인원(본인 외 추가 투입 인원)·진행률/차수 — 별도 컬럼 없이 description에 합쳐서 저장한다
+  // (야간작업/고객사작업 보고서에서 흔히 같이 적는 항목이라 자유서술 설명에 자연스럽게 붙는다).
+  personnel: z.string().optional(),
+  progressStage: z.string().optional(),
 });
+
+/** effort.description + 작업인원/진행률·차수를 사람이 읽기 좋은 하나의 텍스트로 합친다. */
+function composeEffortDescription(effort: z.infer<typeof effortSchema>): string | undefined {
+  const lines: string[] = [];
+  if (effort.description) lines.push(effort.description);
+  if (effort.personnel) lines.push(`작업인원: ${effort.personnel}`);
+  if (effort.progressStage) lines.push(`진행률/차수: ${effort.progressStage}`);
+  return lines.length > 0 ? lines.join('\n') : undefined;
+}
 
 const businessTripSchema = z.object({
   destination: z.string().min(1),
@@ -175,10 +210,22 @@ const statusSchema = z.object({
   businessTrip: businessTripSchema.optional(),
   // 고객사미팅/고객사작업 등록 시 그 순간의 좌표(대조 후 즉시 폐기, 저장 안 함)
   location: z.object({ lat: z.number(), lng: z.number() }).optional(),
+  // 원격/현장 — 고객사미팅/고객사작업/야간작업 등록 시 필수. 상태 종류와 무관하게 항상
+  // status_change_logs에 저장되며(EffortLog/NightWorkSession은 상태별로 나뉘어 있어 조회가 불편함),
+  // 퇴근 처리 시 "직출/직퇴라 위치 필수" 판단에 이 값을 사용한다.
+  siteType: z.enum(['REMOTE', 'ONSITE']).optional(),
 });
 
 // 이 상태들만 GPS 위치대조 대상이다(고객사 위치와 비교할 대상이 있는 경우만).
 const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
+// 이 상태들은 "원격/현장"을 반드시 골라야 한다 — 야간작업 보고서에도 현장 여부가 필요하고
+// (VERITAS 등 상주 백업팀의 야간 현장작업 사례), 고객사미팅/작업은 아래 직출퇴 판단에도 쓰인다.
+const REQUIRE_SITE_TYPE_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+// 이 상태 + 현장(ONSITE)이면 "직출/직퇴"로 보고, 최종 퇴근 시 위치 등록을 필수로 한다.
+// 이동중/야간작업/본사근무/출장(회사 지휘감독 하 이동)은 제외한다.
+const REQUIRE_LOCATION_ON_CLOCKOUT_IF_ONSITE = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
+// 상주근무(RESIDENT_ONSITE)는 정의상 항상 고객사 현장이라 siteType 여부와 무관하게 항상 포함한다.
+const REQUIRE_LOCATION_ON_CLOCKOUT_ALWAYS = new Set(['RESIDENT_ONSITE']);
 
 /** 현재 상태 변경. 업무 시작류 상태면 출근시각을 자동 인식하고, 고객사미팅/작업이면 공수기록도 남긴다. */
 attendanceRouter.post('/status', async (req, res) => {
@@ -187,7 +234,7 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '상태값을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
-  const { status, note, effort, location, businessTrip } = parsed.data;
+  const { status, note, effort, location, businessTrip, siteType } = parsed.data;
 
   // 출장은 목적지/기간/목적이 필수다(계획된 정보라 즉시 확정해서 남긴다).
   if (status === 'BUSINESS_TRIP' && !businessTrip) {
@@ -199,6 +246,11 @@ attendanceRouter.post('/status', async (req, res) => {
   const REQUIRE_TIME_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
   if (REQUIRE_TIME_STATUSES.has(status) && !effort?.startTime) {
     return res.status(400).json({ success: false, error: { code: 'TIME_REQUIRED', message: '작업시작 시간을 입력해야 합니다.' } });
+  }
+
+  // 원격/현장 — 고객사미팅/고객사작업/야간작업은 필수 선택. 미선택이면 등록 자체를 막는다.
+  if (REQUIRE_SITE_TYPE_STATUSES.has(status) && !siteType) {
+    return res.status(400).json({ success: false, error: { code: 'SITE_TYPE_REQUIRED', message: '작업위치(원격/현장)를 선택해야 합니다.' } });
   }
 
   // 본사근무 등록: 위치정보가 있고 본사 좌표가 등록되어 있는데 본사와 멀리 떨어져 있으면,
@@ -238,6 +290,7 @@ attendanceRouter.post('/status', async (req, res) => {
       source: 'WEB',
       locationMatch: locationResult?.locationMatch ?? null,
       locationDistanceMeters: locationResult?.locationDistanceMeters ?? null,
+      siteType: siteType ?? null,
     },
   });
 
@@ -261,7 +314,7 @@ attendanceRouter.post('/status', async (req, res) => {
         startTime,
         endTime,
         minutes,
-        description: effort.description,
+        description: composeEffortDescription(effort),
       },
     });
   }
@@ -271,7 +324,7 @@ attendanceRouter.post('/status', async (req, res) => {
     const workDate = todayDateOnly();
     const startTime = effort.startTime ? combineDateTime(workDate, effort.startTime) : new Date();
     const endTime = effort.endTime ? resolveEndTime(startTime, combineDateTime(workDate, effort.endTime)) : null;
-    nightWork = await recordNightWork(userId, startTime, endTime, effort.description);
+    nightWork = await recordNightWork(userId, startTime, endTime, composeEffortDescription(effort));
   }
 
   let businessTripLog = null;
