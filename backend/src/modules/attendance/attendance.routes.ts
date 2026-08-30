@@ -98,6 +98,10 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   const clockOutLocationStatus = rawLocationStatus && LOCATION_CAPTURE_STATUSES.has(rawLocationStatus)
     ? (rawLocationStatus as 'OK' | 'NO_CONSENT' | 'PERMISSION_DENIED' | 'TIMEOUT' | 'UNSUPPORTED' | 'GEOCODE_FAILED')
     : undefined;
+  // 최소근무시간 미충족 상태에서 조기퇴근하는 경우 본인이 입력하는 사유(하드블록 대신 사용).
+  const earlyLeaveReason = typeof req.body?.earlyLeaveReason === 'string' && req.body.earlyLeaveReason.trim()
+    ? req.body.earlyLeaveReason.trim().slice(0, 300)
+    : undefined;
 
   const existing = await prisma.attendanceRecord.findUnique({
     where: { userId_workDate: { userId, workDate } },
@@ -110,19 +114,21 @@ attendanceRouter.post('/clock-out', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'ALREADY_CLOCKED_OUT', message: '이미 퇴근 처리되었습니다.' } });
   }
 
-  // 출근 찍자마자 실수로(또는 급하게) 바로 퇴근을 눌러버리는 사고를 막기 위해, 최소근무시간을
-  // 채우기 전에는 퇴근을 막는다(정책값 — 관리자가 나중에 조정 가능, 기본 8시간).
+  // 출근 찍자마자 실수로(또는 급하게) 바로 퇴근을 눌러버리는 사고를 막기 위한 최소근무시간
+  // (정책값, 기본 8시간). 예전엔 못 채우면 무조건 막았지만, 조기퇴근 사유를 입력하면 바로
+  // 확정할 수 있게 바꿨다 — 부족분은 주간 누계에 그대로 반영되니(다른 날 초과분과 합산) 별도
+  // 상쇄 계산 없이도 자연스럽게 맞춰진다.
   const minMinutes = (await getPolicyNumber('MIN_HOURS_BEFORE_CLOCKOUT', 8)) * 60;
   const elapsedMinutes = Math.round((Date.now() - existing.clockInAt.getTime()) / 60000);
-  if (elapsedMinutes < minMinutes) {
+  if (elapsedMinutes < minMinutes && !earlyLeaveReason) {
     const remain = minMinutes - elapsedMinutes;
     const remainH = Math.floor(remain / 60);
     const remainM = remain % 60;
     return res.status(400).json({
       success: false,
       error: {
-        code: 'MIN_WORK_TIME_NOT_MET',
-        message: `아직 최소 근무시간을 채우지 않았습니다. ${remainH}시간 ${remainM}분 더 근무 후 퇴근해주세요.`,
+        code: 'EARLY_LEAVE_REASON_REQUIRED',
+        message: `아직 최소 근무시간을 채우지 않았습니다(${remainH}시간 ${remainM}분 부족). 조기퇴근 사유를 입력하시면 바로 퇴근 처리됩니다.`,
       },
     });
   }
@@ -150,11 +156,33 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   }
 
   const clockOutAt = new Date();
+
+  // 정규 퇴근 마감: 정규 근무 상태(야간작업 제외)로 저녁 경고시각(기본 19시) 이후까지 퇴근을 안 누르면,
+  // 막지는 않되 정규 근무시간은 마감시각(기본 18시)까지만 인정하고 그 이후분은 "야간작업으로 별도
+  // 등록해달라"고 안내한다(자동으로 야간작업 세션을 만들지는 않는다 — 본인 확인 없이 시스템이 임의로
+  // 근태를 확정하지 않는다는 원칙을 그대로 지키기 위함. 프론트에서 확인 배너로 등록을 유도한다).
+  const regularWorkEndHour = await getPolicyNumber('REGULAR_WORK_END_HOUR', 18);
+  const lateClockOutWarnHour = await getPolicyNumber('LATE_CLOCKOUT_WARN_HOUR', 19);
+  const regularCutoffTime = combineDateTime(workDate, `${String(regularWorkEndHour).padStart(2, '0')}:00`);
+  const lateWarnTime = combineDateTime(workDate, `${String(lateClockOutWarnHour).padStart(2, '0')}:00`);
+  const isNightWorkDay = latestStatusToday?.status === 'NIGHT_WORK';
+  let lateClockOutOverMinutes = 0;
+  let regularWorkEndAt = clockOutAt;
+  if (!isNightWorkDay && clockOutAt > lateWarnTime) {
+    const cappedAt = existing.clockInAt > regularCutoffTime ? existing.clockInAt : regularCutoffTime;
+    lateClockOutOverMinutes = Math.round((clockOutAt.getTime() - cappedAt.getTime()) / 60000);
+    if (lateClockOutOverMinutes > 0) {
+      regularWorkEndAt = cappedAt;
+    } else {
+      lateClockOutOverMinutes = 0;
+    }
+  }
+
   const totalBreakMinutes = existing.breakSessions.reduce((sum, b) => {
     if (!b.endAt) return sum;
     return sum + Math.round((b.endAt.getTime() - b.startAt.getTime()) / 60000);
   }, 0);
-  const grossMinutes = Math.round((clockOutAt.getTime() - existing.clockInAt.getTime()) / 60000);
+  const grossMinutes = Math.round((regularWorkEndAt.getTime() - existing.clockInAt.getTime()) / 60000);
   const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes);
 
   const record = await prisma.attendanceRecord.update({
@@ -164,12 +192,22 @@ attendanceRouter.post('/clock-out', async (req, res) => {
       totalWorkedMinutes,
       ...(clockOutLocation ? { clockOutLocation } : {}),
       ...(clockOutLocationStatus ? { clockOutLocationStatus } : {}),
+      ...(earlyLeaveReason ? { earlyLeaveReason } : {}),
     },
   });
 
-  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes } });
+  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes, lateClockOutOverMinutes } });
 
-  return res.json({ success: true, data: record });
+  const lateClockOutSuggestion = lateClockOutOverMinutes > 0
+    ? {
+        overMinutes: lateClockOutOverMinutes,
+        cutoffHour: regularWorkEndHour,
+        suggestedStart: regularWorkEndAt.toISOString(),
+        suggestedEnd: clockOutAt.toISOString(),
+      }
+    : null;
+
+  return res.json({ success: true, data: record, lateClockOutSuggestion });
 });
 
 const effortSchema = z.object({
@@ -210,6 +248,9 @@ const statusSchema = z.object({
   businessTrip: businessTripSchema.optional(),
   // 고객사미팅/고객사작업 등록 시 그 순간의 좌표(대조 후 즉시 폐기, 저장 안 함)
   location: z.object({ lat: z.number(), lng: z.number() }).optional(),
+  // 위치를 못 가져온 이유(권한거부/타임아웃/미동의 등) — location이 없을 때만 의미 있음.
+  // clock-out과 동일한 값 목록(LOCATION_CAPTURE_STATUSES)을 그대로 사용한다.
+  locationStatus: z.string().optional(),
   // 원격/현장 — 고객사미팅/고객사작업/야간작업 등록 시 필수. 상태 종류와 무관하게 항상
   // status_change_logs에 저장되며(EffortLog/NightWorkSession은 상태별로 나뉘어 있어 조회가 불편함),
   // 퇴근 처리 시 "직출/직퇴라 위치 필수" 판단에 이 값을 사용한다.
@@ -226,6 +267,9 @@ const REQUIRE_SITE_TYPE_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NI
 const REQUIRE_LOCATION_ON_CLOCKOUT_IF_ONSITE = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 // 상주근무(RESIDENT_ONSITE)는 정의상 항상 고객사 현장이라 siteType 여부와 무관하게 항상 포함한다.
 const REQUIRE_LOCATION_ON_CLOCKOUT_ALWAYS = new Set(['RESIDENT_ONSITE']);
+// "정규 출근"으로 취급하는 상태 — 야간작업(NIGHT_WORK)은 제외. 저녁 정책시각 이후엔 이 상태들로
+// 출근을 새로 찍을 수 없고, 대신 야간작업으로 등록하도록 안내한다(REGULAR_WORK_END_HOUR 정책값).
+const REGULAR_CLOCK_IN_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'BUSINESS_TRIP']);
 
 /** 현재 상태 변경. 업무 시작류 상태면 출근시각을 자동 인식하고, 고객사미팅/작업이면 공수기록도 남긴다. */
 attendanceRouter.post('/status', async (req, res) => {
@@ -234,7 +278,12 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '상태값을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
-  const { status, note, effort, location, businessTrip, siteType } = parsed.data;
+  const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus } = parsed.data;
+  const locationCaptureStatus = location
+    ? 'OK'
+    : rawLocationStatus && LOCATION_CAPTURE_STATUSES.has(rawLocationStatus)
+      ? (rawLocationStatus as 'NO_CONSENT' | 'PERMISSION_DENIED' | 'TIMEOUT' | 'UNSUPPORTED' | 'GEOCODE_FAILED')
+      : undefined;
 
   // 출장은 목적지/기간/목적이 필수다(계획된 정보라 즉시 확정해서 남긴다).
   if (status === 'BUSINESS_TRIP' && !businessTrip) {
@@ -251,6 +300,29 @@ attendanceRouter.post('/status', async (req, res) => {
   // 원격/현장 — 고객사미팅/고객사작업/야간작업은 필수 선택. 미선택이면 등록 자체를 막는다.
   if (REQUIRE_SITE_TYPE_STATUSES.has(status) && !siteType) {
     return res.status(400).json({ success: false, error: { code: 'SITE_TYPE_REQUIRED', message: '작업위치(원격/현장)를 선택해야 합니다.' } });
+  }
+
+  // 정규 출근 시각 제한: 저녁 정책시각(기본 18시, KST) 이후에 아직 오늘 출근이 안 찍힌 상태에서
+  // 정규 근무류 상태를 등록하려 하면 막고 "야간작업"으로 등록하도록 안내한다. 이미 정상적으로
+  // 출근한 뒤 저녁에 상태만 바꾸는 경우까지 막을 이유는 없어서 "출근 전"인 경우에만 적용한다.
+  if (REGULAR_CLOCK_IN_STATUSES.has(status)) {
+    const workDateForClockIn = todayDateOnly();
+    const existingRecordForClockIn = await prisma.attendanceRecord.findUnique({
+      where: { userId_workDate: { userId, workDate: workDateForClockIn } },
+    });
+    if (!existingRecordForClockIn?.clockInAt) {
+      const cutoffHour = await getPolicyNumber('REGULAR_WORK_END_HOUR', 18);
+      const kstHour = (new Date().getUTCHours() + 9) % 24;
+      if (kstHour >= cutoffHour) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'LATE_CLOCKIN_USE_NIGHT_WORK',
+            message: `${cutoffHour}시 이후에는 정규 출근으로 등록할 수 없습니다. "야간작업"으로 등록해주세요.`,
+          },
+        });
+      }
+    }
   }
 
   // 본사근무 등록: 위치정보가 있고 본사 좌표가 등록되어 있는데 본사와 멀리 떨어져 있으면,
@@ -273,13 +345,50 @@ attendanceRouter.post('/status', async (req, res) => {
   }
 
   // 위치대조: 입력한 고객사명과 등록된 고객사를 이름으로 매칭해서 좌표를 비교한다.
-  // 매칭되는 고객사가 없거나 좌표 미등록/위치권한 없음이면 그냥 null(확인 안 함)로 둔다.
+  // 매칭되는 고객사가 없거나 좌표 미등록이면 대조할 대상이 없으니 그냥 null(확인 안 함)로 둔다.
   let locationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
+  let matchedClientForLocation: { latitude: number | null; longitude: number | null } | null = null;
   if (LOCATION_CHECK_STATUSES.has(status) && effort?.clientName) {
-    const matchedClient = await prisma.client.findFirst({
+    matchedClientForLocation = await prisma.client.findFirst({
       where: { name: { contains: effort.clientName.trim(), mode: 'insensitive' } },
     });
-    locationResult = checkLocationMatch(location, matchedClient);
+    locationResult = checkLocationMatch(location, matchedClientForLocation);
+  }
+
+  // 등록된 고객사 좌표가 있는 경우에만 강제한다(현장 사칭 방지).
+  // - 위치는 잡혔는데 실제 거리가 멀면: 몇 번을 시도해도 항상 차단.
+  // - 위치 확보 자체가 실패(권한거부/타임아웃 등)했으면: 오늘 첫 실패는 봐주고 통과시키되,
+  //   이미 한 번 봐준 뒤부터는 실제로 위치가 일치해야만 통과시킨다.
+  if (LOCATION_CHECK_STATUSES.has(status) && matchedClientForLocation?.latitude != null && matchedClientForLocation?.longitude != null) {
+    if (locationResult && !locationResult.locationMatch) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'LOCATION_MISMATCH',
+          message: `현재 위치가 등록된 고객사에서 약 ${locationResult.locationDistanceMeters}m 떨어져 있어요. 고객사 현장에서 다시 시도해주세요.`,
+        },
+      });
+    }
+    if (!locationResult) {
+      const { start: dayStartForLocation, end: dayEndForLocation } = realDayWindow(todayDateOnly());
+      const priorLocationFailures = await prisma.statusChangeLog.count({
+        where: {
+          userId,
+          status: { in: ['CLIENT_MEETING', 'CLIENT_WORK'] },
+          changedAt: { gte: dayStartForLocation, lt: dayEndForLocation },
+          locationCaptureStatus: { notIn: ['OK'] },
+        },
+      });
+      if (priorLocationFailures >= 1) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'LOCATION_REQUIRED',
+            message: '오늘 이미 한 번 위치 확인 없이 등록하셨어요. 이번엔 위치 접근을 허용한 뒤 고객사 현장에서 다시 시도해주세요.',
+          },
+        });
+      }
+    }
   }
 
   const log = await prisma.statusChangeLog.create({
@@ -291,6 +400,7 @@ attendanceRouter.post('/status', async (req, res) => {
       locationMatch: locationResult?.locationMatch ?? null,
       locationDistanceMeters: locationResult?.locationDistanceMeters ?? null,
       siteType: siteType ?? null,
+      locationCaptureStatus: LOCATION_CHECK_STATUSES.has(status) ? (locationCaptureStatus ?? null) : null,
     },
   });
 

@@ -13,8 +13,9 @@ function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number)
   return R * c;
 }
 
-// 이 거리(미터) 이내면 "해당 고객사 위치와 일치"로 판정한다. 도보로 오차 범위를 감안한 값.
-const LOCATION_MATCH_RADIUS_METERS = 300;
+// 이 거리(미터) 이내면 "해당 고객사 위치와 일치"로 판정한다. 도보로 오차 범위를 감안한 값
+// (기존 300m는 너무 빡빡하다는 현장 피드백을 반영해 500m로 완화).
+const LOCATION_MATCH_RADIUS_METERS = 500;
 
 /**
  * 직원이 보낸 좌표(location)와 등록된 고객사 좌표(client)를 비교해서 "일치 여부"와 "거리"만 반환한다.

@@ -230,6 +230,10 @@ model AttendanceRecord {
   // 퇴근 위치가 왜 비어있는지(권한거부/타임아웃/미동의 등)를 구분해서 저장한다 —
   // 상황판에서 "빈 값"과 "확인했지만 못 구했음"을 구분해서 보여주기 위함.
   clockOutLocationStatus LocationCaptureStatus? @map("clock_out_location_status")
+  // 최소근무시간(기본 8시간) 미충족 상태에서 조기퇴근한 경우 본인이 입력한 사유.
+  // 하드블록 대신 "사유 입력 + 즉시 확정" 방식으로 바꾸면서 추가 — 부족분은 주간 집계에서
+  // 자연스럽게(다른 날 초과분과 합산되어) 반영되므로 별도 상쇄 로직은 두지 않는다.
+  earlyLeaveReason String? @map("early_leave_reason")
 
   breakSessions BreakSession[]
   correctionRequests AttendanceCorrectionRequest[]
@@ -299,6 +303,10 @@ model StatusChangeLog {
   // 상태 종류와 무관하게 이 테이블 하나로 조회하므로(EffortLog/NightWorkSession은 상태별로 나뉘어 있음),
   // "직출/직퇴 시 최종 퇴근 위치 필수" 판단(퇴근 처리 로직)이 여기 값을 기준으로 한다.
   siteType  SiteType? @map("site_type")
+  // 고객사미팅/고객사작업 등록 시 위치 확보가 왜 안 됐는지(권한거부/타임아웃/미동의 등).
+  // "GPS 확보 실패는 하루 1회만 봐주고, 그 다음부터는 위치가 실제로 일치해야 등록을 허용"하는
+  // 정책 판단에 쓴다(attendance.routes.ts 참고) — clock_out_location_status와 같은 목적.
+  locationCaptureStatus LocationCaptureStatus? @map("location_capture_status")
 
   @@map("status_change_logs")
 }

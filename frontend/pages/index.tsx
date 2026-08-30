@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
-import { getCurrentLocation, distanceMeters, reverseGeocode } from '@/lib/geolocation';
+import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, reverseGeocode } from '@/lib/geolocation';
 import LocationConsentModal from '@/components/LocationConsentModal';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
 import PastDayCorrectionCard, { type PendingCorrectionRow } from '@/components/PastDayCorrectionCard';
@@ -41,6 +41,8 @@ const SIMPLE_CLIENT_STATUSES = new Set(['REMOTE', 'RESIDENT_ONSITE']);
 // 백업팀 등의 야간/고객사 작업 보고서 형식(예: VERITAS 야간작업 보고 메일)을 참고해 추가한 필드.
 // 백엔드 attendance.routes.ts의 REQUIRE_SITE_TYPE_STATUSES와 반드시 같은 값을 유지해야 한다.
 const SITE_DETAIL_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+// 백엔드 LOCATION_CHECK_STATUSES와 동일 — 이 상태들만 등록 순간 좌표를 등록된 고객사와 대조한다.
+const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 // 고객사미팅은 "작업"이 아니라 "미팅"이라 유형 대신 목적으로 구분한다.
@@ -59,6 +61,14 @@ interface WeeklySummary { from: string; to: string; totalMinutes: number; days: 
 function nowHHMM(): string {
   const d = new Date();
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** ISO 시각을 한국시간 "HH:MM"으로 변환 — 야간작업 등록 제안(lateClockOutSuggestion) 미리채움용. */
+function hhmmKST(iso: string): string {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(iso));
+  const h = parts.find((p) => p.type === 'hour')?.value ?? '00';
+  const m = parts.find((p) => p.type === 'minute')?.value ?? '00';
+  return `${h}:${m}`;
 }
 
 /** <input type="datetime-local">에 넣을 "지금" 기본값 (YYYY-MM-DDTHH:MM, 로컬시간 기준) */
@@ -111,6 +121,7 @@ export default function EmployeeHome() {
   const [hqLocation, setHqLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [showHqReturnPrompt, setShowHqReturnPrompt] = useState(false);
   const [showAltDayOffPrompt, setShowAltDayOffPrompt] = useState(false);
+  const [lateClockOutSuggestion, setLateClockOutSuggestion] = useState<{ overMinutes: number; suggestedStart: string; suggestedEnd: string } | null>(null);
   const [clientLocations, setClientLocations] = useState<{ name: string; latitude: number; longitude: number }[]>([]);
   const [arrivedClient, setArrivedClient] = useState<string | null>(null);
   const hqPromptSnoozedUntilRef = useRef(0);
@@ -288,6 +299,17 @@ export default function EmployeeHome() {
     setTimeout(() => detailFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   }
 
+  /** 퇴근 시 "18시 이후분은 야간작업으로 등록하시겠어요?" 제안을 수락하면, 야간작업 상세폼을
+   * 열고 시작/완료 시각을 제안값으로 미리 채워준다(등록은 본인이 내용 확인 후 직접 확정). */
+  function acceptLateClockOutSuggestion() {
+    if (!lateClockOutSuggestion) return;
+    const suggestion = lateClockOutSuggestion;
+    openDetailForm('NIGHT_WORK');
+    setWorkStart(hhmmKST(suggestion.suggestedStart));
+    setWorkEnd(hhmmKST(suggestion.suggestedEnd));
+    setLateClockOutSuggestion(null);
+  }
+
   async function changeStatus(code: string, prefilledClientName?: string) {
     const alreadyInThisStatus = currentStatus?.status === code;
     // 직전 상태의 내용을 아직 안 채운 채로 다른 상태로 넘어가는 경우, 막지는 않되(사용자가 화면에
@@ -412,7 +434,12 @@ export default function EmployeeHome() {
       };
     }
     // 고객사미팅/고객사작업은 등록 순간 위치를 확인해서 등록된 고객사 위치와 대조한다(동의한 경우에만).
-    if (EFFORT_STATUSES.has(code) && me?.locationConsentGiven) {
+    // 위치 확보 실패 사유(locationStatus)까지 같이 보내야 서버가 "오늘 첫 실패는 봐준다" 판단을 할 수 있다.
+    if (LOCATION_CHECK_STATUSES.has(code)) {
+      const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+      if (coords) body.location = coords;
+      body.locationStatus = locStatus;
+    } else if (EFFORT_STATUSES.has(code) && me?.locationConsentGiven) {
       const loc = await getCurrentLocation();
       if (loc) body.location = loc;
     }
@@ -572,6 +599,21 @@ export default function EmployeeHome() {
         </div>
       )}
 
+      {lateClockOutSuggestion && (
+        <div className="card col-full" style={{ background: '#fff4e6', border: '1px solid #ffa94d' }}>
+          🌙 오늘 저녁 근무는 정규 근무시간(18시)까지만 인정되고, 그 이후 <strong>{hoursLabel(lateClockOutSuggestion.overMinutes)}</strong>은 근무시간에 반영되지 않았어요.
+          야간작업으로 별도 등록하시겠어요?
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button style={{ width: 'auto', margin: 0 }} onClick={acceptLateClockOutSuggestion}>
+              네, 야간작업으로 등록할게요
+            </button>
+            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={() => setLateClockOutSuggestion(null)}>
+              나중에요
+            </button>
+          </div>
+        </div>
+      )}
+
       {showHqReturnPrompt && (
         <div className="card col-full" style={{ background: '#eaf1ff', border: '1px solid #2f6feb' }}>
           🏢 본사에 도착하신 것 같아요! 상태를 "본사근무"로 바꾸시겠어요?
@@ -645,14 +687,30 @@ export default function EmployeeHome() {
                 clockInAt={myStatus.record.clockInAt}
                 locationConsentGiven={Boolean(me?.locationConsentGiven)}
                 onCancel={() => setShowClockOutConfirm(false)}
-                onConfirm={async ({ locationAddress, locationStatus }) => {
-                  await run(
-                    () => apiFetch('/attendance/clock-out', {
-                      method: 'POST',
-                      body: JSON.stringify({ ...(locationAddress ? { locationAddress } : {}), locationStatus }),
-                    }),
-                    '퇴근 처리되었습니다. 오늘도 수고하셨어요!'
-                  );
+                onConfirm={async ({ locationAddress, locationStatus, earlyLeaveReason }) => {
+                  // 18시 이후 정규근무분 초과(야간작업 등록 제안) 여부를 응답에서 바로 확인해야 해서
+                  // run()을 안 거치고 직접 호출한다(NIGHT_WORK 등록과 같은 이유).
+                  setMessage(null);
+                  setMessageIsError(false);
+                  try {
+                    const res = await apiFetch<{ lateClockOutSuggestion: { overMinutes: number; suggestedStart: string; suggestedEnd: string } | null }>(
+                      '/attendance/clock-out',
+                      {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          ...(locationAddress ? { locationAddress } : {}),
+                          locationStatus,
+                          ...(earlyLeaveReason ? { earlyLeaveReason } : {}),
+                        }),
+                      }
+                    );
+                    setMessage('퇴근 처리되었습니다. 오늘도 수고하셨어요!');
+                    refreshMyStatus();
+                    if (res.lateClockOutSuggestion) setLateClockOutSuggestion(res.lateClockOutSuggestion);
+                  } catch (err) {
+                    setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+                    setMessageIsError(true);
+                  }
                   setShowClockOutConfirm(false);
                 }}
               />

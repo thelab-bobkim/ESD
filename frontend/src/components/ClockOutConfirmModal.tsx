@@ -4,9 +4,13 @@ import { getCurrentLocationDetailed, locationFailureLabel, type LocationCaptureR
 interface Props {
   clockInAt: string;
   locationConsentGiven: boolean;
-  onConfirm: (payload: { locationAddress?: string; locationStatus: string }) => Promise<void>;
+  onConfirm: (payload: { locationAddress?: string; locationStatus: string; earlyLeaveReason?: string }) => Promise<void>;
   onCancel: () => void;
 }
+
+// 서버 기본 정책값(MIN_HOURS_BEFORE_CLOCKOUT)과 맞춘 화면 표시용 기준 — 관리자가 정책을
+// 다르게 설정한 경우 서버가 최종 판단하며, 여기서는 사유 입력창을 보여줄지만 결정한다.
+const MIN_HOURS_DEFAULT_MINUTES = 8 * 60;
 
 function hoursLabel(minutes: number): string {
   const h = Math.floor(minutes / 60);
@@ -23,6 +27,8 @@ function hoursLabel(minutes: number): string {
 export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, onConfirm, onCancel }: Props) {
   const [locationResult, setLocationResult] = useState<LocationCaptureResult | 'checking'>('checking');
   const [submitting, setSubmitting] = useState(false);
+  const [earlyLeaveReason, setEarlyLeaveReason] = useState('');
+  const [showEarlyLeaveError, setShowEarlyLeaveError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -35,14 +41,20 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
   }, [locationConsentGiven]);
 
   const elapsedMinutes = Math.max(0, Math.round((Date.now() - new Date(clockInAt).getTime()) / 60000));
+  const isEarlyLeave = elapsedMinutes < MIN_HOURS_DEFAULT_MINUTES;
 
   async function handleConfirm() {
+    if (isEarlyLeave && !earlyLeaveReason.trim()) {
+      setShowEarlyLeaveError(true);
+      return;
+    }
     setSubmitting(true);
     try {
       const result = locationResult === 'checking' ? { status: 'TIMEOUT' as const, address: null } : locationResult;
       await onConfirm({
         locationAddress: result.address ?? undefined,
         locationStatus: result.status,
+        earlyLeaveReason: earlyLeaveReason.trim() || undefined,
       });
     } finally {
       setSubmitting(false);
@@ -78,6 +90,24 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
             </>
           )}
         </div>
+        {isEarlyLeave && (
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#e8590c', marginBottom: 6 }}>
+              ⏱️ 아직 최소 근무시간(8시간) 전이에요 — 조기퇴근 사유를 입력해주세요
+            </label>
+            <input
+              type="text"
+              value={earlyLeaveReason}
+              onChange={(e) => { setEarlyLeaveReason(e.target.value); setShowEarlyLeaveError(false); }}
+              placeholder="예: 병원 진료로 조기퇴근"
+              style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8, border: `1px solid ${showEarlyLeaveError ? '#e03131' : '#dee2e6'}` }}
+            />
+            {showEarlyLeaveError && (
+              <div style={{ fontSize: 12, color: '#e03131', marginTop: 4 }}>사유를 입력해야 조기퇴근으로 확정할 수 있어요.</div>
+            )}
+            <div style={{ fontSize: 11, color: '#adb5bd', marginTop: 4 }}>부족한 시간은 이번 주 누계에 그대로 반영되어, 다른 날 초과근무와 자연스럽게 합산됩니다.</div>
+          </div>
+        )}
         <button disabled={submitting} onClick={handleConfirm}>
           {submitting ? '처리 중...' : '퇴근 확정'}
         </button>

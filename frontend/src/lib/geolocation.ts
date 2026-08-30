@@ -99,6 +99,32 @@ export function locationFailureLabel(status: Exclude<LocationCaptureStatus, 'OK'
 }
 
 /**
+ * 고객사미팅/고객사작업 등록 전용 — 좌표(서버에서 등록된 고객사와 대조 후 즉시 폐기)와 함께
+ * "왜" 위치를 못 가져왔는지도 같이 돌려준다(서버의 "GPS 실패는 하루 1회만 봐준다" 판단에 필요).
+ * getCurrentLocationDetailed()와 달리 주소로 역지오코딩하지 않는다(좌표 대조만 하면 되므로).
+ */
+export async function getCurrentLocationWithStatus(
+  locationConsentGiven: boolean
+): Promise<{ status: LocationCaptureStatus; coords: { lat: number; lng: number } | null }> {
+  if (!locationConsentGiven) return { status: 'NO_CONSENT', coords: null };
+  if (typeof navigator === 'undefined' || !navigator.geolocation) return { status: 'UNSUPPORTED', coords: null };
+
+  const result = await new Promise<{ lat: number; lng: number } | { errorCode: number } | null>((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      (err) => resolve({ errorCode: err.code }),
+      { timeout: 8000, maximumAge: 60000 }
+    );
+  });
+
+  if (!result) return { status: 'UNSUPPORTED', coords: null };
+  if ('errorCode' in result) {
+    return { status: result.errorCode === 3 ? 'TIMEOUT' : result.errorCode === 1 ? 'PERMISSION_DENIED' : 'UNSUPPORTED', coords: null };
+  }
+  return { status: 'OK', coords: result };
+}
+
+/**
  * 퇴근 확인 모달 전용 — getCurrentLocation()과 달리 "왜" 위치를 못 가져왔는지까지 구분해서 돌려준다.
  * locationConsentGiven이 false면 애초에 브라우저에 물어보지도 않고 NO_CONSENT로 즉시 반환한다
  * (동의 안 한 사용자에게 갑자기 권한 팝업을 띄우지 않기 위함 — 동의 흐름은 LocationConsentModal에서만).
