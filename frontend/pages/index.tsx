@@ -532,10 +532,16 @@ export default function EmployeeHome() {
         <div className="hero-greeting">{me.name}님, {greetingByHour()}! 👋</div>
         {currentStatus ? (
           <div className="hero-status">
-            <span className="hero-status-icon">{STATUS_META[currentStatus.status]?.icon ?? '❔'}</span>
+            <span className="hero-status-icon">{clockedOut ? '🏁' : (STATUS_META[currentStatus.status]?.icon ?? '❔')}</span>
             <div>
-              <div className="hero-status-label">지금 상태: {STATUS_META[currentStatus.status]?.label ?? currentStatus.status}</div>
-              <div className="hero-status-time">{timeAgoShort(currentStatus.changedAt)}에 등록됨</div>
+              <div className="hero-status-label">
+                {clockedOut ? '지금 상태: 퇴근완료' : `지금 상태: ${STATUS_META[currentStatus.status]?.label ?? currentStatus.status}`}
+              </div>
+              <div className="hero-status-time">
+                {clockedOut && myStatus?.record?.clockOutAt
+                  ? `${hhmmKST(myStatus.record.clockOutAt)}에 퇴근 완료`
+                  : `${timeAgoShort(currentStatus.changedAt)}에 등록됨`}
+              </div>
             </div>
           </div>
         ) : (
