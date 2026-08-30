@@ -4,7 +4,7 @@ import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
 import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, reverseGeocode } from '@/lib/geolocation';
-import LocationConsentModal from '@/components/LocationConsentModal';
+import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
 import PastDayCorrectionCard, { type PendingCorrectionRow } from '@/components/PastDayCorrectionCard';
 
@@ -55,7 +55,7 @@ const HQ_WORK_TYPE_OPTIONS = ['기술지원', '셀프스터디', '교육', '문�
 const WEEKLY_LIMIT_MINUTES = 52 * 60;
 
 interface MeResponse {
-  name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null; mustChangePassword: boolean; locationConsentGiven: boolean;
+  name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null; mustChangePassword: boolean; locationConsentGiven: boolean; privacyConsentGiven: boolean;
 }
 interface StatusLog { status: string; changedAt: string; source: string; note: string | null; }
 interface MeAttendance { record: { clockInAt: string | null; clockOutAt: string | null } | null; latestStatus: StatusLog | null; }
@@ -120,7 +120,6 @@ function hoursLabel(minutes: number): string {
 export default function EmployeeHome() {
   const router = useRouter();
   const [me, setMe] = useState<MeResponse | null>(null);
-  const [showLocationConsent, setShowLocationConsent] = useState(false);
   const [hqLocation, setHqLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [showHqReturnPrompt, setShowHqReturnPrompt] = useState(false);
   const [showAltDayOffPrompt, setShowAltDayOffPrompt] = useState(false);
@@ -212,7 +211,6 @@ export default function EmployeeHome() {
           return;
         }
         setMe(data);
-        setShowLocationConsent(!data.locationConsentGiven);
         refreshMyStatus();
       })
       .catch(() => router.push('/login'));
@@ -496,12 +494,11 @@ export default function EmployeeHome() {
         <title>기술부 현황 등록</title>
       </Head>
 
-      {showLocationConsent && (
-        <LocationConsentModal
-          onDone={(consented) => {
-            setShowLocationConsent(false);
-            if (consented) setMe((prev) => (prev ? { ...prev, locationConsentGiven: true } : prev));
-          }}
+      {(!me.privacyConsentGiven || !me.locationConsentGiven) && (
+        <MandatoryConsentGate
+          needsPrivacy={!me.privacyConsentGiven}
+          needsLocation={!me.locationConsentGiven}
+          onComplete={() => setMe((prev) => (prev ? { ...prev, privacyConsentGiven: true, locationConsentGiven: true } : prev))}
         />
       )}
 
