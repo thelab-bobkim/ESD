@@ -414,16 +414,18 @@ export default function AdminReportsPage() {
           {attendanceDetail && attendanceDetail.rows.length === 0 && <div className="board-empty">이 날짜에 출근 기록이 없습니다.</div>}
 
           {attendanceDetail && attendanceDetail.rows.length > 0 && !groupByDept && (
-            <table>
-              <thead>
-                <tr><th>이름</th><th>부서</th><th>출근</th><th>퇴근</th><th>근무시간</th></tr>
-              </thead>
-              <tbody>
-                {attendanceDetail.rows.map((r) => (
-                  <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail.date} onClick={() => openTimeline(r.userId, attendanceDetail.date)} onForceClockOut={openForceClockOut} />
-                ))}
-              </tbody>
-            </table>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr><th>이름</th><th>부서</th><th>출근</th><th>퇴근</th><th>근무시간</th></tr>
+                </thead>
+                <tbody>
+                  {attendanceDetail.rows.map((r) => (
+                    <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail.date} onClick={() => openTimeline(r.userId, attendanceDetail.date)} onForceClockOut={openForceClockOut} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
 
           {attendanceByDept && attendanceByDept.length > 0 && groupByDept && attendanceByDept.map(({ department, rows }) => (
@@ -431,16 +433,18 @@ export default function AdminReportsPage() {
               <div style={{ fontWeight: 700, fontSize: 14, color: '#2f6feb', margin: '10px 0 4px' }}>
                 🏷️ {department} <span style={{ color: '#868e96', fontWeight: 400 }}>({rows.length}명)</span>
               </div>
-              <table>
-                <thead>
-                  <tr><th>이름</th><th>출근</th><th>퇴근</th><th>근무시간</th></tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail!.date} onClick={() => openTimeline(r.userId, attendanceDetail!.date)} onForceClockOut={openForceClockOut} hideDept />
-                  ))}
-                </tbody>
-              </table>
+              <div className="table-scroll">
+                <table>
+                  <thead>
+                    <tr><th>이름</th><th>출근</th><th>퇴근</th><th>근무시간</th></tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => (
+                      <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail!.date} onClick={() => openTimeline(r.userId, attendanceDetail!.date)} onForceClockOut={openForceClockOut} hideDept />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ))}
         </div>
@@ -458,32 +462,34 @@ export default function AdminReportsPage() {
           {!worktime && <div className="board-empty">불러오는 중...</div>}
           {worktime && worktime.rows.length === 0 && <div className="board-empty">이 기간에 확정된 근무기록이 없습니다.</div>}
           {worktime && worktime.rows.length > 0 && (
-            <table>
-              <thead>
-                <tr><th>이름</th><th>부서</th><th>누계</th><th>근무일수</th></tr>
-              </thead>
-              <tbody>
-                {worktime.rows.map((r) => {
-                  const over = period === 'week' && !isCustom && r.totalMinutes > WEEKLY_LIMIT_MINUTES;
-                  return (
-                    <tr key={r.userId} style={{ cursor: 'pointer' }} onClick={() => openTimeline(r.userId, fmt(new Date()))}>
-                      <td>
-                        <div className="chip-row">
-                          <div className="chip-avatar" style={{ background: over ? '#e03131' : '#2f6feb' }}>{r.name.slice(-2)}</div>
-                          {r.name}
-                          <span style={{ fontSize: 11, color: '#2f6feb', marginLeft: 4 }}>오늘 상세 ▸</span>
-                        </div>
-                      </td>
-                      <td>{r.department}</td>
-                      <td style={{ color: over ? '#e03131' : undefined, fontWeight: over ? 700 : undefined }}>
-                        {hoursLabel(r.totalMinutes)}{over ? ' ⚠ 52시간 초과' : ''}
-                      </td>
-                      <td>{r.days}일</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr><th>이름</th><th>부서</th><th>누계</th><th>근무일수</th></tr>
+                </thead>
+                <tbody>
+                  {worktime.rows.map((r) => {
+                    const over = period === 'week' && !isCustom && r.totalMinutes > WEEKLY_LIMIT_MINUTES;
+                    return (
+                      <tr key={r.userId} style={{ cursor: 'pointer' }} onClick={() => openTimeline(r.userId, fmt(new Date()))}>
+                        <td>
+                          <div className="chip-row">
+                            <div className="chip-avatar" style={{ background: over ? '#e03131' : '#2f6feb' }}>{r.name.slice(-2)}</div>
+                            {r.name}
+                            <span style={{ fontSize: 11, color: '#2f6feb', marginLeft: 4 }}>오늘 상세 ▸</span>
+                          </div>
+                        </td>
+                        <td>{r.department}</td>
+                        <td style={{ color: over ? '#e03131' : undefined, fontWeight: over ? 700 : undefined }}>
+                          {hoursLabel(r.totalMinutes)}{over ? ' ⚠ 52시간 초과' : ''}
+                        </td>
+                        <td>{r.days}일</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}

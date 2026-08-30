@@ -82,6 +82,12 @@ table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-size: 13px; }
 .error { color: #c0392b; font-size: 13px; margin-bottom: 8px; }
 
+/* 표가 좁은 화면에서 억지로 눌려 글자가 세로로 찌그러지지 않도록,
+   폭이 부족하면 표 자체를 가로 스크롤시킨다 (내용을 구겨넣지 않음). */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -2px; padding: 0 2px; }
+.table-scroll table { min-width: 560px; }
+.table-scroll th, .table-scroll td { white-space: nowrap; }
+
 .install-banner {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   background: #2f6feb; color: #fff; padding: 10px 16px; font-size: 13px;
@@ -177,6 +183,10 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-siz
 /* ===== 관리자 상황판: 상태별 칸반 보드 ===== */
 .admin-shell { max-width: 1400px; margin: 0 auto; padding: 0 24px 40px; background: var(--dsti-bg); min-height: 100vh; }
 @media (max-width: 640px) { .admin-shell { padding: 0 14px 28px; } }
+/* 관리자 화면 전용 카드: 새 디자인 토큰(테두리/그림자)에 맞춰 살짝 더 고급스럽게 — 직원 화면 .card는 그대로 둔다 */
+.admin-shell .card {
+  border-radius: 16px; border: 1px solid var(--dsti-border); box-shadow: var(--dsti-shadow-sm);
+}
 .toolbar {
   display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
   background: var(--dsti-surface); border: 1px solid var(--dsti-border); border-radius: 14px; padding: 12px 16px; margin-bottom: 16px;

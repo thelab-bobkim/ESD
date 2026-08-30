@@ -225,70 +225,75 @@ export default function AdminClientsPage() {
           <div className="board-empty">검색 결과가 없습니다.</div>
         )}
         {visibleClients && visibleClients.length > 0 && (
-          <table>
-            <thead>
-              <tr>
-                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('name')}>
-                  고객사명 {sortKey === 'name' ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}
-                </th>
-                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('address')}>
-                  주소 {sortKey === 'address' ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}
-                </th>
-                <th>위도</th><th>경도</th><th>상태</th><th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleClients.map((c) => (
-                <tr key={c.id}>
-                  <td>
-                    <input
-                      style={{ margin: 0, width: 140 }}
-                      value={editing[c.id]?.name ?? ''}
-                      onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], name: e.target.value } }))}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      style={{ margin: 0, width: 220, fontSize: 12, color: '#495057' }}
-                      value={editing[c.id]?.address ?? ''}
-                      onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], address: e.target.value } }))}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      style={{ margin: 0, width: 150 }}
-                      value={editing[c.id]?.lat ?? ''}
-                      placeholder="37.5665"
-                      onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], lat: e.target.value } }))}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      style={{ margin: 0, width: 150 }}
-                      value={editing[c.id]?.lng ?? ''}
-                      placeholder="126.9780"
-                      onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], lng: e.target.value } }))}
-                    />
-                  </td>
-                  <td>{c.hasCoordinates ? <span style={{ color: '#2f9e44' }}>✓ 등록됨</span> : <span style={{ color: '#adb5bd' }}>미등록</span>}</td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      <button style={{ width: 'auto', margin: 0 }} className="secondary" disabled={saving === c.id} onClick={() => saveCoords(c.id)}>
-                        {saving === c.id ? '저장중...' : '직접입력 저장'}
-                      </button>
-                      <button
-                        style={{ width: 'auto', margin: 0, background: '#fff0f0', color: '#e03131' }}
-                        disabled={deleting === c.id}
-                        onClick={() => deleteClient(c.id, c.name)}
-                      >
-                        {deleting === c.id ? '삭제중...' : '🗑️ 삭제'}
-                      </button>
-                    </div>
-                  </td>
+          <div className="table-scroll">
+            <table style={{ minWidth: 860 }}>
+              <thead>
+                <tr>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('name')}>
+                    고객사명 {sortKey === 'name' ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}
+                  </th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('address')}>
+                    주소 {sortKey === 'address' ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}
+                  </th>
+                  <th>위도</th><th>경도</th><th>상태</th><th>작업</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {visibleClients.map((c) => (
+                  <tr key={c.id}>
+                    <td>
+                      <input
+                        style={{ margin: 0, width: 120 }}
+                        value={editing[c.id]?.name ?? ''}
+                        onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], name: e.target.value } }))}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        style={{ margin: 0, width: 180, fontSize: 12, color: '#495057' }}
+                        value={editing[c.id]?.address ?? ''}
+                        onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], address: e.target.value } }))}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        style={{ margin: 0, width: 100 }}
+                        value={editing[c.id]?.lat ?? ''}
+                        placeholder="37.5665"
+                        onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], lat: e.target.value } }))}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        style={{ margin: 0, width: 100 }}
+                        value={editing[c.id]?.lng ?? ''}
+                        placeholder="126.9780"
+                        onChange={(e) => setEditing((prev) => ({ ...prev, [c.id]: { ...prev[c.id], lng: e.target.value } }))}
+                      />
+                    </td>
+                    <td>{c.hasCoordinates ? <span style={{ color: '#2f9e44' }}>✓ 등록됨</span> : <span style={{ color: '#adb5bd' }}>미등록</span>}</td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <button style={{ width: 'auto', margin: 0 }} className="secondary" disabled={saving === c.id} onClick={() => saveCoords(c.id)}>
+                          {saving === c.id ? '저장중...' : '직접입력 저장'}
+                        </button>
+                        <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => setMapTargetId(c.id)}>
+                          🗺️ 지도에서 찾기
+                        </button>
+                        <button
+                          style={{ width: 'auto', margin: 0, background: '#fff0f0', color: '#e03131' }}
+                          disabled={deleting === c.id}
+                          onClick={() => deleteClient(c.id, c.name)}
+                        >
+                          {deleting === c.id ? '삭제중...' : '🗑️ 삭제'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
