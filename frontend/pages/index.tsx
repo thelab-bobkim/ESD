@@ -47,6 +47,10 @@ const SIMPLE_CLIENT_STATUSES = new Set(['RESIDENT_ONSITE']);
 const SITE_DETAIL_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
 // 백엔드 LOCATION_CHECK_STATUSES와 동일 — 이 상태들만 등록 순간 좌표를 등록된 고객사와 대조한다.
 const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
+// 2026-09-01: 직원들이 등록을 귀찮아해서(항목이 너무 많음) 본사근무/고객사미팅/고객사작업 세 가지는
+// 입력폼을 간소화했다 — 프로젝트명/목적·사유/진행률·차수 같은 부가 항목을 없애고, 실제로 꼭 필요한
+// 항목(고객사·관련프로젝트, 수행업무)만 채우면 바로 등록되게 했다. 야간작업/재택은 기존 그대로 유지.
+const SIMPLIFIED_EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 // 고객사미팅은 "작업"이 아니라 "미팅"이라 유형 대신 목적으로 구분한다.
@@ -417,14 +421,23 @@ export default function EmployeeHome() {
       return;
     }
 
-    // 작업위치(원격/현장, 필수) · 작업인원(선택) · 진행률/차수(선택) — 야간작업/고객사미팅/고객사작업만 해당.
+    // 간소화된 폼(본사근무/고객사미팅/고객사작업)의 최소 입력 조건 — 버튼 disabled와 동일한 조건을
+    // 함수 안에서도 한 번 더 지킨다(다른 경로로 호출되더라도 항상 지켜지도록).
+    const minDetailLen = code === 'HQ_WORKING' ? 15 : 10;
+    if (workDetail.trim().length < minDetailLen) return;
+    if (code === 'HQ_WORKING' && !clientName.trim()) return;
+    if (!SIMPLIFIED_EFFORT_STATUSES.has(code) && !workReason.trim()) return;
+    // 작업위치(원격/현장, 필수) · 작업인원(선택) · 진행률/차수(선택, 야간작업만) — 야간작업/고객사미팅/고객사작업만 해당.
     if (SITE_DETAIL_STATUSES.has(code) && !siteType) return;
     const siteDetailSuffix = SITE_DETAIL_STATUSES.has(code)
-      ? ` | 작업위치: ${siteType === 'ONSITE' ? '현장' : '원격'}${personnel ? ` | 작업인원: ${personnel}` : ''}${progressStage ? ` | 진행률/차수: ${progressStage}` : ''}`
+      ? ` | 작업위치: ${siteType === 'ONSITE' ? '현장' : '원격'}${personnel ? ` | 작업인원: ${personnel}` : ''}${code === 'NIGHT_WORK' && progressStage ? ` | 진행률/차수: ${progressStage}` : ''}`
       : '';
-    const note = (code === 'CLIENT_MEETING'
-      ? `미팅목적: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 미팅주제: ${workDetail} | 목적: ${workReason}`
-      : `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail} | 목적: ${workReason}`) + siteDetailSuffix;
+    const reasonSuffix = workReason.trim() ? ` | 목적: ${workReason}` : '';
+    const note = (code === 'HQ_WORKING'
+      ? `유형: ${workType} | 관련 프로젝트/고객사: ${clientName || '-'} | 수행업무: ${workDetail}`
+      : code === 'CLIENT_MEETING'
+        ? `미팅목적: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 미팅주제: ${workDetail}${reasonSuffix}`
+        : `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail}${reasonSuffix}`) + siteDetailSuffix;
     const body: Record<string, unknown> = { status: code, note };
     if (SITE_DETAIL_STATUSES.has(code)) {
       body.siteType = siteType;
@@ -436,8 +449,8 @@ export default function EmployeeHome() {
         workType,
         startTime: workStart,
         endTime: workEnd || undefined,
-        description: `${workDetail} (목적: ${workReason})`,
-        ...(SITE_DETAIL_STATUSES.has(code) ? { personnel: personnel || undefined, progressStage: progressStage || undefined } : {}),
+        description: workReason.trim() ? `${workDetail} (목적: ${workReason})` : workDetail,
+        ...(SITE_DETAIL_STATUSES.has(code) ? { personnel: personnel || undefined, progressStage: code === 'NIGHT_WORK' ? (progressStage || undefined) : undefined } : {}),
       };
     }
     // 고객사미팅/고객사작업은 등록 순간 위치를 확인해서 등록된 고객사 위치와 대조한다(동의한 경우에만).
@@ -933,14 +946,14 @@ export default function EmployeeHome() {
                 </p>
               )}
               <label className="field-label">
-                {detailStatus === 'HQ_WORKING' ? '관련 프로젝트/고객사(선택)' : detailStatus === 'REMOTE' ? '지원 고객사' : '고객사명'}
+                {detailStatus === 'HQ_WORKING' ? '고객사/관련 프로젝트 (필수)' : detailStatus === 'REMOTE' ? '지원 고객사' : '고객사명'}
                 {detailStatus === 'NIGHT_WORK' ? '(내부 작업이면 비워두세요)' : ''}
               </label>
               <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
 
-              {EFFORT_STATUSES.has(detailStatus) && (
+              {EFFORT_STATUSES.has(detailStatus) && detailStatus !== 'HQ_WORKING' && (
                 <>
-                  <label className="field-label">프로젝트명{detailStatus === 'HQ_WORKING' ? '(선택)' : ''}</label>
+                  <label className="field-label">프로젝트명</label>
                   <input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="예: 백업시스템 구축 2차" />
                 </>
               )}
@@ -952,33 +965,47 @@ export default function EmployeeHome() {
                 ))}
               </select>
 
-              <div style={{ display: 'flex', gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅시작' : '작업시작'}</label>
-                  <input type="time" value={workStart} onChange={(e) => setWorkStart(e.target.value)} />
+              {detailStatus !== 'HQ_WORKING' && (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ flex: 1 }}>
+                    <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅시작' : '작업시작'}</label>
+                    <input type="time" value={workStart} onChange={(e) => setWorkStart(e.target.value)} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅완료(선택 — 진행중이면 비워두세요)' : '작업완료(선택 — 진행중이면 비워두세요)'}</label>
+                    <input type="time" value={workEnd} onChange={(e) => setWorkEnd(e.target.value)} />
+                  </div>
                 </div>
-                <div style={{ flex: 1 }}>
-                  <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅완료(선택 — 진행중이면 비워두세요)' : '작업완료(선택 — 진행중이면 비워두세요)'}</label>
-                  <input type="time" value={workEnd} onChange={(e) => setWorkEnd(e.target.value)} />
-                </div>
-              </div>
+              )}
 
               <label className="field-label">
-                {detailStatus === 'HQ_WORKING' ? '오늘 수행업무(무엇을/어떻게 — 최소 10자)' : detailStatus === 'CLIENT_MEETING' ? '미팅주제(무엇을/어떻게 — 최소 10자)' : '작업내용(무엇을/어떻게 — 최소 10자)'}
+                {detailStatus === 'HQ_WORKING'
+                  ? `오늘 수행업무 (필수 — 언제·무엇을·어떻게 했는지 구체적으로, 최소 15자)`
+                  : detailStatus === 'CLIENT_MEETING' ? '미팅주제(무엇을/어떻게 — 최소 10자)' : '작업내용(무엇을/어떻게 — 최소 10자)'}
               </label>
               <textarea
                 className="detail-textarea right-col-textarea"
                 rows={3}
-                placeholder={detailStatus === 'HQ_WORKING' ? '예: 기술지원으로 백업 정책서를 신규 작성했음' : detailStatus === 'CLIENT_MEETING' ? '예: 2026년도 유지보수 계약 조건 협의' : '예: 서버 3대 정기점검 후 백업 정책을 재협의함'}
+                placeholder={detailStatus === 'HQ_WORKING' ? '예: 오전엔 A고객사 백업 정책서 신규 작성, 오후엔 사내 모니터링 대시보드 알람 규칙 정비' : detailStatus === 'CLIENT_MEETING' ? '예: 2026년도 유지보수 계약 조건 협의' : '예: 서버 3대 정기점검 후 백업 정책을 재협의함'}
                 value={workDetail}
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
-              <label className="field-label">목적/사유(왜)</label>
-              <input
-                value={workReason}
-                onChange={(e) => setWorkReason(e.target.value)}
-                placeholder="예: 정기 유지보수 계약에 따른 월간 점검"
-              />
+              {detailStatus === 'HQ_WORKING' && (
+                <p style={{ fontSize: 12, color: '#868e96', marginTop: -6, marginBottom: 10 }}>
+                  💡 나중에 찾아보기 쉽도록, 오늘 한 일을 구체적으로 적어주세요(예: "무엇을 · 어떤 목적으로 · 어떻게" 순서로).
+                </p>
+              )}
+
+              {!SIMPLIFIED_EFFORT_STATUSES.has(detailStatus) && (
+                <>
+                  <label className="field-label">목적/사유(왜)</label>
+                  <input
+                    value={workReason}
+                    onChange={(e) => setWorkReason(e.target.value)}
+                    placeholder="예: 정기 유지보수 계약에 따른 월간 점검"
+                  />
+                </>
+              )}
 
               {SITE_DETAIL_STATUSES.has(detailStatus) && (
                 <>
@@ -994,14 +1021,20 @@ export default function EmployeeHome() {
                   )}
                   <label className="field-label">작업인원(본인 외 추가 투입 인원, 선택)</label>
                   <input value={personnel} onChange={(e) => setPersonnel(e.target.value)} placeholder="예: 홍길동, 김철수" />
-                  <label className="field-label">진행률/차수(선택)</label>
-                  <input value={progressStage} onChange={(e) => setProgressStage(e.target.value)} placeholder="예: 2차 점검 중, 80% 완료" />
+                  {detailStatus === 'NIGHT_WORK' && (
+                    <>
+                      <label className="field-label">진행률/차수(선택)</label>
+                      <input value={progressStage} onChange={(e) => setProgressStage(e.target.value)} placeholder="예: 2차 점검 중, 80% 완료" />
+                    </>
+                  )}
                 </>
               )}
 
               <button
                 disabled={
-                  workDetail.trim().length < 10 || !workReason.trim() || !workStart
+                  workDetail.trim().length < (detailStatus === 'HQ_WORKING' ? 15 : 10)
+                  || (!SIMPLIFIED_EFFORT_STATUSES.has(detailStatus) && !workReason.trim())
+                  || (detailStatus === 'HQ_WORKING' ? !clientName.trim() : !workStart)
                   || (SITE_DETAIL_STATUSES.has(detailStatus) && !siteType)
                 }
                 onClick={submitDetailForm}
