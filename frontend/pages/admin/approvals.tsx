@@ -53,6 +53,7 @@ export default function ApprovalsPage() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   function load() {
     setLoading(true);
@@ -85,6 +86,30 @@ export default function ApprovalsPage() {
     }
   }
 
+  // 대기중 항목을 한 번에 승인 — 새 벌크 API를 만들지 않고, 기존 단건 승인(approve)을 항목별로
+  // 그대로 순서대로 호출한다(타입별 승인 부수효과를 그대로 재사용하기 위함). 실수 방지를 위해
+  // 실행 전 개수를 보여주고 확인을 받는다.
+  async function approveAll() {
+    const pendingIds = requests.filter((r) => r.status === 'PENDING').map((r) => r.id);
+    if (pendingIds.length === 0) return;
+    if (!window.confirm(`대기중인 ${pendingIds.length}건을 모두 승인할까요?`)) return;
+    setBulkBusy(true);
+    setMessage(null);
+    let okCount = 0;
+    let failCount = 0;
+    for (const id of pendingIds) {
+      try {
+        await apiFetch(`/approval/requests/${id}/approve`, { method: 'POST', body: JSON.stringify({}) });
+        okCount += 1;
+      } catch {
+        failCount += 1;
+      }
+    }
+    setMessage(failCount > 0 ? `${okCount}건 승인, ${failCount}건 실패했습니다.` : `${okCount}건 모두 승인 처리되었습니다.`);
+    setBulkBusy(false);
+    load();
+  }
+
   async function reject(id: string) {
     const comment = window.prompt('반려 사유를 입력해주세요 (필수)');
     if (!comment || !comment.trim()) return;
@@ -106,7 +131,7 @@ export default function ApprovalsPage() {
       <AdminHeader title="승인함" />
       <p className="admin-page-subtitle">대체휴무 전환·연장/야간근무·지난 근무일 퇴근 정정 요청을 처리하세요.</p>
 
-      <div style={{ display: 'flex', gap: 8, margin: '16px 0' }}>
+      <div style={{ display: 'flex', gap: 8, margin: '16px 0', flexWrap: 'wrap', alignItems: 'center' }}>
         {TABS.map((t) => (
           <button
             key={t}
@@ -117,6 +142,11 @@ export default function ApprovalsPage() {
             {t === 'PENDING' ? '대기중' : t === 'APPROVED' ? '승인됨' : '반려됨'}
           </button>
         ))}
+        {tab === 'PENDING' && requests.some((r) => r.status === 'PENDING') && (
+          <button style={{ width: 'auto', marginLeft: 'auto' }} disabled={bulkBusy} onClick={approveAll}>
+            {bulkBusy ? '일괄 승인 중...' : `✅ 전체 승인 (${requests.filter((r) => r.status === 'PENDING').length}건)`}
+          </button>
+        )}
       </div>
 
       {message && <div className="card col-full" style={{ background: '#fff4e6' }}>{message}</div>}

@@ -178,7 +178,7 @@ export default function AdminDashboard() {
     return `conic-gradient(${parts.join(', ')})`;
   }, [macroCounts, stats.total]);
 
-  const [syncing, setSyncing] = useState<'employees' | 'attendance' | null>(null);
+  const [syncing, setSyncing] = useState<'employees' | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   async function runSyncEmployees() {
@@ -201,26 +201,9 @@ export default function AdminDashboard() {
     }
   }
 
-  async function runSyncAttendance() {
-    setSyncing('attendance');
-    setSyncMessage(null);
-    try {
-      const now = new Date();
-      const result = await apiFetch<{ syncedCount: number; statusInferredCount: number; errors: string[] }>('/dauoffice/sync/attendance', {
-        method: 'POST',
-        body: JSON.stringify({ year: now.getFullYear(), month: now.getMonth() + 1 }),
-      });
-      setSyncMessage(
-        `근태 동기화 완료 — 반영 ${result.syncedCount}건, 잠정 상태 자동추정 ${result.statusInferredCount}명` +
-          (result.errors.length > 0 ? ` (오류 ${result.errors.length}건, 예: ${result.errors[0]})` : '')
-      );
-      await load();
-    } catch (err) {
-      setSyncMessage(err instanceof Error ? `근태 동기화 실패: ${err.message}` : '근태 동기화 실패');
-    } finally {
-      setSyncing(null);
-    }
-  }
+  // 2026-09-01: "다우오피스 근태 동기화" 버튼은 제거했다 — 다우오피스가 퇴근시각을 안 줘서
+  // 매달 돌릴 때마다 미해결(퇴근 없음) 기록이 새로 쌓이는 원인이었다. 이제 출퇴근은 앱에서
+  // 직원이 직접 누른 것만 인정한다. 조직도(직원) 동기화 버튼은 그대로 유지.
 
   const [expandedColumns, setExpandedColumns] = useState<Record<string, boolean>>({});
   function toggleColumn(code: string) {
@@ -252,9 +235,6 @@ export default function AdminDashboard() {
       <div className="toolbar">
         <button style={{ width: 'auto' }} disabled={syncing !== null} onClick={runSyncEmployees}>
           {syncing === 'employees' ? '직원 동기화 중...' : '👤 다우오피스 직원 동기화'}
-        </button>
-        <button style={{ width: 'auto' }} className="secondary" disabled={syncing !== null} onClick={runSyncAttendance}>
-          {syncing === 'attendance' ? '근태 동기화 중...' : '🕒 다우오피스 근태 동기화(이번달)'}
         </button>
         {syncMessage && <span className="refresh-info">{syncMessage}</span>}
       </div>
