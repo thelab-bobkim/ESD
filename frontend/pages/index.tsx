@@ -4,7 +4,7 @@ import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
 import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, reverseGeocode } from '@/lib/geolocation';
-import { heroGreeting, clockOutGreeting } from '@/lib/greetings';
+import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greetings';
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
 import PastDayCorrectionCard, { type PendingCorrectionRow } from '@/components/PastDayCorrectionCard';
@@ -127,6 +127,7 @@ export default function EmployeeHome() {
   // 관리자 권한 계정은 퇴근 후에도 테스트할 수 있게 상태변경 잠금에서 예외로 둔다.
   const isAdminAccount = Boolean(me?.roles?.some((r) => ['SYSTEM_ADMIN', 'HR_ADMIN'].includes(r)));
   const [weekly, setWeekly] = useState<WeeklySummary | null>(null);
+  const [weather, setWeather] = useState<WeatherInfo>({ condition: null, tempC: null });
 
   // 고객사미팅/고객사작업/야간작업 공용 상세입력 폼 상태
   const [detailStatus, setDetailStatus] = useState<string | null>(null);
@@ -208,6 +209,17 @@ export default function EmployeeHome() {
       .catch(() => router.push('/login'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
+
+  // 출퇴근 인사말에 반영할 날씨(본사 위치 기준). 백엔드가 30분 캐시하므로 프론트도 같은 주기로만
+  // 다시 불러온다. API 키 미설정/조회 실패 시 condition:null이 오고, 그때는 인사말에서 그냥 생략된다.
+  useEffect(() => {
+    function loadWeather() {
+      apiFetch<WeatherInfo>('/weather/current').then(setWeather).catch(() => {});
+    }
+    loadWeather();
+    const id = setInterval(loadWeather, 30 * 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
 
   // 본사 좌표를 한 번 불러온다(등록 안 돼있으면 아래 감지 자체를 안 함).
   useEffect(() => {
@@ -521,7 +533,7 @@ export default function EmployeeHome() {
 
       {/* 히어로: 인사말 + 지금 내 상태 크게 보여주기 */}
       <div className="hero-card">
-        <div className="hero-greeting">{me.name}님, {heroGreeting()}! 👋</div>
+        <div className="hero-greeting">{me.name}님, {heroGreeting(weather)}! 👋</div>
         {currentStatus ? (
           <div className="hero-status">
             <span className="hero-status-icon">{clockedOut ? '🏁' : (STATUS_META[currentStatus.status]?.icon ?? '❔')}</span>
@@ -712,7 +724,7 @@ export default function EmployeeHome() {
                         }),
                       }
                     );
-                    setMessage(`퇴근 처리되었습니다. ${clockOutGreeting()}`);
+                    setMessage(`퇴근 처리되었습니다. ${clockOutGreeting(weather)}`);
                     refreshMyStatus();
                     if (res.lateClockOutSuggestion) setLateClockOutSuggestion(res.lateClockOutSuggestion);
                   } catch (err) {

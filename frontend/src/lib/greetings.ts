@@ -1,9 +1,17 @@
 /**
- * 시간대·요일에 따라 달라지는 인사말 — 외부 API/AI 호출 없이, 미리 준비한 문구 세트에서 그 날짜
- * 기준으로 하나를 골라 쓴다(2026-09-01 도입). 같은 날 안에서는(새로고침해도) 항상 같은 문구가
- * 나오도록 날짜를 시드로 써서 고정하고, 요일이 바뀌면 자연스럽게 다른 문구가 나온다.
- * 날씨는 아직 반영하지 않는다(외부 날씨 API 연동은 다음 단계로 미룸 — 우선 요일·시간대만).
+ * 시간대·요일·날씨에 따라 달라지는 인사말 — AI 호출 없이, 미리 준비한 문구 세트에서 그 날짜
+ * 기준으로 하나를 골라 쓴다(2026-09-01 도입, 날씨는 2026-09-01 후반 추가). 같은 날 안에서는
+ * (새로고침해도) 항상 같은 문구가 나오도록 날짜를 시드로 써서 고정하고, 요일이 바뀌면 자연스럽게
+ * 다른 문구가 나온다. 날씨는 요일별 기본 문구 뒤에 짧은 문구를 덧붙이는 방식으로 반영한다(비/눈/
+ * 뇌우/안개, 폭염/한파). 날씨 정보가 없으면(API 키 미설정, 조회 실패 등) 그냥 덧붙이지 않는다.
  */
+
+export type WeatherCondition = 'CLEAR' | 'CLOUDS' | 'RAIN' | 'SNOW' | 'STORM' | 'FOG' | 'UNKNOWN';
+
+export interface WeatherInfo {
+  condition: WeatherCondition | null;
+  tempC: number | null;
+}
 
 type Bucket = 'DAWN' | 'MORNING' | 'LUNCH' | 'AFTERNOON' | 'EVENING';
 
@@ -54,28 +62,58 @@ function dateSeed(d: Date): number {
   return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
 }
 
-/** 화면 상단 "지금 상태" 카드의 인사말(이름 뒤에 붙는 문구). 하루 중 시간대에 따라 자동으로 바뀐다. */
-export function heroGreeting(): string {
-  const now = new Date();
-  const seed = dateSeed(now);
-  const weekday = now.getDay();
-  switch (currentBucket(now.getHours())) {
-    case 'DAWN':
-      return pick(DAWN_MSGS, seed);
-    case 'MORNING':
-      return pick(MORNING_BY_WEEKDAY[weekday] ?? MORNING_BY_WEEKDAY[1], seed);
-    case 'LUNCH':
-      return pick(LUNCH_MSGS, seed);
-    case 'AFTERNOON':
-      return pick(AFTERNOON_MSGS, seed);
-    case 'EVENING':
-      return pick(EVENING_BY_WEEKDAY[weekday] ?? EVENING_BY_WEEKDAY[1], seed);
+// 날씨 조건/기온에 따라 기본 인사말 뒤에 덧붙일 짧은 문구. 정보가 없으면 빈 문자열(덧붙이지 않음).
+function weatherSuffix(weather?: WeatherInfo | null): string {
+  if (!weather?.condition) return '';
+  switch (weather.condition) {
+    case 'RAIN':
+      return ' · 비가 오니 우산 챙기세요 ☔';
+    case 'SNOW':
+      return ' · 눈길 조심하세요 ❄️';
+    case 'STORM':
+      return ' · 천둥번개가 있으니 이동 시 조심하세요 ⛈️';
+    case 'FOG':
+      return ' · 안개가 껴 있으니 이동 시 조심하세요 🌫️';
+    default:
+      if (weather.tempC != null && weather.tempC >= 33) return ' · 더위가 심하니 물 자주 드세요 🥵';
+      if (weather.tempC != null && weather.tempC <= 0) return ' · 날이 많이 추우니 따뜻하게 입으세요 🥶';
+      return '';
   }
 }
 
+/**
+ * 화면 상단 "지금 상태" 카드의 인사말(이름 뒤에 붙는 문구). 하루 중 시간대에 따라 자동으로 바뀌고,
+ * weather를 넘기면 날씨 문구가 뒤에 덧붙는다(생략 가능 — 없으면 요일/시간대 인사말만 나온다).
+ */
+export function heroGreeting(weather?: WeatherInfo | null): string {
+  const now = new Date();
+  const seed = dateSeed(now);
+  const weekday = now.getDay();
+  let base: string;
+  switch (currentBucket(now.getHours())) {
+    case 'DAWN':
+      base = pick(DAWN_MSGS, seed);
+      break;
+    case 'MORNING':
+      base = pick(MORNING_BY_WEEKDAY[weekday] ?? MORNING_BY_WEEKDAY[1], seed);
+      break;
+    case 'LUNCH':
+      base = pick(LUNCH_MSGS, seed);
+      break;
+    case 'AFTERNOON':
+      base = pick(AFTERNOON_MSGS, seed);
+      break;
+    case 'EVENING':
+      base = pick(EVENING_BY_WEEKDAY[weekday] ?? EVENING_BY_WEEKDAY[1], seed);
+      break;
+  }
+  return base + weatherSuffix(weather);
+}
+
 /** 퇴근 완료 토스트 메시지 뒤에 붙는 인사말. hero 인사말과 겹치지 않게 시드를 살짝 다르게 준다. */
-export function clockOutGreeting(): string {
+export function clockOutGreeting(weather?: WeatherInfo | null): string {
   const now = new Date();
   const weekday = now.getDay();
-  return pick(EVENING_BY_WEEKDAY[weekday] ?? EVENING_BY_WEEKDAY[1], dateSeed(now) + 1);
+  const base = pick(EVENING_BY_WEEKDAY[weekday] ?? EVENING_BY_WEEKDAY[1], dateSeed(now) + 1);
+  return base + weatherSuffix(weather);
 }

@@ -19,6 +19,7 @@ import { reportsRouter } from './modules/reports/reports.routes';
 import { dauofficeRouter } from './modules/dauoffice/dauoffice.routes';
 import { pushRouter } from './modules/push/push.routes';
 import { clientsRouter } from './modules/clients/clients.routes';
+import { weatherRouter } from './modules/weather/weather.routes';
 
 export function createApp() {
   const app = express();
@@ -73,6 +74,7 @@ export function createApp() {
   app.use('/api/v1/dauoffice', dauofficeRouter);
   app.use('/api/v1/push', pushRouter);
   app.use('/api/v1/clients', clientsRouter);
+  app.use('/api/v1/weather', weatherRouter);
 
   // 공통 에러 핸들러
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
