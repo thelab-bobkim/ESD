@@ -2,8 +2,10 @@
  * 시간대·요일·날씨에 따라 달라지는 인사말 — AI 호출 없이, 미리 준비한 문구 세트에서 그 날짜
  * 기준으로 하나를 골라 쓴다(2026-09-01 도입, 날씨는 2026-09-01 후반 추가). 같은 날 안에서는
  * (새로고침해도) 항상 같은 문구가 나오도록 날짜를 시드로 써서 고정하고, 요일이 바뀌면 자연스럽게
- * 다른 문구가 나온다. 날씨는 요일별 기본 문구 뒤에 짧은 문구를 덧붙이는 방식으로 반영한다(비/눈/
- * 뇌우/안개, 폭염/한파). 날씨 정보가 없으면(API 키 미설정, 조회 실패 등) 그냥 덧붙이지 않는다.
+ * 다른 문구가 나온다. 날씨는 데이터가 있으면(맑음/흐림 포함) 항상 짧은 문구를 덧붙인다 — 비/눈/
+ * 뇌우/안개나 폭염/한파처럼 특별히 챙길 게 있을 땐 그 내용을, 평범한 날씨엔 기온과 함께 가벼운
+ * 문구를 붙여서 "날씨가 연동되고 있다"는 게 항상 눈에 보이게 한다. 날씨 정보 자체가 없으면
+ * (API 키 미설정/미활성화, 조회 실패 등) condition이 null로 오고, 그때만 아무것도 안 붙인다.
  */
 
 export type WeatherCondition = 'CLEAR' | 'CLOUDS' | 'RAIN' | 'SNOW' | 'STORM' | 'FOG' | 'UNKNOWN';
@@ -23,8 +25,10 @@ function currentBucket(hour: number): Bucket {
   return 'EVENING';
 }
 
-// 요일별(0=일 ~ 6=토) 아침 인사말 세트. 월~금은 그 요일 분위기를 살짝 담았고, 주말은 공통 문구를 쓴다
-// (관리자/직원이 주말에 접속하는 경우가 드물지만 대비).
+// 요일별(0=일 ~ 6=토) 문구 세트들. 월~금은 그 요일 분위기를 살짝 담았고, 주말은 공통 문구를 쓴다
+// (관리자/직원이 주말에 접속하는 경우가 드물지만 대비). 시간대별로 다 따로 두어서, 하루 종일 앱을
+// 들여다봐도 아침/점심/오후/저녁이 서로 다르게 느껴지도록 했다.
+
 const MORNING_BY_WEEKDAY: Record<number, string[]> = {
   0: ['오늘도 좋은 하루 보내세요'],
   1: ['새로운 한 주가 시작됐어요, 이번 주도 화이팅이에요', '월요일이에요, 가볍게 시작해봐요', '한 주의 시작이에요, 오늘도 잘 부탁드려요'],
@@ -35,8 +39,25 @@ const MORNING_BY_WEEKDAY: Record<number, string[]> = {
   6: ['오늘도 좋은 하루 보내세요'],
 };
 
-const LUNCH_MSGS = ['점심은 맛있게 드셨나요', '든든하게 챙겨 드셨길 바라요', '오후도 힘내볼까요'];
-const AFTERNOON_MSGS = ['오늘도 수고 많으세요', '오후도 힘내세요', '거의 다 왔어요, 조금만 더 힘내요'];
+const LUNCH_BY_WEEKDAY: Record<number, string[]> = {
+  0: ['점심은 맛있게 드셨나요'],
+  1: ['점심 맛있게 드셨나요, 남은 오후도 화이팅', '월요일 점심이에요, 잠깐 숨 돌리세요'],
+  2: ['점심은 맛있게 드셨나요', '든든하게 드셨길 바라요, 오후도 힘내봐요'],
+  3: ['한 주의 중간, 점심 맛있게 드세요', '벌써 절반 왔어요, 점심 든든히 드세요'],
+  4: ['점심 맛있게 드셨나요, 내일이면 금요일이에요', '오후도 조금만 더 힘내봐요'],
+  5: ['불금 점심이에요, 맛있게 드세요', '점심 드시고 나면 곧 주말이에요'],
+  6: ['점심은 맛있게 드셨나요'],
+};
+
+const AFTERNOON_BY_WEEKDAY: Record<number, string[]> = {
+  0: ['오늘도 수고 많으세요'],
+  1: ['월요일 오후도 힘내세요', '오늘도 수고 많으세요'],
+  2: ['화요일 오후, 조금만 더 힘내요', '오후도 화이팅이에요'],
+  3: ['한 주 절반 넘었어요, 오후도 힘내세요', '거의 다 왔어요, 조금만 더 힘내요'],
+  4: ['목요일 오후예요, 내일이면 금요일이에요', '오늘도 수고 많으세요'],
+  5: ['불금 오후예요, 이제 곧 주말이에요', '오늘만 지나면 주말, 조금만 더 힘내요'],
+  6: ['오늘도 수고 많으세요'],
+};
 
 // 요일별 저녁/퇴근 인사말 세트 — hero 카드(온종일 노출)와 퇴근 완료 토스트가 같은 세트를 쓰되
 // 시드를 살짝 다르게 줘서 서로 다른 문구가 뽑히게 한다(clockOutGreeting 참고).
@@ -62,22 +83,33 @@ function dateSeed(d: Date): number {
   return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
 }
 
-// 날씨 조건/기온에 따라 기본 인사말 뒤에 덧붙일 짧은 문구. 정보가 없으면 빈 문자열(덧붙이지 않음).
+// 날씨 조건/기온에 따라 기본 인사말 뒤에 덧붙일 짧은 문구. 데이터가 있으면(맑음/흐림 포함) 항상
+// 뭔가를 붙인다 — 그래야 "날씨가 실제로 연동되고 있다"는 게 매번 눈으로 확인된다. condition
+// 자체가 null이면(키 미설정/미활성화/조회 실패) 아무것도 안 붙인다.
 function weatherSuffix(weather?: WeatherInfo | null): string {
   if (!weather?.condition) return '';
+  const t = weather.tempC;
+  const tempTag = t != null ? ` (${t}°C)` : '';
   switch (weather.condition) {
     case 'RAIN':
-      return ' · 비가 오니 우산 챙기세요 ☔';
+      return ` · 비가 오니 우산 챙기세요 ☔${tempTag}`;
     case 'SNOW':
-      return ' · 눈길 조심하세요 ❄️';
+      return ` · 눈길 조심하세요 ❄️${tempTag}`;
     case 'STORM':
-      return ' · 천둥번개가 있으니 이동 시 조심하세요 ⛈️';
+      return ` · 천둥번개가 있으니 이동 시 조심하세요 ⛈️${tempTag}`;
     case 'FOG':
-      return ' · 안개가 껴 있으니 이동 시 조심하세요 🌫️';
+      return ` · 안개가 껴 있으니 이동 시 조심하세요 🌫️${tempTag}`;
+    case 'CLEAR':
+      if (t != null && t >= 33) return ` · 맑지만 더위가 심해요, 물 자주 드세요 🥵${tempTag}`;
+      if (t != null && t <= 0) return ` · 맑지만 많이 추워요, 따뜻하게 입으세요 🥶${tempTag}`;
+      return ` · 맑은 하늘이에요 ☀️${tempTag}`;
+    case 'CLOUDS':
+      if (t != null && t >= 33) return ` · 흐리지만 더위가 심해요, 물 자주 드세요 🥵${tempTag}`;
+      if (t != null && t <= 0) return ` · 흐리고 많이 추워요, 따뜻하게 입으세요 🥶${tempTag}`;
+      return ` · 구름 낀 하늘이에요 ⛅${tempTag}`;
     default:
-      if (weather.tempC != null && weather.tempC >= 33) return ' · 더위가 심하니 물 자주 드세요 🥵';
-      if (weather.tempC != null && weather.tempC <= 0) return ' · 날이 많이 추우니 따뜻하게 입으세요 🥶';
-      return '';
+      // 분류 못 한 그 외 날씨(UNKNOWN) — 조건 문구 없이 기온만 있으면 기온만 붙인다.
+      return t != null ? ` · 현재 기온 ${t}°C` : '';
   }
 }
 
@@ -98,10 +130,10 @@ export function heroGreeting(weather?: WeatherInfo | null): string {
       base = pick(MORNING_BY_WEEKDAY[weekday] ?? MORNING_BY_WEEKDAY[1], seed);
       break;
     case 'LUNCH':
-      base = pick(LUNCH_MSGS, seed);
+      base = pick(LUNCH_BY_WEEKDAY[weekday] ?? LUNCH_BY_WEEKDAY[1], seed);
       break;
     case 'AFTERNOON':
-      base = pick(AFTERNOON_MSGS, seed);
+      base = pick(AFTERNOON_BY_WEEKDAY[weekday] ?? AFTERNOON_BY_WEEKDAY[1], seed);
       break;
     case 'EVENING':
       base = pick(EVENING_BY_WEEKDAY[weekday] ?? EVENING_BY_WEEKDAY[1], seed);
