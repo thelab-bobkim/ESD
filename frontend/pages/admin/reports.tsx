@@ -115,6 +115,17 @@ function todayWorkDateKST(): string {
   return `${y}-${mo}-${d}`;
 }
 
+// 아직 퇴근이 확정 안 된(clockOutAt null) 상태에서, 근무시간 칸에 뭐라도 보여주기 위한 "18시
+// 기준 잠정치"만 계산한다 — attendance_records.total_worked_minutes(실제 집계/급여 기준)는
+// 절대 여기서 건드리지 않는다. 진짜 값은 여전히 본인 퇴근 버튼 또는 정정신청 승인으로만 채워진다
+// (정정신청이 승인되면 approval.routes.ts가 그 시각 기준으로 자동 반영한다).
+function tentativeMinutesTo18(clockInAt: string): number {
+  const start = new Date(clockInAt);
+  const end = new Date(start);
+  end.setHours(18, 0, 0, 0);
+  return Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
+}
+
 function AttendanceRowTr({
   r, date, onClick, hideDept, onForceClockOut,
 }: {
@@ -122,6 +133,7 @@ function AttendanceRowTr({
   onForceClockOut: (row: { recordId: string; clockInAt: string | null }) => void;
 }) {
   const isPastDayUnresolved = !r.clockOutAt && date < todayWorkDateKST();
+  const isUnconfirmedAfter18 = !r.clockOutAt && !isPastDayUnresolved && new Date().getHours() >= 18 && !!r.clockInAt;
   return (
     <tr style={{ cursor: 'pointer' }} onClick={onClick}>
       <td>
@@ -147,7 +159,7 @@ function AttendanceRowTr({
           >
             ⚠ 미해결(지난 근무일) — 클릭해서 정정
           </span>
-        ) : new Date().getHours() >= 18 ? (
+        ) : isUnconfirmedAfter18 ? (
           // 2026-09-01: 저녁 6시(정규 퇴근 마감 기본값)가 지나도록 퇴근을 안 누른 경우를
           // "진행중"과 구분해서 보여준다 — 화면만 다르게 보일 뿐, 여기서 clockOutAt을 자동으로
           // 채우지는 않는다(시스템이 근로시간을 일방적으로 확정하지 않는다는 원칙 유지). 실제
@@ -159,7 +171,17 @@ function AttendanceRowTr({
           <span style={{ color: '#f08c00', fontWeight: 600 }}>● 진행중</span>
         )}
       </td>
-      <td>{r.totalWorkedMinutes != null ? hoursLabel(r.totalWorkedMinutes) : '-'}</td>
+      <td>
+        {r.totalWorkedMinutes != null ? (
+          hoursLabel(r.totalWorkedMinutes)
+        ) : isUnconfirmedAfter18 && r.clockInAt ? (
+          <span style={{ color: '#e8590c' }} title="18시 기준으로 어림 계산한 값 — 확정 아님(정정신청 승인 시 실제 값으로 바뀜)">
+            {hoursLabel(tentativeMinutesTo18(r.clockInAt))} (18시 기준 잠정)
+          </span>
+        ) : (
+          '-'
+        )}
+      </td>
     </tr>
   );
 }
