@@ -50,7 +50,9 @@ const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 // 2026-09-01: 직원들이 등록을 귀찮아해서(항목이 너무 많음) 본사근무/고객사미팅/고객사작업 세 가지는
 // 입력폼을 간소화했다 — 프로젝트명/목적·사유/진행률·차수 같은 부가 항목을 없애고, 실제로 꼭 필요한
 // 항목(고객사·관련프로젝트, 수행업무)만 채우면 바로 등록되게 했다. 야간작업/재택은 기존 그대로 유지.
-const SIMPLIFIED_EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
+// 2026-09-01: 재택/야간작업도 같은 이유로 고객사작업과 같은 간소화된 형식으로 맞췄다 —
+// 목적/사유 항목을 없애고, 진행률/차수(야간작업에만 있던 항목)도 없애서 형식을 통일했다.
+const SIMPLIFIED_EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'NIGHT_WORK']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 // 고객사미팅은 "작업"이 아니라 "미팅"이라 유형 대신 목적으로 구분한다.
@@ -430,7 +432,7 @@ export default function EmployeeHome() {
     // 작업위치(원격/현장, 필수) · 작업인원(선택) · 진행률/차수(선택, 야간작업만) — 야간작업/고객사미팅/고객사작업만 해당.
     if (SITE_DETAIL_STATUSES.has(code) && !siteType) return;
     const siteDetailSuffix = SITE_DETAIL_STATUSES.has(code)
-      ? ` | 작업위치: ${siteType === 'ONSITE' ? '현장' : '원격'}${personnel ? ` | 작업인원: ${personnel}` : ''}${code === 'NIGHT_WORK' && progressStage ? ` | 진행률/차수: ${progressStage}` : ''}`
+      ? ` | 작업위치: ${siteType === 'ONSITE' ? '현장' : '원격'}${personnel ? ` | 작업인원: ${personnel}` : ''}`
       : '';
     const reasonSuffix = workReason.trim() ? ` | 목적: ${workReason}` : '';
     const note = (code === 'HQ_WORKING'
@@ -450,7 +452,7 @@ export default function EmployeeHome() {
         startTime: workStart,
         endTime: workEnd || undefined,
         description: workReason.trim() ? `${workDetail} (목적: ${workReason})` : workDetail,
-        ...(SITE_DETAIL_STATUSES.has(code) ? { personnel: personnel || undefined, progressStage: code === 'NIGHT_WORK' ? (progressStage || undefined) : undefined } : {}),
+        ...(SITE_DETAIL_STATUSES.has(code) ? { personnel: personnel || undefined } : {}),
       };
     }
     // 고객사미팅/고객사작업은 등록 순간 위치를 확인해서 등록된 고객사 위치와 대조한다(동의한 경우에만).
@@ -1021,12 +1023,6 @@ export default function EmployeeHome() {
                   )}
                   <label className="field-label">작업인원(본인 외 추가 투입 인원, 선택)</label>
                   <input value={personnel} onChange={(e) => setPersonnel(e.target.value)} placeholder="예: 홍길동, 김철수" />
-                  {detailStatus === 'NIGHT_WORK' && (
-                    <>
-                      <label className="field-label">진행률/차수(선택)</label>
-                      <input value={progressStage} onChange={(e) => setProgressStage(e.target.value)} placeholder="예: 2차 점검 중, 80% 완료" />
-                    </>
-                  )}
                 </>
               )}
 

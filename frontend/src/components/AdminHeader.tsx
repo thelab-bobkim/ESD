@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { clearToken } from '@/lib/api';
+import { apiFetch, clearToken } from '@/lib/api';
 
 const NAV_ITEMS = [
   { href: '/admin/dashboard', label: '전직원 상황판', icon: '📊' },
@@ -23,6 +24,21 @@ interface Props {
  */
 export default function AdminHeader({ title, eyebrow = 'DSTI-TSB 관리자' }: Props) {
   const router = useRouter();
+  // 2026-09-01: 승인함에 몇 건이 대기중인지 메뉴에서 바로 보여준다 — 매번 눌러서 들어가보지
+  // 않아도 처리할 게 있는지 한눈에 알 수 있게. 승인 권한이 없는 계정(일반 직원)이면 API가
+  // 403을 주는데, 그때는 그냥 배지를 안 보여주고 조용히 넘어간다.
+  const [pendingApprovals, setPendingApprovals] = useState(0);
+
+  useEffect(() => {
+    function loadPendingCount() {
+      apiFetch<unknown[]>('/approval/requests?status=PENDING')
+        .then((rows) => setPendingApprovals(Array.isArray(rows) ? rows.length : 0))
+        .catch(() => {});
+    }
+    loadPendingCount();
+    const id = setInterval(loadPendingCount, 60 * 1000); // 1분마다 최신화
+    return () => clearInterval(id);
+  }, []);
 
   function logout() {
     clearToken();
@@ -44,6 +60,9 @@ export default function AdminHeader({ title, eyebrow = 'DSTI-TSB 관리자' }: P
             onClick={() => router.push(item.href)}
           >
             <span>{item.icon}</span>{item.label}
+            {item.href === '/admin/approvals' && pendingApprovals > 0 && (
+              <span className="admin-nav-badge">{pendingApprovals > 99 ? '99+' : pendingApprovals}</span>
+            )}
           </button>
         ))}
         <span className="admin-nav-divider" />

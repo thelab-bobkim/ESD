@@ -172,6 +172,13 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-siz
 .admin-nav-link.active { background: var(--dsti-primary); color: #fff; }
 .admin-nav-link.muted { color: var(--dsti-text-faint); font-weight: 500; }
 .admin-nav-link.muted:hover { background: #f1f3f7; color: var(--dsti-text-muted); }
+/* 승인함 등, 처리할 게 몇 건 있는지 메뉴에 바로 보여주는 배지 */
+.admin-nav-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: #e03131; color: #fff; font-size: 11px; font-weight: 700; line-height: 1;
+}
+.admin-nav-link.active .admin-nav-badge { background: #fff; color: #e03131; }
 .admin-page-subtitle { font-size: 13px; color: var(--dsti-text-muted); margin: -14px 0 20px; }
 
 @media (max-width: 640px) {
