@@ -227,6 +227,22 @@ export default function AdminDashboard() {
     setExpandedColumns((prev) => ({ ...prev, [code]: !prev[code] }));
   }
 
+  // "한눈에 보는 동선" 타일(사내/외부업무/재택/휴무·야간/퇴근완료)을 눌렀을 때, 그 타일에 속한
+  // 세부상태 컬럼들을 아래 board에서 펼치고 첫 번째 컬럼으로 스크롤해서 보여준다.
+  // (기존에는 타일에 hover 스타일만 있고 실제 클릭 동작이 연결돼 있지 않았다.)
+  function focusMacroGroup(g: (typeof MACRO_GROUPS)[number]) {
+    const codes = g.key === 'CLOCKED_OUT' ? ['CLOCKED_OUT'] : g.statuses;
+    if (codes.length === 0) return;
+    setExpandedColumns((prev) => {
+      const next = { ...prev };
+      for (const c of codes) next[c] = true;
+      return next;
+    });
+    requestAnimationFrame(() => {
+      document.getElementById(`board-col-${codes[0]}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
   return (
     <div className="admin-shell">
       <AdminHeader title="전사 상황판" />
@@ -285,6 +301,12 @@ export default function AdminDashboard() {
               <div
                 className="macro-tile"
                 key={g.key}
+                role="button"
+                tabIndex={0}
+                onClick={() => focusMacroGroup(g)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') focusMacroGroup(g);
+                }}
                 style={{ '--tile-color': g.color, '--tile-color-soft': softBg(g.color) } as CSSProperties}
               >
                 <div className="macro-tile-icon">{g.icon}</div>
@@ -305,7 +327,7 @@ export default function AdminDashboard() {
             const employees = grouped[code];
             const isExpanded = expandedColumns[code] ?? (employees.length > 0 && employees.length <= 5);
             return (
-              <div className="board-column" key={code} style={{ borderTopColor: meta.color }}>
+              <div className="board-column" id={`board-col-${code}`} key={code} style={{ borderTopColor: meta.color }}>
                 <div
                   className="board-column-header"
                   style={{ cursor: employees.length > 0 ? 'pointer' : 'default' }}

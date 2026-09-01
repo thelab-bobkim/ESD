@@ -266,8 +266,11 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-siz
   display: flex; align-items: center; gap: 12px; padding: 12px 14px;
   background: #f8f9fc; border-radius: 14px; border-left: 3px solid var(--tile-color, #ccc);
   transition: transform 0.15s, box-shadow 0.15s;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
 .macro-tile:hover { transform: translateY(-1px); box-shadow: var(--dsti-shadow-sm); }
+.macro-tile:active { transform: translateY(0) scale(0.98); box-shadow: var(--dsti-shadow-sm); }
+.macro-tile:focus-visible { outline: 2px solid var(--dsti-primary); outline-offset: 2px; }
 .macro-tile-icon {
   font-size: 18px; width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
