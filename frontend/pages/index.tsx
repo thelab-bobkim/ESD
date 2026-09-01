@@ -4,6 +4,7 @@ import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
 import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, reverseGeocode } from '@/lib/geolocation';
+import { heroGreeting, clockOutGreeting } from '@/lib/greetings';
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
 import PastDayCorrectionCard, { type PendingCorrectionRow } from '@/components/PastDayCorrectionCard';
@@ -86,15 +87,6 @@ function todayDateLocal(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-function greetingByHour(): string {
-  const h = new Date().getHours();
-  if (h < 6) return '늦은 시간까지 고생 많으세요';
-  if (h < 12) return '좋은 아침이에요';
-  if (h < 14) return '점심은 맛있게 드셨나요';
-  if (h < 19) return '오늘도 수고 많으세요';
-  return '오늘 하루도 고생하셨어요';
 }
 
 function timeAgoShort(iso: string): string {
@@ -529,7 +521,7 @@ export default function EmployeeHome() {
 
       {/* 히어로: 인사말 + 지금 내 상태 크게 보여주기 */}
       <div className="hero-card">
-        <div className="hero-greeting">{me.name}님, {greetingByHour()}! 👋</div>
+        <div className="hero-greeting">{me.name}님, {heroGreeting()}! 👋</div>
         {currentStatus ? (
           <div className="hero-status">
             <span className="hero-status-icon">{clockedOut ? '🏁' : (STATUS_META[currentStatus.status]?.icon ?? '❔')}</span>
@@ -672,16 +664,22 @@ export default function EmployeeHome() {
             <button
               className={myStatus?.record?.clockInAt ? 'done' : ''}
               disabled={Boolean(myStatus?.record?.clockInAt)}
-              onClick={() =>
-                run(async () => {
-                  let location: { lat: number; lng: number } | undefined;
-                  if (me?.locationConsentGiven) {
-                    const loc = await getCurrentLocation();
-                    if (loc) location = loc;
-                  }
-                  return apiFetch('/attendance/clock-in', { method: 'POST', body: JSON.stringify(location ? { location } : {}) });
-                }, '출근 처리되었습니다.')
-              }
+              onClick={async () => {
+                setMessage(null);
+                setMessageIsError(false);
+                try {
+                  const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+                  const result = await apiFetch<{ locationConfirmed?: boolean }>('/attendance/clock-in', {
+                    method: 'POST',
+                    body: JSON.stringify({ ...(coords ? { location: coords } : {}), locationStatus: locStatus }),
+                  });
+                  setMessage(result.locationConfirmed ? '✅ 위치 확인 완료 — 정상출근 처리되었습니다.' : '출근 처리되었습니다.');
+                  refreshMyStatus();
+                } catch (err) {
+                  setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+                  setMessageIsError(true);
+                }
+              }}
             >
               {myStatus?.record?.clockInAt ? `✓ 출근 완료 · ${fmtClock(myStatus.record.clockInAt)}` : '출근'}
             </button>
@@ -714,7 +712,7 @@ export default function EmployeeHome() {
                         }),
                       }
                     );
-                    setMessage('퇴근 처리되었습니다. 오늘도 수고하셨어요!');
+                    setMessage(`퇴근 처리되었습니다. ${clockOutGreeting()}`);
                     refreshMyStatus();
                     if (res.lateClockOutSuggestion) setLateClockOutSuggestion(res.lateClockOutSuggestion);
                   } catch (err) {
@@ -728,7 +726,7 @@ export default function EmployeeHome() {
             <div style={{ background: '#fff4e6', border: '1px solid #ffa94d', borderRadius: 8, padding: '10px 12px', marginBottom: 8, fontSize: 13, color: '#c2410c', fontWeight: 600, lineHeight: 1.6 }}>
               ⚠️ 출근은 자동이에요 — 상태를 누르면 그 순간이 출근시각이 됩니다.
               <span style={{ fontWeight: 400 }}>
-                {' '}고객사로 바로 가는 날은 "출근" 버튼 대신, 도착 후 상태를 눌러주세요. 하루를 마치면 꼭 "퇴근"을 눌러야 근무가 확정돼요.
+                {' '}"출근" 버튼은 본사 위치가 확인될 때만 처리돼요. 고객사로 바로 가는 날, 출장이나 상주근무인 날은 "출근" 버튼 대신 도착 후 상태를 눌러주세요. 하루를 마치면 꼭 "퇴근"을 눌러야 근무가 확정돼요.
               </span>
             </div>
             <button className="secondary" disabled={pushLoading} onClick={togglePush}>

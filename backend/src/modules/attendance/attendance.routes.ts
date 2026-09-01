@@ -66,23 +66,67 @@ attendanceRouter.post('/clock-in', async (req, res) => {
     }
   }
 
+  // 2026-09-01 정책 변경: "출근" 버튼은 더 이상 위치확인 없이 조용히 통과시키지 않는다. 본사 좌표가
+  // 등록되어 있다면 반드시 본사와 위치가 일치해야만 확정하고, 위치가 안 맞거나 아예 못 가져왔으면
+  // 거부한 뒤 본사근무·고객사작업·고객사미팅·출장·고객사상주 중 실제 근무형태에 맞는 버튼을 눌러
+  // 출근하도록 안내한다 — "출근 버튼만 누르고 방치"로 위치확인 없이 출근이 확정되던 허점을 없앤다.
+  // (본사 좌표가 아예 등록 안 되어 있으면 애초에 검증 자체가 불가능하므로, 관리자 설정 누락으로
+  // 전 직원의 출근을 막는 사고를 피하기 위해 예전처럼 위치확인 없이 통과시킨다.)
+  const hqLat = await getPolicyString('HQ_LATITUDE', '');
+  const hqLng = await getPolicyString('HQ_LONGITUDE', '');
+  const hqConfigured = Boolean(hqLat && hqLng);
+  let hqLocationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
+  if (hqConfigured) {
+    if (!location) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'LOCATION_REQUIRED_FOR_CLOCKIN',
+          message:
+            '위치 확인이 되지 않아 "출근" 버튼으로는 출근을 확정할 수 없어요. 본사근무·고객사작업·고객사미팅·출장·고객사상주 중 실제 근무형태에 맞는 버튼을 눌러 출근해주세요.',
+        },
+      });
+    }
+    hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) });
+    if (hqLocationResult && !hqLocationResult.locationMatch) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'AWAY_FROM_HQ',
+          message: `현재 위치가 본사에서 약 ${hqLocationResult.locationDistanceMeters}m 떨어져 있어요. 본사로 출근하는 게 아니라면 "출근" 버튼 대신 고객사미팅·고객사작업·출장·고객사상주 중 맞는 상태를 눌러 진행해주세요.`,
+        },
+      });
+    }
+  }
+  const locationConfirmed = hqConfigured && Boolean(hqLocationResult?.locationMatch);
+
   const record = existing
     ? await prisma.attendanceRecord.update({ where: { id: existing.id }, data: { clockInAt: new Date() } })
     : await prisma.attendanceRecord.create({ data: { userId, workDate, clockInAt: new Date() } });
 
   // "출근"만 누르고 9개 상태 아이콘을 따로 안 고르면 계속 "상태 미확인"으로 남던 문제를 막기 위해,
-  // 오늘 아직 상태를 하나도 안 골랐다면 일단 "본사근무"로 잠정 설정한다(직원이 실제 상태를 고르면 그게 우선).
+  // 오늘 아직 상태를 하나도 안 골랐다면 일단 "본사근무"로 채워 넣는다. 위치가 실제로 확인된 경우
+  // (locationConfirmed)엔 정식으로 확인된 본사근무로 남기고, 본사 좌표 미설정으로 검증을 못 한
+  // 경우에만 예전처럼 "잠정" 표시를 남긴다(직원이 실제 상태를 고르면 그게 우선).
   const { start: dayStartReal, end: dayEndReal } = realDayWindow(workDate);
   const todayStatus = await prisma.statusChangeLog.findFirst({ where: { userId, changedAt: { gte: dayStartReal, lt: dayEndReal } } });
   if (!todayStatus) {
     await prisma.statusChangeLog.create({
-      data: { userId, status: 'HQ_WORKING', source: 'WEB', note: '출근 버튼 클릭 시 잠정 설정(실제 상태로 바꾸면 그 값이 우선함)' },
+      data: {
+        userId,
+        status: 'HQ_WORKING',
+        source: 'WEB',
+        note: locationConfirmed ? null : '출근 버튼 클릭 시 잠정 설정(실제 상태로 바꾸면 그 값이 우선함)',
+        locationMatch: hqLocationResult?.locationMatch ?? null,
+        locationDistanceMeters: hqLocationResult?.locationDistanceMeters ?? null,
+        locationCaptureStatus: location ? 'OK' : null,
+      },
     });
   }
 
-  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockInAt: record.clockInAt } });
+  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockInAt: record.clockInAt, locationConfirmed } });
 
-  return res.json({ success: true, data: record });
+  return res.json({ success: true, data: { ...record, locationConfirmed } });
 });
 
 // 위치 확보 실패 사유 — 프론트가 이 값 중 하나로 보내면 그대로 저장한다. 안 보내거나(구버전 클라이언트)
