@@ -49,7 +49,7 @@ const MACRO_GROUPS: { key: string; label: string; icon: string; color: string; s
   { key: 'FIELD', label: '외부업무', icon: '🚗', color: '#1c7ed6', statuses: ['RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'MOVING', 'MEETING', 'BUSINESS_TRIP'] },
   { key: 'REMOTE', label: '재택', icon: '🏠', color: '#6741d9', statuses: ['REMOTE'] },
   { key: 'OFF', label: '휴무·야간', icon: '🏖️', color: '#868e96', statuses: ['NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE'] },
-  { key: 'CLOCKED_OUT', label: '퇴근완료', icon: '🏁', color: '#495057', statuses: [] },
+  { key: 'CLOCKED_OUT', label: '퇴근완료', icon: '🏁', color: '#94a3b8', statuses: [] },
 ];
 
 interface EmployeeRow {
@@ -96,6 +96,20 @@ export default function AdminDashboard() {
   const [search, setSearch] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [justRefreshed, setJustRefreshed] = useState(false);
+  const [pendingApprovalCount, setPendingApprovalCount] = useState<number | null>(null);
+
+  // TSB-Ver2.1: 전사 상황판을 다크 관제형 테마로 바꾸면서, 페이지 바깥(뷰포트 좌우 여백)까지
+  // 어둡게 보이도록 body에도 클래스를 붙인다(다른 5개 관리자 화면엔 영향 없음 — 언마운트되면 제거).
+  useEffect(() => {
+    document.body.classList.add('tsb-dark-body');
+    return () => document.body.classList.remove('tsb-dark-body');
+  }, []);
+
+  useEffect(() => {
+    apiFetch<unknown[]>('/approval/requests?status=PENDING')
+      .then((rows) => setPendingApprovalCount(Array.isArray(rows) ? rows.length : 0))
+      .catch(() => setPendingApprovalCount(null));
+  }, [board]);
 
   async function load() {
     setRefreshing(true);
@@ -170,6 +184,32 @@ export default function AdminDashboard() {
     }
     const workingRate = total > 0 ? Math.round((working / total) * 100) : 0;
     return { total, working, off, unknown, clockedOut, workingRate };
+  }, [filteredEmployees]);
+
+  // 위치대조를 시도하는 상태(LOCATION_CHECK_STATUSES)에서 실제로 등록을 마친(퇴근 전) 인원만
+  // 대상으로, 위치 확인됨/불일치/미확인/미동의 4가지로 나눠 집계한다 — 상단 지표 카드용.
+  const locationStats = useMemo(() => {
+    let matched = 0, mismatched = 0, unconfirmed = 0, noConsent = 0;
+    for (const e of filteredEmployees) {
+      if (e.clockedOut) continue;
+      if (!e.status || !LOCATION_CHECK_STATUSES.has(e.status)) continue;
+      if (!e.locationConsentGiven || !e.privacyConsentGiven) { noConsent += 1; continue; }
+      if (e.locationMatch === true) matched += 1;
+      else if (e.locationMatch === false) mismatched += 1;
+      else unconfirmed += 1;
+    }
+    return { matched, mismatched, unconfirmed, noConsent, total: matched + mismatched + unconfirmed + noConsent };
+  }, [filteredEmployees]);
+
+  // "지금 바로 확인이 필요한 직원" — 위치가 실제로 확인된(matched) 경우를 제외한 나머지.
+  // 관리자가 예외 상황부터 먼저 볼 수 있게 상단에 강조 노출한다(2026-09-03 요청).
+  const flaggedEmployees = useMemo(() => {
+    return filteredEmployees.filter((e) => {
+      if (e.clockedOut) return false;
+      if (!e.status || !LOCATION_CHECK_STATUSES.has(e.status)) return false;
+      if (!e.locationConsentGiven || !e.privacyConsentGiven) return true;
+      return e.locationMatch !== true;
+    });
   }, [filteredEmployees]);
 
   // "한눈에 보는 동선" — 9개 세부상태를 대분류로 묶어서 집계
@@ -247,10 +287,49 @@ export default function AdminDashboard() {
   }
 
   return (
-    <div className="admin-shell">
-      <AdminHeader title="전사 상황판" />
+    <div className="admin-shell tsb-dark">
+      <AdminHeader title="전사 상황판" dark />
       <p className="admin-page-subtitle">지금 누가 어디서 뭘 하고 있는지 한눈에 확인하세요.</p>
       {error && <div className="error">{error}</div>}
+
+      <div className="cc-stat-row">
+        <div className="cc-stat-card">
+          <div className="cc-stat-label">전체 인원</div>
+          <div className="cc-stat-value">{stats.total}<small>명 · {departments.length}개 부서</small></div>
+          <div className="cc-stat-foot">근무중 {stats.working} · 휴무·휴가 {stats.off} · 퇴근완료 {stats.clockedOut}</div>
+        </div>
+        <div className="cc-stat-card">
+          <div className="cc-stat-label">근무중</div>
+          <div className="cc-stat-value" style={{ color: '#22c55e' }}>{stats.working}<small>명 · {stats.workingRate}%</small></div>
+          <div className="stat-bar" style={{ height: 6, borderRadius: 4, background: '#1c2440', marginTop: 10, overflow: 'hidden' }}>
+            <div style={{ width: `${stats.workingRate}%`, height: '100%', background: '#22c55e', borderRadius: 4 }} />
+          </div>
+          <div className="cc-stat-foot">상태 미확인 {stats.unknown}명</div>
+        </div>
+        <div className="cc-stat-card">
+          <div className="cc-stat-label">위치 확인 현황</div>
+          <div className="cc-loc-mini">
+            <div><span className="n" style={{ color: '#22c55e' }}>{locationStats.matched}</span><span className="l">확인됨</span></div>
+            <div><span className="n" style={{ color: '#ef4444' }}>{locationStats.mismatched}</span><span className="l">불일치</span></div>
+            <div><span className="n" style={{ color: '#f59e0b' }}>{locationStats.unconfirmed}</span><span className="l">미확인</span></div>
+            <div><span className="n" style={{ color: '#94a3b8' }}>{locationStats.noConsent}</span><span className="l">미동의</span></div>
+          </div>
+          <div className="cc-stat-foot">위치대조 대상 {locationStats.total}명 중</div>
+        </div>
+        <div className="cc-stat-card" style={{ borderColor: pendingApprovalCount ? '#3a2340' : undefined }}>
+          <div className="cc-stat-label">승인 대기</div>
+          <div className="cc-stat-value" style={{ color: pendingApprovalCount ? '#ef4444' : undefined }}>
+            {pendingApprovalCount ?? '-'}<small>건</small>
+          </div>
+          <button
+            className="secondary"
+            style={{ marginTop: 10, width: '100%' }}
+            onClick={() => router.push('/admin/approvals')}
+          >
+            승인함 바로가기 →
+          </button>
+        </div>
+      </div>
 
       <div className="toolbar">
         <button style={{ width: 'auto' }} disabled={syncing !== null} onClick={runSyncEmployees}>
@@ -283,6 +362,40 @@ export default function AdminDashboard() {
           {justRefreshed && <span style={{ color: '#2f9e44', marginLeft: 6 }}>✓ 갱신됨</span>}
         </span>
       </div>
+
+      {flaggedEmployees.length > 0 && (
+        <>
+          <div className="cc-section-title">⚠️ 지금 확인이 필요한 직원 <span className="cnt">{flaggedEmployees.length}</span></div>
+          <div className="cc-alert-grid">
+            {flaggedEmployees.map((e) => {
+              const badge = locationBadge(e);
+              const noConsent = !e.locationConsentGiven || !e.privacyConsentGiven;
+              const accent = noConsent ? '#94a3b8' : e.locationMatch === false ? '#ef4444' : '#f59e0b';
+              const flagClass = noConsent ? 'gray' : e.locationMatch === false ? 'red' : '';
+              const meta = e.status ? STATUS_META[e.status] : null;
+              return (
+                <div className="cc-alert-card" key={e.userId} style={{ '--cc-accent': accent } as CSSProperties}>
+                  <div className="cc-alert-head">
+                    <div className="cc-alert-name">
+                      <div className="cc-avatar">{e.name.slice(-2)}</div>
+                      <div style={{ minWidth: 0 }}>
+                        <div className="nm">
+                          {e.name}
+                          {e.statusSource === 'SYSTEM' && <span style={{ marginLeft: 6, fontSize: 10, color: '#6b7594', fontWeight: 400 }}>(자동추정)</span>}
+                        </div>
+                        <div className="dept">{e.department}{meta ? ` · ${meta.icon} ${meta.label}` : ''}</div>
+                      </div>
+                    </div>
+                    {badge && <span className={`cc-alert-flag${flagClass ? ` ${flagClass}` : ''}`}>{badge.text.replace(/^\S+\s/, '')}</span>}
+                  </div>
+                  {e.statusNote && <div className="cc-alert-note">“{e.statusNote}”</div>}
+                  <div className="cc-stat-foot" style={{ marginTop: 8 }}>{timeAgo(e.statusChangedAt)} 등록</div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       <div className="macro-section">
         <div className="donut-wrap">
@@ -353,7 +466,7 @@ export default function AdminDashboard() {
                         <div className="name">
                           {e.name}
                           {e.statusSource === 'SYSTEM' && (
-                            <span style={{ marginLeft: 6, fontSize: 10, color: '#868e96', fontWeight: 400 }}>(자동추정)</span>
+                            <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--dsti-text-faint)', fontWeight: 400 }}>(자동추정)</span>
                           )}
                         </div>
                         <div className="meta">
@@ -362,7 +475,7 @@ export default function AdminDashboard() {
                         </div>
                       </div>
                     </div>
-                    {code !== 'CLOCKED_OUT' && e.statusNote && <div className="meta" style={{ color: '#1c1f24', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
+                    {code !== 'CLOCKED_OUT' && e.statusNote && <div className="meta" style={{ color: 'var(--dsti-text)', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
                     {code === 'CLOCKED_OUT' && e.status && STATUS_META[e.status] && (
                       <div className="meta">마지막 상태: {STATUS_META[e.status].icon} {STATUS_META[e.status].label}</div>
                     )}

@@ -69,18 +69,18 @@ export default function MandatoryConsentGate({ needsPrivacy, needsLocation, onCo
         display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
       }}
     >
-      <div style={{ background: '#fff', borderRadius: 16, padding: 28, maxWidth: 440, width: '100%', maxHeight: '86vh', overflowY: 'auto' }}>
+      <div style={{ background: '#10162a', color: '#e7ebf5', border: '1px solid #212a45', borderRadius: 16, padding: 28, maxWidth: 440, width: '100%', maxHeight: '86vh', overflowY: 'auto' }}>
         {step === 'privacy' ? (
           <>
-            <div style={{ fontSize: 11, fontWeight: 800, color: '#2f6feb', letterSpacing: '0.04em', marginBottom: 4 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: '#7db0ff', letterSpacing: '0.04em', marginBottom: 4 }}>
               필수 동의 {stepNo}/{totalSteps}
             </div>
             <h2 style={{ marginTop: 0 }}>🔒 개인정보 수집·이용 동의</h2>
-            <p style={{ fontSize: 13.5, color: '#495057', lineHeight: 1.7 }}>
+            <p style={{ fontSize: 13.5, color: '#9aa5c3', lineHeight: 1.7 }}>
               DSTI-TSB 상황판은 근태관리·공수관리 목적으로 아래 정보를 수집·이용합니다. 서비스 특성상
               이 동의는 필수이며, 동의하지 않으시면 앱을 이용하실 수 없습니다.
             </p>
-            <ul style={{ fontSize: 13, color: '#495057', paddingLeft: 18, lineHeight: 1.9, marginBottom: 16 }}>
+            <ul style={{ fontSize: 13, color: '#9aa5c3', paddingLeft: 18, lineHeight: 1.9, marginBottom: 16 }}>
               <li><strong>수집 항목:</strong> 이름, 사번, 부서, 출퇴근 시각, 상태 등록 내용(고객사명·업무내용 등), 위치대조 결과(일치/불일치만 — 좌표 원본은 저장하지 않음)</li>
               <li><strong>이용 목적:</strong> 출퇴근·근로시간 관리, 고객사별 공수 집계, 승인/정정 처리</li>
               <li><strong>보유 기간:</strong> 재직기간 + 관계 법령에 따른 보관기간</li>
@@ -103,22 +103,22 @@ export default function MandatoryConsentGate({ needsPrivacy, needsLocation, onCo
           </>
         ) : (
           <>
-            <div style={{ fontSize: 11, fontWeight: 800, color: '#2f6feb', letterSpacing: '0.04em', marginBottom: 4 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: '#7db0ff', letterSpacing: '0.04em', marginBottom: 4 }}>
               필수 동의 {stepNo}/{totalSteps}
             </div>
             <h2 style={{ marginTop: 0 }}>📍 위치정보 이용 동의</h2>
-            <p style={{ fontSize: 13.5, color: '#495057', lineHeight: 1.7 }}>
+            <p style={{ fontSize: 13.5, color: '#9aa5c3', lineHeight: 1.7 }}>
               <strong>고객사미팅 / 고객사작업 / 고객사상주 도착체크, 본사근무 등록</strong> 시, 실제로 그
               위치에서 등록하신 게 맞는지 확인하기 위해 <strong>등록하는 그 순간의 위치정보</strong>를
               확인합니다. 이 동의와 브라우저 위치 권한 허용은 앱 이용에 필수입니다.
             </p>
-            <ul style={{ fontSize: 13, color: '#495057', paddingLeft: 18, lineHeight: 1.9, marginBottom: 16 }}>
+            <ul style={{ fontSize: 13, color: '#9aa5c3', paddingLeft: 18, lineHeight: 1.9, marginBottom: 16 }}>
               <li>정확한 좌표는 저장하지 않고, <strong>"일치/불일치" 결과만</strong> 남습니다.</li>
               <li>본사근무·재택·휴가 등 위치 확인이 필요없는 상태에서는 위치를 확인하지 않습니다.</li>
               <li>계속 추적하는 게 아니라, 등록 버튼을 누르는 <strong>그 순간에만</strong> 확인합니다.</li>
             </ul>
             {locError && (
-              <div style={{ background: '#fff0f0', border: '1px solid #ffc9c9', borderRadius: 8, padding: '10px 12px', fontSize: 12.5, color: '#c92a2a', marginBottom: 12, lineHeight: 1.6 }}>
+              <div style={{ background: 'rgba(239,68,68,0.14)', border: '1px solid #4a1f24', borderRadius: 8, padding: '10px 12px', fontSize: 12.5, color: '#f87171', marginBottom: 12, lineHeight: 1.6 }}>
                 ⚠ {locError}
                 <br />
                 브라우저(또는 기기) 설정에서 이 사이트의 위치 권한을 허용한 뒤 다시 시도해주세요.

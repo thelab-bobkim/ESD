@@ -316,3 +316,105 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-siz
 .alert-item .alert-target { color: var(--dsti-text-muted); }
 .severity-tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; color: #fff; margin-left: 6px; }
 
+/* ==========================================================================
+   TSB-Ver2.1 다크 관제형 테마 (전직원 상황판 · 사용자 화면 전용)
+   .tsb-dark 클래스가 붙은 화면(그 하위 트리)에서만 적용된다. 다른 5개 관리자 화면
+   (출/퇴근·근로시간, 공수관리, 캘린더, 승인함, 고객사 위치관리)은 이 클래스가 없으므로
+   기존 라이트 디자인 그대로 유지된다 — 이 블록 전체가 스코프 격리되어 있다.
+   구현 방식: --dsti-* 커스텀 프로퍼티를 .tsb-dark에서 다시 정의해서, 이미 이 변수들을
+   쓰고 있는 관리자 공통 컴포넌트(카드/헤더/보드 등)는 자동으로 다크 톤을 물려받는다.
+   변수를 안 쓰는(하드코딩 색상) 요소들만 아래에서 개별적으로 다시 정의한다.
+   ========================================================================== */
+.tsb-dark {
+  --dsti-bg: #090d18;
+  --dsti-surface: #10162a;
+  --dsti-border: #212a45;
+  --dsti-text: #e7ebf5;
+  --dsti-text-muted: #9aa5c3;
+  --dsti-text-faint: #6b7594;
+  --dsti-primary: #4c8dff;
+  --dsti-primary-dark: #7db0ff;
+  --dsti-primary-soft: #16233f;
+  --dsti-shadow-sm: 0 1px 2px rgba(0,0,0,0.3), 0 2px 10px rgba(0,0,0,0.25);
+  --dsti-shadow-md: 0 4px 16px rgba(0,0,0,0.4), 0 14px 32px rgba(0,0,0,0.32);
+  background: var(--dsti-bg);
+  color: var(--dsti-text);
+  min-height: 100vh;
+}
+/* 페이지 바깥(뷰포트 좌우 여백)까지 어둡게 — 각 페이지가 마운트될 때 body에 이 클래스를 붙인다 */
+body.tsb-dark-body { background: #090d18; }
+
+.tsb-dark button { background: var(--dsti-primary); color: #06101f; }
+.tsb-dark button.secondary { background: #151c34; color: var(--dsti-text-muted); border: 1px solid var(--dsti-border); }
+.tsb-dark button.done { background: rgba(34,197,94,0.15); color: #22c55e; border: 2px solid #22c55e; }
+.tsb-dark input:not([type="checkbox"]), .tsb-dark textarea, .tsb-dark select {
+  background: #0d1326; border: 1px solid var(--dsti-border); color: var(--dsti-text);
+}
+.tsb-dark .card { background: var(--dsti-surface); border: 1px solid var(--dsti-border); box-shadow: var(--dsti-shadow-sm); }
+.tsb-dark .admin-header, .admin-header--dark { background: rgba(9,13,24,0.85); }
+.tsb-dark .toolbar, .tsb-dark .macro-tile, .tsb-dark .employee-chip { background: #151c34; }
+.tsb-dark .board-column-header .count { background: #1c2440; }
+.tsb-dark .employee-chip { border: 1px solid var(--dsti-border); }
+.tsb-dark .employee-chip:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.35); }
+.tsb-dark .donut-hole { box-shadow: none; }
+.tsb-dark .field-label { color: var(--dsti-text-muted); }
+.tsb-dark .field-select, .tsb-dark .detail-textarea { background: #0d1326; border: 1px solid var(--dsti-border); color: var(--dsti-text); }
+.tsb-dark .error { color: #f87171; }
+
+/* 히어로 카드 */
+.tsb-dark .hero-card { background: linear-gradient(135deg, #10162a 0%, #161d3a 100%); border: 1px solid var(--dsti-border); }
+.tsb-dark .hero-greeting { color: var(--dsti-text-muted); }
+.tsb-dark .hero-status-label { color: var(--dsti-text); }
+.tsb-dark .hero-status-time { color: var(--dsti-text-faint); }
+.tsb-dark .hero-nudge { background: rgba(245,158,11,0.12); border: 1px solid #4a3a12; color: #fbbf24; }
+.tsb-dark .weekly-gauge-label { color: var(--dsti-text-muted); }
+.tsb-dark .weekly-gauge-track { background: #1c2440; }
+.tsb-dark .weekly-gauge-sub { color: var(--dsti-text-faint); }
+
+/* 상태 아이콘 버튼 그리드 */
+.tsb-dark .status-icon-btn { background: #151c34; }
+.tsb-dark .status-icon-btn:hover, .tsb-dark .status-icon-btn:active { background: rgba(76,141,255,0.14); border-color: var(--dsti-primary); }
+.tsb-dark .status-icon-btn.active { background: rgba(34,197,94,0.14); border-color: #22c55e; }
+.tsb-dark .status-icon-btn.active .status-icon-label { color: #22c55e; }
+.tsb-dark .status-icon-label { color: var(--dsti-text-muted); }
+.tsb-dark .status-icon-check { background: #22c55e; color: #06180d; }
+
+/* 반복되는 안내/공지 상자들 — 원래 인라인 style로 색을 하드코딩했던 것을 클래스로 뺐다 */
+.hint-box { font-size: 13px; color: #495057; font-weight: 500; background: #f1f3f5; border: 1px solid #dee2e6; border-radius: 8px; padding: 8px 10px; margin-top: -4px; margin-bottom: 10px; }
+.tsb-dark .hint-box { background: #151c34; border: 1px solid var(--dsti-border); color: var(--dsti-text-muted); }
+.notice-tint-blue { background: #eaf1ff; border: 1px solid #2f6feb; }
+.tsb-dark .notice-tint-blue { background: rgba(76,141,255,0.12); border: 1px solid #29406e; }
+.notice-tint-orange { background: #fff4e6; border: 1px solid #ffa94d; }
+.tsb-dark .notice-tint-orange { background: rgba(245,158,11,0.12); border: 1px solid #4a3a12; }
+.notice-inline-orange { background: #fff4e6; border: 1px solid #ffa94d; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; font-size: 13px; color: #c2410c; font-weight: 600; line-height: 1.6; }
+.tsb-dark .notice-inline-orange { background: rgba(245,158,11,0.12); border: 1px solid #4a3a12; color: #fbbf24; }
+.msg-success { background: #eef7ee; }
+.tsb-dark .msg-success { background: rgba(34,197,94,0.12); color: #4ade80; border: 1px solid #1f4a2e; }
+.msg-warn { background: #fff4e6; color: #e8590c; font-weight: 600; }
+.tsb-dark .msg-warn { background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid #4a3a12; }
+
+/* ===== 관리자 상황판(전사 상황판) 다크 전용: 상단 핵심지표 카드 + "확인 필요한 직원" 강조 카드 ===== */
+.cc-stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 16px; }
+.cc-stat-card { background: var(--dsti-surface); border: 1px solid var(--dsti-border); border-radius: 16px; padding: 16px 18px; }
+.cc-stat-label { font-size: 12px; color: var(--dsti-text-muted); font-weight: 700; }
+.cc-stat-value { font-size: 26px; font-weight: 800; margin-top: 8px; letter-spacing: -0.01em; color: var(--dsti-text); }
+.cc-stat-value small { font-size: 12px; font-weight: 700; color: var(--dsti-text-faint); margin-left: 4px; }
+.cc-stat-foot { font-size: 11.5px; color: var(--dsti-text-faint); margin-top: 6px; }
+.cc-loc-mini { display: flex; gap: 8px; margin-top: 10px; }
+.cc-loc-mini div { flex: 1; text-align: center; padding: 6px 4px; border-radius: 8px; background: #151c34; }
+.cc-loc-mini .n { font-size: 15px; font-weight: 800; display: block; }
+.cc-loc-mini .l { font-size: 9.5px; color: var(--dsti-text-faint); }
+.cc-section-title { font-size: 13px; font-weight: 800; color: var(--dsti-text-muted); margin: 4px 0 12px; display: flex; align-items: center; gap: 8px; }
+.cc-section-title .cnt { background: #1c2440; color: var(--dsti-text-muted); font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+.cc-alert-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.cc-alert-card { background: var(--dsti-surface); border: 1px solid var(--dsti-border); border-radius: 16px; padding: 14px 16px; border-top: 3px solid var(--cc-accent, #f59e0b); }
+.cc-alert-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cc-alert-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cc-avatar { flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; background: var(--cc-accent, #f59e0b); color: #06101f; font-weight: 800; font-size: 11px; display: flex; align-items: center; justify-content: center; }
+.cc-alert-name .nm { font-size: 14px; font-weight: 800; color: var(--dsti-text); }
+.cc-alert-name .dept { font-size: 11px; color: var(--dsti-text-muted); }
+.cc-alert-flag { flex-shrink: 0; font-size: 10.5px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: rgba(245,158,11,0.15); color: #f59e0b; white-space: nowrap; }
+.cc-alert-flag.red { background: rgba(239,68,68,0.15); color: #ef4444; }
+.cc-alert-flag.gray { background: rgba(148,163,184,0.15); color: #94a3b8; }
+.cc-alert-note { font-size: 11.5px; color: var(--dsti-text-muted); background: #151c34; border-radius: 10px; padding: 8px 10px; margin-top: 10px; line-height: 1.5; }
+

@@ -14,6 +14,10 @@ const NAV_ITEMS = [
 interface Props {
   title: string;
   eyebrow?: string;
+  /** TSB-Ver2.1: 이 헤더가 다크 관제형 테마 화면(현재는 전사 상황판)에 쓰이는 경우 true.
+   * 다른 5개 관리자 화면은 이 prop을 넘기지 않으므로 기존 라이트 헤더 그대로 유지된다 —
+   * CSS도 .tsb-dark .admin-header 로 스코프돼 있어 여기서 클래스만 붙여주면 된다. */
+  dark?: boolean;
 }
 
 /**
@@ -22,7 +26,7 @@ interface Props {
  * 좁은 모바일에서는 글자가 세로로 한 글자씩 찌그러지는 문제가 있었다(줄바꿈이 아예 안 됐음).
  * 지금은 폭이 좁아지면 자연스럽게 다음 줄로 넘어간다.
  */
-export default function AdminHeader({ title, eyebrow = 'DSTI-TSB 관리자' }: Props) {
+export default function AdminHeader({ title, eyebrow = 'DSTI-TSB 관리자', dark = false }: Props) {
   const router = useRouter();
   // 2026-09-01: 승인함에 몇 건이 대기중인지 메뉴에서 바로 보여준다 — 매번 눌러서 들어가보지
   // 않아도 처리할 게 있는지 한눈에 알 수 있게. 승인 권한이 없는 계정(일반 직원)이면 API가
@@ -46,7 +50,7 @@ export default function AdminHeader({ title, eyebrow = 'DSTI-TSB 관리자' }: P
   }
 
   return (
-    <div className="admin-header">
+    <div className={`admin-header${dark ? ' admin-header--dark' : ''}`}>
       <div className="admin-header-brand">
         <span className="admin-header-eyebrow">{eyebrow}</span>
         <h1>{title}</h1>

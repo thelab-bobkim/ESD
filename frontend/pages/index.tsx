@@ -541,10 +541,18 @@ export default function EmployeeHome() {
   }, [weekly]);
   const weeklyOver = weekly ? weekly.totalMinutes > WEEKLY_LIMIT_MINUTES : false;
 
-  if (!me) return <div className="page">불러오는 중...</div>;
+  // TSB-Ver2.1: 사용자 화면을 관리자 화면과 통일된 다크 톤으로 바꾸면서, 페이지 바깥(뷰포트
+  // 좌우 여백)까지 어둡게 보이도록 body에도 클래스를 붙인다(다른 화면엔 영향 없음 — 이 페이지가
+  // 언마운트되면 바로 제거).
+  useEffect(() => {
+    document.body.classList.add('tsb-dark-body');
+    return () => document.body.classList.remove('tsb-dark-body');
+  }, []);
+
+  if (!me) return <div className="page tsb-dark" style={{ minHeight: '100vh' }}>불러오는 중...</div>;
 
   return (
-    <div className="employee-shell">
+    <div className="employee-shell tsb-dark">
       <Head>
         <title>기술부 현황 등록</title>
       </Head>
@@ -612,7 +620,7 @@ export default function EmployeeHome() {
               <span style={{ color: weeklyOver ? '#e03131' : '#2f9e44', fontWeight: 700 }}>{hoursLabel(weekly.totalMinutes)}</span>
             </div>
             <div className="weekly-gauge-track">
-              <div className="weekly-gauge-fill" style={{ width: `${weeklyPct}%`, background: weeklyOver ? '#e03131' : '#2f6feb' }} />
+              <div className="weekly-gauge-fill" style={{ width: `${weeklyPct}%`, background: weeklyOver ? '#e03131' : '#4c8dff' }} />
             </div>
             <div className="weekly-gauge-sub">
               {weeklyOver ? '⚠ 주 52시간을 넘었어요, 컨디션 챙기세요' : `주 52시간 중 ${weeklyPct}% — 스스로 페이스를 확인해보세요`}
@@ -624,7 +632,7 @@ export default function EmployeeHome() {
       <PastDayCorrectionCard rows={pendingCorrections} onSubmitted={refreshMyStatus} />
 
       {arrivedClient && (
-        <div className="card col-full" style={{ background: '#eaf1ff', border: '1px solid #2f6feb' }}>
+        <div className="card col-full notice-tint-blue">
           🚗 <strong>{arrivedClient}</strong>에 도착하신 것 같아요! 어떤 걸로 등록할까요?
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <button style={{ width: 'auto', margin: 0 }} onClick={() => { const c = arrivedClient; setArrivedClient(null); changeStatus('CLIENT_WORK', c); }}>
@@ -645,7 +653,7 @@ export default function EmployeeHome() {
       )}
 
       {showAltDayOffPrompt && (
-        <div className="card col-full" style={{ background: '#eaf1ff', border: '1px solid #2f6feb' }}>
+        <div className="card col-full notice-tint-blue">
           🌙 오늘 저녁 9시 이후 6시간 이상 야간근무 하셨네요! 대체휴무로 전환해두시겠어요? (관리자 승인 후 최종 확정됩니다)
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <button
@@ -665,7 +673,7 @@ export default function EmployeeHome() {
       )}
 
       {lateClockOutSuggestion && (
-        <div className="card col-full" style={{ background: '#fff4e6', border: '1px solid #ffa94d' }}>
+        <div className="card col-full notice-tint-orange">
           🌙 오늘 저녁 근무는 정규 근무시간(18시)까지만 인정되고, 그 이후 <strong>{hoursLabel(lateClockOutSuggestion.overMinutes)}</strong>은 근무시간에 반영되지 않았어요.
           야간작업으로 별도 등록하시겠어요?
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -680,7 +688,7 @@ export default function EmployeeHome() {
       )}
 
       {showHqReturnPrompt && (
-        <div className="card col-full" style={{ background: '#eaf1ff', border: '1px solid #2f6feb' }}>
+        <div className="card col-full notice-tint-blue">
           🏢 본사에 도착하신 것 같아요! 상태를 "본사근무"로 바꾸시겠어요?
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <button
@@ -707,14 +715,7 @@ export default function EmployeeHome() {
       )}
 
       {message && (
-        <div
-          className="card col-full"
-          style={{
-            background: message.startsWith('⚠️') || messageIsError ? '#fff4e6' : '#eef7ee',
-            color: message.startsWith('⚠️') || messageIsError ? '#e8590c' : undefined,
-            fontWeight: message.startsWith('⚠️') || messageIsError ? 600 : undefined,
-          }}
-        >
+        <div className={`card col-full ${message.startsWith('⚠️') || messageIsError ? 'msg-warn' : 'msg-success'}`}>
           {message}
         </div>
       )}
@@ -796,7 +797,7 @@ export default function EmployeeHome() {
                 }}
               />
             )}
-            <div style={{ background: '#fff4e6', border: '1px solid #ffa94d', borderRadius: 8, padding: '10px 12px', marginBottom: 8, fontSize: 13, color: '#c2410c', fontWeight: 600, lineHeight: 1.6 }}>
+            <div className="notice-inline-orange">
               ⚠️ 출근은 자동이에요 — 상태를 누르면 그 순간이 출근시각이 됩니다.
               <span style={{ fontWeight: 400 }}>
                 {' '}"출근" 버튼은 본사 위치가 확인될 때만 처리돼요. 고객사로 바로 가는 날, 출장이나 상주근무인 날은 "출근" 버튼 대신 도착 후 상태를 눌러주세요. 하루를 마치면 꼭 "퇴근"을 눌러야 근무가 확정돼요.
@@ -865,7 +866,7 @@ export default function EmployeeHome() {
           {detailStatus === 'BUSINESS_TRIP' && (
             <div className="card right-col-card">
               <h2>✈️ 출장 등록</h2>
-              <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
+              <p className="hint-box">
                 * 목적지·출발일시·목적은 필수입니다. 복귀예정일시는 몰라도 비워두고 등록 가능합니다.
               </p>
               <label className="field-label">목적지</label>
@@ -900,7 +901,7 @@ export default function EmployeeHome() {
           {detailStatus === 'ON_LEAVE' && (
             <div className="card right-col-card">
               <h2>🌴 휴가 등록</h2>
-              <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
+              <p className="hint-box">
                 * 휴가 시작일·종료일은 필수입니다. 행선지·비상연락처는 남겨두시면 급한 연락에 도움이 됩니다.
               </p>
               <div style={{ display: 'flex', gap: 8 }}>
@@ -925,7 +926,7 @@ export default function EmployeeHome() {
           {detailStatus === 'ALT_DAY_OFF' && (
             <div className="card right-col-card">
               <h2>🏖️ 대체휴무 등록</h2>
-              <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
+              <p className="hint-box">
                 * 대체휴무 사용일은 필수입니다. 여러 날 쓰신다면 종료일도 같이 넣어주세요.
               </p>
               <div style={{ display: 'flex', gap: 8 }}>
@@ -948,7 +949,7 @@ export default function EmployeeHome() {
           {detailStatus === 'MOVING' && (
             <div className="card right-col-card">
               <h2>🚙 이동경로 추가</h2>
-              <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
+              <p className="hint-box">
                 * 어디서 어디로 이동하시는지 남겨주세요. 등록하면 바로 "이동중" 상태로 반영됩니다.
               </p>
               <label className="field-label">출발지</label>
@@ -963,7 +964,7 @@ export default function EmployeeHome() {
           {detailStatus && SIMPLE_CLIENT_STATUSES.has(detailStatus) && (
             <div className="card right-col-card">
               <h2>{STATUS_META[detailStatus].icon} {STATUS_META[detailStatus].label} 등록</h2>
-              <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
+              <p className="hint-box">
                 * {detailStatus === 'REMOTE' ? '어떤 고객을 지원하고 계신지 남겨주세요.' : '어떤 업무로 상주 중이신지 남겨주세요.'} 등록하면 바로 상태가 반영됩니다.
               </p>
               <label className="field-label">{detailStatus === 'REMOTE' ? '지원 고객사' : '고객사명'}</label>
@@ -985,11 +986,11 @@ export default function EmployeeHome() {
             <div className="card right-col-card">
               <h2>{STATUS_META[detailStatus].icon} {detailStatus === 'HQ_WORKING' ? '본사근무 업무일지' : QUICK_REGISTER_STATUSES.has(detailStatus) ? `${STATUS_META[detailStatus].label} 내용 추가` : `${STATUS_META[detailStatus].label} 등록`}</h2>
               {QUICK_REGISTER_STATUSES.has(detailStatus) ? (
-                <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
+                <p className="hint-box">
                   * 이미 '{STATUS_META[detailStatus].label}'(으)로 등록되어 있습니다. 작업이 마무리됐으면 여기서 내용/완료시간을 채워주세요.
                 </p>
               ) : (
-                <p style={{ fontSize: 13, color: '#495057', fontWeight: 500, background: '#f1f3f5', border: '1px solid #dee2e6', borderRadius: 8, padding: '8px 10px', marginTop: -4, marginBottom: 10 }}>
+                <p className="hint-box">
                   * 내용을 입력하고 등록하면 바로 '{STATUS_META[detailStatus].label}' 상태로 반영됩니다. 완료시간은 몰라도(진행중이면) 비워두고 등록 가능합니다.
                 </p>
               )}
@@ -1039,7 +1040,7 @@ export default function EmployeeHome() {
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
               {detailStatus === 'HQ_WORKING' && (
-                <p style={{ fontSize: 12, color: '#868e96', marginTop: -6, marginBottom: 10 }}>
+                <p style={{ fontSize: 12, color: '#6b7594', marginTop: -6, marginBottom: 10 }}>
                   💡 나중에 찾아보기 쉽도록, 오늘 한 일을 구체적으로 적어주세요(예: "무엇을 · 어떤 목적으로 · 어떻게" 순서로).
                 </p>
               )}
@@ -1063,7 +1064,7 @@ export default function EmployeeHome() {
                     <option value="REMOTE">🏠 원격</option>
                   </select>
                   {detailStatus !== 'NIGHT_WORK' && siteType === 'ONSITE' && (
-                    <p style={{ fontSize: 12, color: '#c2410c', marginTop: -6, marginBottom: 10 }}>
+                    <p style={{ fontSize: 12, color: '#fbbf24', marginTop: -6, marginBottom: 10 }}>
                       ⚠️ 현장으로 등록하면, 이 작업을 마지막으로 퇴근할 때 위치 등록이 필수가 됩니다.
                     </p>
                   )}

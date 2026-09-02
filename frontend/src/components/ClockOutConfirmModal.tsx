@@ -68,17 +68,17 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
         display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
       }}
     >
-      <div style={{ background: '#fff', borderRadius: 16, padding: 28, maxWidth: 420, width: '100%' }}>
+      <div style={{ background: '#10162a', color: '#e7ebf5', border: '1px solid #212a45', borderRadius: 16, padding: 28, maxWidth: 420, width: '100%' }}>
         <h2 style={{ marginTop: 0 }}>🏁 퇴근 처리</h2>
-        <p style={{ fontSize: 14, color: '#495057', lineHeight: 1.6 }}>
+        <p style={{ fontSize: 14, color: '#9aa5c3', lineHeight: 1.6 }}>
           지금 퇴근 처리하시겠어요? <strong>현재 시각</strong>이 오늘의 퇴근 시각으로 확정되고,
           출근 이후 <strong>{hoursLabel(elapsedMinutes)}</strong>이 오늘 근무시간으로 기록됩니다.
           한 번 확정하면 본인이 직접 되돌릴 수 없어요.
         </p>
         <div
           style={{
-            background: locationResult === 'checking' ? '#f1f3f5' : locationResult.status === 'OK' ? '#ebfbee' : '#fff4e6',
-            border: `1px solid ${locationResult === 'checking' ? '#dee2e6' : locationResult.status === 'OK' ? '#69db7c' : '#ffa94d'}`,
+            background: locationResult === 'checking' ? '#151c34' : locationResult.status === 'OK' ? 'rgba(34,197,94,0.14)' : 'rgba(245,158,11,0.14)',
+            border: `1px solid ${locationResult === 'checking' ? '#232b45' : locationResult.status === 'OK' ? '#1f4a2e' : '#4a3a12'}`,
             borderRadius: 8, padding: '10px 12px', marginBottom: 16, fontSize: 13, lineHeight: 1.5,
           }}
         >
@@ -92,7 +92,7 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
         </div>
         {isEarlyLeave && (
           <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#e8590c', marginBottom: 6 }}>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#fbbf24', marginBottom: 6 }}>
               ⏱️ 아직 최소 근무시간(8시간) 전이에요 — 조기퇴근 사유를 입력해주세요
             </label>
             <input
@@ -100,12 +100,12 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
               value={earlyLeaveReason}
               onChange={(e) => { setEarlyLeaveReason(e.target.value); setShowEarlyLeaveError(false); }}
               placeholder="예: 병원 진료로 조기퇴근"
-              style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8, border: `1px solid ${showEarlyLeaveError ? '#e03131' : '#dee2e6'}` }}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8, background: '#0d1326', color: '#e7ebf5', border: `1px solid ${showEarlyLeaveError ? '#ef4444' : '#212a45'}` }}
             />
             {showEarlyLeaveError && (
-              <div style={{ fontSize: 12, color: '#e03131', marginTop: 4 }}>사유를 입력해야 조기퇴근으로 확정할 수 있어요.</div>
+              <div style={{ fontSize: 12, color: '#f87171', marginTop: 4 }}>사유를 입력해야 조기퇴근으로 확정할 수 있어요.</div>
             )}
-            <div style={{ fontSize: 11, color: '#adb5bd', marginTop: 4 }}>부족한 시간은 이번 주 누계에 그대로 반영되어, 다른 날 초과근무와 자연스럽게 합산됩니다.</div>
+            <div style={{ fontSize: 11, color: '#6b7594', marginTop: 4 }}>부족한 시간은 이번 주 누계에 그대로 반영되어, 다른 날 초과근무와 자연스럽게 합산됩니다.</div>
           </div>
         )}
         <button disabled={submitting} onClick={handleConfirm}>

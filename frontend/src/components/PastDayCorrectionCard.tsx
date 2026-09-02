@@ -36,9 +36,9 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
 
   if (row.latestRequest?.status === 'PENDING') {
     return (
-      <div style={{ padding: '10px 0', borderTop: '1px solid #ffe8cc' }}>
+      <div style={{ padding: '10px 0', borderTop: '1px solid #4a3a12' }}>
         <strong>{fmtDate(row.workDate)}</strong> — 퇴근 {fmtClock(row.latestRequest.proposedClockOutAt)}(으)로 정정 신청함
-        <div style={{ fontSize: 12, color: '#e8590c', fontWeight: 600 }}>⏳ 승인 대기중이에요. 팀장/관리자 승인 후 반영됩니다.</div>
+        <div style={{ fontSize: 12, color: '#fbbf24', fontWeight: 600 }}>⏳ 승인 대기중이에요. 팀장/관리자 승인 후 반영됩니다.</div>
       </div>
     );
   }
@@ -68,15 +68,15 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
   }
 
   return (
-    <div style={{ padding: '12px 0', borderTop: '1px solid #ffe8cc' }}>
+    <div style={{ padding: '12px 0', borderTop: '1px solid #4a3a12' }}>
       <strong>{fmtDate(row.workDate)}</strong> — 출근 {fmtClock(row.clockInAt)} 이후 퇴근 처리가 안 되어 있어요.
       {row.latestRequest?.status === 'REJECTED' && (
-        <div style={{ fontSize: 12, color: '#e03131', marginTop: 2 }}>
+        <div style={{ fontSize: 12, color: '#f87171', marginTop: 2 }}>
           ↩︎ 이전 신청이 반려되었어요. 시각/사유를 다시 확인해서 재신청해주세요.
         </div>
       )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8, alignItems: 'center' }}>
-        <label style={{ fontSize: 13, color: '#495057' }}>
+        <label style={{ fontSize: 13, color: '#9aa5c3' }}>
           실제 퇴근 시각{' '}
           <input
             type="datetime-local"
@@ -91,7 +91,7 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
         value={reason}
         onChange={(e) => setReason(e.target.value)}
       />
-      {error && <div style={{ color: '#e03131', fontSize: 12, marginTop: 4 }}>{error}</div>}
+      {error && <div style={{ color: '#f87171', fontSize: 12, marginTop: 4 }}>{error}</div>}
       <button style={{ marginTop: 8 }} disabled={submitting} onClick={submit}>
         {submitting ? '신청 중...' : '정정 신청'}
       </button>
@@ -110,10 +110,10 @@ export default function PastDayCorrectionCard({ rows, onSubmitted }: Props) {
   return (
     <div
       className="card"
-      style={{ background: '#fff9db', border: '2px solid #ffa94d', marginBottom: 16 }}
+      style={{ background: 'rgba(245,158,11,0.10)', border: '2px solid #4a3a12', marginBottom: 16 }}
     >
-      <h2 style={{ margin: 0, color: '#c2410c' }}>⚠️ 지난 근무일 퇴근이 확인되지 않았어요</h2>
-      <p style={{ fontSize: 13, color: '#495057', marginTop: 6 }}>
+      <h2 style={{ margin: 0, color: '#fbbf24' }}>⚠️ 지난 근무일 퇴근이 확인되지 않았어요</h2>
+      <p style={{ fontSize: 13, color: '#9aa5c3', marginTop: 6 }}>
         아래 날짜는 출근만 기록되고 퇴근 처리가 안 되어 있어요. 실제 퇴근하신 시각을 입력해 정정
         신청해주세요 — 신청하기 전까지는 오늘의 상태 아이콘(재택/본사근무 등)을 등록할 수 없어요.
       </p>
