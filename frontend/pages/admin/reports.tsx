@@ -294,6 +294,19 @@ export default function AdminReportsPage() {
       }));
   }, [attendanceDetail]);
 
+  // "전체 목록 보기"용 — 부서별 보기와 달리 부서 구분이 없으므로, 다른 화면과 통일되게 이름
+  // 가나다순으로 보여준다(2026-09-02).
+  const attendanceRowsSorted = useMemo(() => {
+    if (!attendanceDetail) return [];
+    return [...attendanceDetail.rows].sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+  }, [attendanceDetail]);
+
+  // 근무시간 누계 표도 동일하게 이름 가나다순으로 통일(2026-09-02).
+  const worktimeRowsSorted = useMemo(() => {
+    if (!worktime) return [];
+    return [...worktime.rows].sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+  }, [worktime]);
+
   const periodSummary = useMemo(() => {
     if (!worktime) return null;
     const total = worktime.rows.length;
@@ -422,7 +435,7 @@ export default function AdminReportsPage() {
                   <tr><th>이름</th><th>부서</th><th>출근</th><th>퇴근</th><th>근무시간</th></tr>
                 </thead>
                 <tbody>
-                  {attendanceDetail.rows.map((r) => (
+                  {attendanceRowsSorted.map((r) => (
                     <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail.date} onClick={() => openTimeline(r.userId, attendanceDetail.date)} onForceClockOut={openForceClockOut} />
                   ))}
                 </tbody>
@@ -470,7 +483,7 @@ export default function AdminReportsPage() {
                   <tr><th>이름</th><th>부서</th><th>누계</th><th>근무일수</th></tr>
                 </thead>
                 <tbody>
-                  {worktime.rows.map((r) => {
+                  {worktimeRowsSorted.map((r) => {
                     const over = period === 'week' && !isCustom && r.totalMinutes > WEEKLY_LIMIT_MINUTES;
                     return (
                       <tr key={r.userId} style={{ cursor: 'pointer' }} onClick={() => openTimeline(r.userId, fmt(new Date()))}>

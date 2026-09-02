@@ -140,7 +140,10 @@ export default function AdminCalendarPage() {
             <div className="board">
               {STATUS_ORDER.map((code) => {
                 const meta = STATUS_META[code];
-                const employees = dayBoard.employees.filter((e) => (e.status && STATUS_META[e.status] ? e.status : 'UNKNOWN') === code);
+                // 2026-09-02: 이름 표시 순서를 다른 화면과 통일 — 가나다순.
+                const employees = dayBoard.employees
+                  .filter((e) => (e.status && STATUS_META[e.status] ? e.status : 'UNKNOWN') === code)
+                  .sort((a, b) => a.name.localeCompare(b.name, 'ko'));
                 if (employees.length === 0) return null;
                 return (
                   <div className="board-column" key={code} style={{ borderTopColor: meta.color }}>

@@ -142,7 +142,7 @@ export default function AdminDashboard() {
 
   const departments = useMemo(() => {
     const set = new Set((board?.employees ?? []).map((e) => e.department));
-    return Array.from(set).sort();
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'ko'));
   }, [board]);
 
   const filteredEmployees = useMemo(() => {
@@ -152,7 +152,9 @@ export default function AdminDashboard() {
       const q = search.trim().toLowerCase();
       list = list.filter((e) => e.name.toLowerCase().includes(q));
     }
-    return list;
+    // 2026-09-02: 이름 표시 순서를 전 화면에서 통일 — 가나다순으로 정렬한다.
+    // (이 목록을 원본으로 삼는 상태별 보드/확인 필요 카드 등도 순서를 그대로 물려받는다.)
+    return [...list].sort((a, b) => a.name.localeCompare(b.name, 'ko'));
   }, [board, deptFilter, search]);
 
   const grouped = useMemo(() => {

@@ -225,7 +225,8 @@ export default function AdminEffortPage() {
                       </span>
                       <span className="count">{hoursLabel(row.totalMinutes)}</span>
                     </div>
-                    {isProjectExpanded && row.byUser.map((u) => (
+                    {/* 2026-09-02: 이름 표시 순서를 다른 화면과 통일 — 가나다순. */}
+                    {isProjectExpanded && [...row.byUser].sort((a, b) => a.name.localeCompare(b.name, 'ko')).map((u) => (
                       <div className="employee-chip" key={u.userId} style={{ margin: '0 10px 8px' }}>
                         <div className="chip-row">
                           <div className="chip-avatar" style={{ background: '#2f6feb' }}>{u.name.slice(-2)}</div>
