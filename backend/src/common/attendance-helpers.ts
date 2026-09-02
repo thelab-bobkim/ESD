@@ -97,3 +97,70 @@ export async function applyAttendanceCorrection(correctionRequestId: string) {
 
   return { updatedRecord, totalWorkedMinutes, correction };
 }
+
+// 물리적으로 다른 장소를 오가는 상태들 — "이동중"을 명시적으로 찍지 않고 바로 다음 장소 상태로
+// 넘어간 경우, 이 상태들 사이의 구간에서만 이동시간을 자동으로 추정한다. 재택/야간작업/출장/
+// 대체휴무 등은 물리적 이동 대상이 아니라 제외한다(2026-09-06).
+const LOCATION_TIED_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_WORK', 'CLIENT_MEETING']);
+
+export interface RawStatusLog { status: string; changedAt: Date; note: string | null; }
+export interface TimelineSegment {
+  status: string; changedAt: Date; note: string | null; durationMinutes: number; ongoing: boolean;
+  // 본인이 실제로 찍은 기록이 아니라, 이동시간 미기록 구간에서 시스템이 자동으로 떼어낸 추정치인지 여부.
+  estimated?: boolean;
+}
+
+/**
+ * 하루치 상태변경 로그를 순서대로 훑어서 구간별 소요시간을 계산한다. 좌표를 저장하지 않는 설계상
+ * (core_principles) 실제 이동경로/이동시간은 알 수 없으므로, 직원이 "이동중"을 안 찍고 바로 다음
+ * 장소(본사/고객사) 상태로 넘어간 구간에 한해 정책값(DEFAULT_TRAVEL_MINUTES, 기본 30분)만큼을
+ * 그 구간 끝에서 "이동(자동추정)"으로 떼어내고 나머지를 원래 상태의 실제 시간으로 계산한다.
+ * 2026-09-06: 직원들이 바빠서 이동중 상태를 잘 안 찍다 보니 이동시간이 근무시간에 섞여 들어가고
+ * 공수 산정이 부정확해진다는 요청으로 추가 — 대략치라도 이동시간이 아예 0으로 잡히는 것보다는
+ * 공수 산정에 훨씬 가깝다는 판단(사용자 확인 완료).
+ */
+export function computeTimelineSegments(
+  logs: RawStatusLog[],
+  recordClockOutAt: Date | null,
+  defaultTravelMinutes: number
+): { segments: TimelineSegment[]; totalTravelMinutes: number; hasEstimatedTravel: boolean } {
+  const segments: TimelineSegment[] = [];
+  let totalTravelMinutes = 0;
+  let hasEstimatedTravel = false;
+
+  for (let i = 0; i < logs.length; i++) {
+    const log = logs[i];
+    const next = logs[i + 1] ?? null;
+    const nextChangedAt: Date | null = next?.changedAt ?? recordClockOutAt ?? null;
+    const ongoing = !nextChangedAt;
+    const endTime = nextChangedAt ?? new Date();
+    const gapMinutes = Math.max(0, Math.round((endTime.getTime() - log.changedAt.getTime()) / 60000));
+
+    const shouldInferTravel = !ongoing && next !== null
+      && LOCATION_TIED_STATUSES.has(log.status) && LOCATION_TIED_STATUSES.has(next.status)
+      && gapMinutes > 0;
+    const inferredTravel = shouldInferTravel ? Math.min(defaultTravelMinutes, gapMinutes) : 0;
+
+    segments.push({ status: log.status, changedAt: log.changedAt, note: log.note, durationMinutes: gapMinutes - inferredTravel, ongoing });
+
+    if (inferredTravel > 0) {
+      segments.push({
+        status: 'MOVING',
+        changedAt: new Date(endTime.getTime() - inferredTravel * 60000),
+        note: null,
+        durationMinutes: inferredTravel,
+        ongoing: false,
+        estimated: true,
+      });
+      totalTravelMinutes += inferredTravel;
+      hasEstimatedTravel = true;
+    }
+  }
+
+  // 본인이 직접 찍은 "이동중" 구간(자동추정이 아닌)도 이동시간 합계에 포함한다.
+  totalTravelMinutes += segments
+    .filter((s) => s.status === 'MOVING' && !s.estimated && !s.ongoing)
+    .reduce((sum, s) => sum + s.durationMinutes, 0);
+
+  return { segments, totalTravelMinutes, hasEstimatedTravel };
+}

@@ -2,8 +2,9 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
-import { realDayWindow } from '../../common/attendance-helpers';
+import { realDayWindow, computeTimelineSegments } from '../../common/attendance-helpers';
 import { recordAuditLog } from '../../common/audit';
+import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN', 'TEAM_LEAD'));
@@ -252,21 +253,48 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
     include: { user: { include: { department: true } } },
     orderBy: { clockInAt: 'asc' },
   });
-  const rows = records.map((r) => ({
-    recordId: r.id,
-    userId: r.userId,
-    employeeNo: r.user.employeeNo,
-    name: r.user.name,
-    department: r.user.department.name,
-    clockInAt: r.clockInAt,
-    clockOutAt: r.clockOutAt,
-    clockOutLocation: r.clockOutLocation,
-    totalWorkedMinutes: r.totalWorkedMinutes,
-    // 정정(관리자 강제확정/위치이탈 자동감지 확정 포함)된 기록인지 — 관리자 화면에서 "정정됨" 배지와
-    // 사유(추정시각 vs 실제 등)를 보여주는 데 쓴다.
-    isCorrected: r.isCorrected,
-    correctionReason: r.correctionReason,
-  }));
+
+  // 이 날짜의 이동시간(자동추정 포함)을 각 직원별로 계산하기 위해, 전 직원의 상태변경 로그를
+  // 한 번에 불러와서 userId로 묶는다(직원마다 따로 조회하지 않도록).
+  const { start: dayStart, end: dayEnd } = realDayWindow(workDate);
+  const dayLogs = await prisma.statusChangeLog.findMany({
+    where: { changedAt: { gte: dayStart, lt: dayEnd }, userId: { in: records.map((r) => r.userId) } },
+    orderBy: { changedAt: 'asc' },
+    select: { userId: true, status: true, changedAt: true, note: true },
+  });
+  const logsByUser = new Map<string, typeof dayLogs>();
+  for (const log of dayLogs) {
+    const arr = logsByUser.get(log.userId);
+    if (arr) arr.push(log);
+    else logsByUser.set(log.userId, [log]);
+  }
+  const defaultTravelMinutes = await getPolicyNumber('DEFAULT_TRAVEL_MINUTES', 30);
+
+  const rows = records.map((r) => {
+    const { totalTravelMinutes, hasEstimatedTravel } = computeTimelineSegments(
+      logsByUser.get(r.userId) ?? [],
+      r.clockOutAt,
+      defaultTravelMinutes
+    );
+    return {
+      recordId: r.id,
+      userId: r.userId,
+      employeeNo: r.user.employeeNo,
+      name: r.user.name,
+      department: r.user.department.name,
+      clockInAt: r.clockInAt,
+      clockOutAt: r.clockOutAt,
+      clockOutLocation: r.clockOutLocation,
+      totalWorkedMinutes: r.totalWorkedMinutes,
+      // 정정(관리자 강제확정/위치이탈 자동감지 확정 포함)된 기록인지 — 관리자 화면에서 "정정됨" 배지와
+      // 사유(추정시각 vs 실제 등)를 보여주는 데 쓴다.
+      isCorrected: r.isCorrected,
+      correctionReason: r.correctionReason,
+      // 이동시간(공수 산정용) — 본인이 "이동중"으로 직접 찍은 시간 + 미기록 구간 자동추정치의 합.
+      travelMinutes: totalTravelMinutes,
+      travelHasEstimate: hasEstimatedTravel,
+    };
+  });
   return res.json({ success: true, data: { date: parsed.data.date, rows } });
 });
 
@@ -299,19 +327,8 @@ reportsRouter.get('/daily-timeline', async (req, res) => {
     orderBy: { changedAt: 'asc' },
   });
 
-  const timeline = logs.map((log, i) => {
-    const nextChangedAt: Date | null = logs[i + 1]?.changedAt ?? record?.clockOutAt ?? null;
-    const isOngoing = !nextChangedAt;
-    const endTime = nextChangedAt ?? new Date();
-    const durationMinutes = Math.max(0, Math.round((endTime.getTime() - log.changedAt.getTime()) / 60000));
-    return {
-      status: log.status,
-      changedAt: log.changedAt,
-      note: log.note,
-      durationMinutes,
-      ongoing: isOngoing,
-    };
-  });
+  const defaultTravelMinutes = await getPolicyNumber('DEFAULT_TRAVEL_MINUTES', 30);
+  const { segments: timeline, totalTravelMinutes } = computeTimelineSegments(logs, record?.clockOutAt ?? null, defaultTravelMinutes);
 
   return res.json({
     success: true,
@@ -323,6 +340,7 @@ reportsRouter.get('/daily-timeline', async (req, res) => {
       clockOutAt: record?.clockOutAt ?? null,
       clockOutLocation: record?.clockOutLocation ?? null,
       totalWorkedMinutes: record?.totalWorkedMinutes ?? null,
+      totalTravelMinutes,
       timeline,
     },
   });

@@ -31,13 +31,21 @@ interface AttendanceDetailRow {
   recordId: string; userId: string; employeeNo: string; name: string; department: string;
   clockInAt: string | null; clockOutAt: string | null; clockOutLocation: string | null; totalWorkedMinutes: number | null;
   isCorrected: boolean; correctionReason: string | null;
+  // 이동시간(공수 산정용) — 본인이 "이동중"으로 직접 찍은 시간 + 미기록 구간 자동추정치의 합.
+  // travelHasEstimate는 그중 일부가 자동추정인지(=실제로 이동중을 안 찍은 구간이 있었는지) 표시한다.
+  travelMinutes: number; travelHasEstimate: boolean;
 }
 interface AttendanceDetail { date: string; rows: AttendanceDetailRow[]; }
 
-interface TimelineEntry { status: string; changedAt: string; note: string | null; durationMinutes: number; ongoing: boolean; }
+interface TimelineEntry {
+  status: string; changedAt: string; note: string | null; durationMinutes: number; ongoing: boolean;
+  // true면 본인이 직접 찍은 기록이 아니라, 이동중 미기록 구간에서 자동으로 떼어낸 추정치.
+  estimated?: boolean;
+}
 interface DailyTimeline {
   date: string; name: string; department: string;
   clockInAt: string | null; clockOutAt: string | null; clockOutLocation: string | null; totalWorkedMinutes: number | null;
+  totalTravelMinutes: number;
   timeline: TimelineEntry[];
 }
 
@@ -134,6 +142,20 @@ function AttendanceRowTr({
       </td>
       {!hideDept && <td>{r.department}</td>}
       <td>{fmtTime(r.clockInAt)}</td>
+      <td>
+        {r.travelMinutes > 0 ? (
+          <>
+            {hoursLabel(r.travelMinutes)}
+            {r.travelHasEstimate && (
+              <div style={{ fontSize: 11, color: '#1c7ed6' }} title="이동중 상태를 직접 찍지 않은 구간이 있어 일부는 자동추정치입니다.">
+                🚙 자동추정 포함
+              </div>
+            )}
+          </>
+        ) : (
+          '-'
+        )}
+      </td>
       <td>
         {r.clockOutAt ? (
           <>
@@ -443,7 +465,7 @@ export default function AdminReportsPage() {
             <div className="table-scroll">
               <table>
                 <thead>
-                  <tr><th>이름</th><th>부서</th><th>출근</th><th>퇴근</th><th>근무시간</th></tr>
+                  <tr><th>이름</th><th>부서</th><th>출근</th><th>이동</th><th>퇴근</th><th>근무시간</th></tr>
                 </thead>
                 <tbody>
                   {attendanceRowsSorted.map((r) => (
@@ -462,7 +484,7 @@ export default function AdminReportsPage() {
               <div className="table-scroll">
                 <table>
                   <thead>
-                    <tr><th>이름</th><th>출근</th><th>퇴근</th><th>근무시간</th></tr>
+                    <tr><th>이름</th><th>출근</th><th>이동</th><th>퇴근</th><th>근무시간</th></tr>
                   </thead>
                   <tbody>
                     {rows.map((r) => (
@@ -530,6 +552,7 @@ export default function AdminReportsPage() {
                 <p style={{ fontSize: 13, color: '#495057' }}>
                   {timeline.department} · 출근 {fmtTime(timeline.clockInAt)} · 퇴근 {timeline.clockOutAt ? fmtTime(timeline.clockOutAt) : '진행중'}
                   {timeline.totalWorkedMinutes != null && ` · 근무시간 ${hoursLabel(timeline.totalWorkedMinutes)}`}
+                  {timeline.totalTravelMinutes > 0 && ` · 🚙 이동시간 ${hoursLabel(timeline.totalTravelMinutes)}`}
                   {timeline.clockOutLocation && ` · 📍 ${timeline.clockOutLocation}`}
                 </p>
                 {timeline.timeline.length === 0 && <div className="board-empty">이 날짜에 등록된 상태 변경이 없습니다.</div>}
@@ -540,7 +563,14 @@ export default function AdminReportsPage() {
                       <div style={{ fontSize: 20 }}>{meta.icon}</div>
                       <div style={{ flex: 1 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <strong style={{ color: meta.color }}>{meta.label}</strong>
+                          <strong style={{ color: meta.color }}>
+                            {meta.label}
+                            {t.estimated && (
+                              <span style={{ fontSize: 11, color: '#1c7ed6', fontWeight: 400, marginLeft: 6 }} title="이동중 상태를 직접 찍지 않아 시스템이 정책 기본값만큼 자동으로 떼어낸 추정치입니다.">
+                                (자동추정)
+                              </span>
+                            )}
+                          </strong>
                           <span style={{ fontSize: 13, color: '#495057' }}>
                             {fmtTime(t.changedAt)} · {t.ongoing ? <span style={{ color: '#f08c00' }}>진행중</span> : hoursLabel(t.durationMinutes)}
                           </span>
