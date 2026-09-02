@@ -262,6 +262,10 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
     clockOutAt: r.clockOutAt,
     clockOutLocation: r.clockOutLocation,
     totalWorkedMinutes: r.totalWorkedMinutes,
+    // 정정(관리자 강제확정/위치이탈 자동감지 확정 포함)된 기록인지 — 관리자 화면에서 "정정됨" 배지와
+    // 사유(추정시각 vs 실제 등)를 보여주는 데 쓴다.
+    isCorrected: r.isCorrected,
+    correctionReason: r.correctionReason,
   }));
   return res.json({ success: true, data: { date: parsed.data.date, rows } });
 });

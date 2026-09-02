@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow } from '../../common/attendance-helpers';
+import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
 import { checkLocationMatch } from '../../common/location';
 import { getPolicyNumber, getPolicyString } from '../../common/policy-engine/policy-engine';
@@ -18,6 +18,28 @@ attendanceRouter.use(requireAuth);
 const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP', 'REMOTE']);
 // 이 상태는 프로젝트별 공수(工數) 기록 대상이다. REMOTE도 고객사작업과 동일하게 추적한다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE']);
+
+// 위치이탈 자동감지(/departure-suggest, 2026-09-04)가 만든 제안임을 구분하는 표시 — 이 문자열로
+// 시작하는 reason만 본인이 직접 확정/취소할 수 있다. 직원이 직접 신청한 지난 근무일 정정 요청은
+// 이 표시가 없으므로 여전히 반드시 담당자 승인을 거쳐야 한다("본인 확인 없이 시스템이 임의로
+// 근태를 확정하지 않는다"는 이 앱의 원칙 — attendance-correction.routes.ts 참고).
+const AUTO_DEPARTURE_REASON_PREFIX = '[위치 자동감지]';
+
+/** 위치이탈 자동감지가 만들어둔 대기중 제안이 있으면 취소(반려)한다 — 정상 퇴근 처리 시 정리용. */
+async function cancelPendingAutoDepartureSuggestion(attendanceRecordId: string, actorUserId: string, comment: string) {
+  const pending = await prisma.attendanceCorrectionRequest.findFirst({
+    where: { attendanceRecordId, status: 'PENDING', reason: { startsWith: AUTO_DEPARTURE_REASON_PREFIX } },
+  });
+  if (!pending) return;
+  await prisma.attendanceCorrectionRequest.update({ where: { id: pending.id }, data: { status: 'REJECTED' } });
+  const approvalRequest = await prisma.approvalRequest.findUnique({ where: { attendanceCorrectionRequestId: pending.id } });
+  if (approvalRequest && approvalRequest.status === 'PENDING') {
+    await prisma.approvalRequest.update({
+      where: { id: approvalRequest.id },
+      data: { status: 'REJECTED', approverId: actorUserId, decidedAt: new Date(), comment },
+    });
+  }
+}
 
 /** 출근 처리(수동) — 위 자동인식 대상이 아닌 경우를 위한 수동 버튼 */
 attendanceRouter.post('/clock-in', async (req, res) => {
@@ -242,6 +264,10 @@ attendanceRouter.post('/clock-out', async (req, res) => {
       ...(earlyLeaveReason ? { earlyLeaveReason } : {}),
     },
   });
+
+  // "퇴근" 버튼으로 정상 처리됐으니, 혹시 위치이탈 자동감지가 미리 만들어둔 대기중 제안(있다면)은
+  // 더 이상 의미가 없다 — 승인함에 오탐(false positive)으로 남지 않도록 같이 정리한다.
+  await cancelPendingAutoDepartureSuggestion(existing.id, userId, '본인이 정상적으로 "퇴근" 버튼을 눌러 처리됨');
 
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes, lateClockOutOverMinutes } });
 
@@ -609,6 +635,127 @@ attendanceRouter.post('/status/undo', async (req, res) => {
   return res.json({ success: true, data: { undone: true } });
 });
 
+// 마지막 근무위치(본사/고객사)를 30분 이상 벗어난 게 프론트에서 감지되면 이 세 엔드포인트를 쓴다.
+// "시스템이 임의로 근태를 확정하지 않는다" 원칙을 지키기 위해, 자동감지는 항상 지난 근무일 정정
+// 신청과 같은 승인 큐에 "제안"만 만들어두고, 실제 반영은 (1) 본인이 그 자리에서 확인하거나
+// (2) 본인이 확인하지 않으면 담당자가 승인함에서 검토해야만 이뤄진다.
+
+const departureSuggestSchema = z.object({
+  estimatedClockOutAt: z.string().min(1),
+});
+
+/** 위치이탈이 30분 이상 이어졌을 때, 대기중인 퇴근시각 "제안"을 만든다(중복 호출은 기존 것을 그대로 반환). */
+attendanceRouter.post('/departure-suggest', async (req, res) => {
+  const parsed = departureSuggestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '요청 형식을 확인하세요.' } });
+  }
+  const userId = req.authUser!.userId;
+  const estimatedClockOutAt = new Date(parsed.data.estimatedClockOutAt);
+  if (Number.isNaN(estimatedClockOutAt.getTime())) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '추정 퇴근시각 형식이 올바르지 않습니다.' } });
+  }
+
+  const workDate = todayDateOnly();
+  const record = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate } } });
+  if (!record || !record.clockInAt) {
+    return res.status(400).json({ success: false, error: { code: 'NOT_CLOCKED_IN', message: '출근 기록이 없습니다.' } });
+  }
+  if (record.clockOutAt) {
+    return res.status(400).json({ success: false, error: { code: 'ALREADY_CLOCKED_OUT', message: '이미 퇴근 처리되었습니다.' } });
+  }
+  if (estimatedClockOutAt <= record.clockInAt) {
+    return res.status(400).json({ success: false, error: { code: 'OUT_OF_RANGE', message: '추정 퇴근시각이 출근시각보다 앞섭니다.' } });
+  }
+
+  // 이미 오늘 만들어둔 대기중 자동감지 제안이 있으면 새로 만들지 않고 그대로 재사용한다.
+  const existing = await prisma.attendanceCorrectionRequest.findFirst({
+    where: { attendanceRecordId: record.id, status: 'PENDING', reason: { startsWith: AUTO_DEPARTURE_REASON_PREFIX } },
+  });
+  if (existing) {
+    return res.json({ success: true, data: { correctionRequestId: existing.id, proposedClockOutAt: existing.proposedClockOutAt } });
+  }
+
+  const hhmm = estimatedClockOutAt.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });
+  const reason = `${AUTO_DEPARTURE_REASON_PREFIX} 마지막 근무위치에서 30분 이상 벗어난 것으로 감지되어 ${hhmm} 퇴근으로 제안되었습니다. 본인이 확인하면 바로 확정되고, 확인하지 않으면 담당자가 승인/반려할 수 있습니다.`;
+
+  const correction = await prisma.attendanceCorrectionRequest.create({
+    data: { userId, attendanceRecordId: record.id, proposedClockOutAt: estimatedClockOutAt, reason },
+  });
+  await prisma.approvalRequest.create({
+    data: { type: 'ATTENDANCE_CORRECTION', referenceId: correction.id, requesterId: userId, attendanceCorrectionRequestId: correction.id },
+  });
+
+  await recordAuditLog({
+    actorUserId: userId,
+    actionType: 'STATUS_CHANGE',
+    targetType: 'attendance_correction_request',
+    targetId: correction.id,
+    afterValue: { autoDetected: true, proposedClockOutAt: estimatedClockOutAt },
+  });
+
+  return res.json({ success: true, data: { correctionRequestId: correction.id, proposedClockOutAt: correction.proposedClockOutAt } });
+});
+
+const departureRequestIdSchema = z.object({ correctionRequestId: z.string().min(1) });
+
+/** 자동감지 제안을 본인이 그 자리에서 확인하고 즉시 확정한다(관리자 승인 없이도 가능 — 본인 확인이므로). */
+attendanceRouter.post('/departure-suggest/confirm', async (req, res) => {
+  const parsed = departureRequestIdSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '요청 형식을 확인하세요.' } });
+  }
+  const userId = req.authUser!.userId;
+  const correction = await prisma.attendanceCorrectionRequest.findUnique({ where: { id: parsed.data.correctionRequestId } });
+  if (!correction || correction.userId !== userId || !correction.reason.startsWith(AUTO_DEPARTURE_REASON_PREFIX)) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '요청을 찾을 수 없습니다.' } });
+  }
+  if (correction.status !== 'PENDING') {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: '이미 처리된 요청입니다.' } });
+  }
+
+  const applied = await applyAttendanceCorrection(correction.id);
+  if (!applied) {
+    return res.status(400).json({ success: false, error: { code: 'APPLY_FAILED', message: '처리할 수 없습니다.' } });
+  }
+
+  const approvalRequest = await prisma.approvalRequest.findUnique({ where: { attendanceCorrectionRequestId: correction.id } });
+  if (approvalRequest && approvalRequest.status === 'PENDING') {
+    await prisma.approvalRequest.update({
+      where: { id: approvalRequest.id },
+      data: { status: 'APPROVED', approverId: userId, decidedAt: new Date(), comment: '본인이 위치 이탈을 확인하고 직접 확정함' },
+    });
+  }
+
+  await recordAuditLog({
+    actorUserId: userId,
+    actionType: 'CORRECT',
+    targetType: 'attendance_record',
+    targetId: applied.updatedRecord.id,
+    afterValue: { clockOutAt: applied.updatedRecord.clockOutAt, totalWorkedMinutes: applied.totalWorkedMinutes, selfConfirmed: true },
+  });
+
+  return res.json({ success: true, data: applied.updatedRecord });
+});
+
+/** "아직 근무중이에요" — 오탐이었다고 본인이 알려주면 대기중 제안을 취소(반려)한다. */
+attendanceRouter.post('/departure-suggest/dismiss', async (req, res) => {
+  const parsed = departureRequestIdSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '요청 형식을 확인하세요.' } });
+  }
+  const userId = req.authUser!.userId;
+  const correction = await prisma.attendanceCorrectionRequest.findUnique({ where: { id: parsed.data.correctionRequestId } });
+  if (!correction || correction.userId !== userId || !correction.reason.startsWith(AUTO_DEPARTURE_REASON_PREFIX)) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '요청을 찾을 수 없습니다.' } });
+  }
+  if (correction.status !== 'PENDING') {
+    return res.json({ success: true, data: { alreadyResolved: true } });
+  }
+  await cancelPendingAutoDepartureSuggestion(correction.attendanceRecordId, userId, '본인이 오탐(아직 근무중)으로 확인함');
+  return res.json({ success: true, data: { dismissed: true } });
+});
+
 /** 본인 오늘 근태 조회 (상태는 "오늘" 것만 — 며칠 지난 상태를 현재처럼 보여주지 않는다) */
 attendanceRouter.get('/me', async (req, res) => {
   const userId = req.authUser!.userId;
@@ -622,7 +769,15 @@ attendanceRouter.get('/me', async (req, res) => {
     where: { userId, changedAt: { gte: dayStartReal, lt: dayEndReal } },
     orderBy: { changedAt: 'desc' },
   });
-  return res.json({ success: true, data: { record, latestStatus } });
+  // 위치이탈 자동감지(프론트)가 "지금 근무중인 고객사"의 좌표를 찾는 데 쓴다 — 고객사작업/미팅의
+  // 고객사명은 note 자유서술 안에만 있어서, 같은 시점에 남긴 공수기록에서 따로 가져와 알려준다.
+  const latestEffort = (latestStatus && EFFORT_STATUSES.has(latestStatus.status))
+    ? await prisma.effortLog.findFirst({ where: { userId, workDate }, orderBy: { startTime: 'desc' } })
+    : null;
+  return res.json({
+    success: true,
+    data: { record, latestStatus, latestEffort: latestEffort ? { clientName: latestEffort.clientName } : null },
+  });
 });
 
 /**

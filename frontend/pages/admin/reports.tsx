@@ -30,6 +30,7 @@ interface WorktimeSummary { from: string; to: string; rows: WorktimeRow[]; }
 interface AttendanceDetailRow {
   recordId: string; userId: string; employeeNo: string; name: string; department: string;
   clockInAt: string | null; clockOutAt: string | null; clockOutLocation: string | null; totalWorkedMinutes: number | null;
+  isCorrected: boolean; correctionReason: string | null;
 }
 interface AttendanceDetail { date: string; rows: AttendanceDetailRow[]; }
 
@@ -137,6 +138,16 @@ function AttendanceRowTr({
         {r.clockOutAt ? (
           <>
             {fmtTime(r.clockOutAt)}
+            {r.isCorrected && r.correctionReason && (
+              // 강제확정(관리자)/위치이탈 자동감지 확정 등으로 정정된 기록임을 배지로 표시 —
+              // 사유(추정시각 등 원래 제안 내용)는 마우스를 올리면 툴팁으로 확인할 수 있다.
+              <div
+                style={{ fontSize: 11, color: '#e8590c', fontWeight: 600, marginTop: 2, cursor: 'help' }}
+                title={r.correctionReason}
+              >
+                ✏️ 정정됨
+              </div>
+            )}
             {r.clockOutLocation && <div style={{ fontSize: 11, color: '#868e96' }}>📍 {r.clockOutLocation}</div>}
           </>
         ) : isPastDayUnresolved ? (

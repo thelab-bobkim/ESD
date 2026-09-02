@@ -61,3 +61,39 @@ export function resolveEndTime(startTime: Date, endTime: Date): Date {
   if (endTime.getTime() >= startTime.getTime()) return endTime;
   return new Date(endTime.getTime() + 24 * 60 * 60 * 1000);
 }
+
+/**
+ * 퇴근 정정 신청(AttendanceCorrectionRequest)을 실제 근태 기록에 반영한다 — approval.routes.ts의
+ * 관리자 승인 처리와 attendance.routes.ts의 "위치이탈 자동감지 → 본인 확인" 자기확정 처리가 완전히
+ * 같은 계산식을 쓰도록 여기 하나로 모았다(둘이 따로 구현되면 나중에 한쪽만 고치는 사고가 나기 쉬움).
+ * 신청이 없거나 이미 출근기록 자체가 없으면 null을 반환하고 아무것도 바꾸지 않는다.
+ */
+export async function applyAttendanceCorrection(correctionRequestId: string) {
+  const correction = await prisma.attendanceCorrectionRequest.findUnique({
+    where: { id: correctionRequestId },
+    include: { attendanceRecord: { include: { breakSessions: true } } },
+  });
+  if (!correction || !correction.attendanceRecord.clockInAt) return null;
+
+  const clockInAt = correction.attendanceRecord.clockInAt;
+  const targetRecord = correction.attendanceRecord;
+  const totalBreakMinutes = targetRecord.breakSessions.reduce((sum, b) => {
+    if (!b.endAt) return sum;
+    return sum + Math.round((b.endAt.getTime() - b.startAt.getTime()) / 60000);
+  }, 0);
+  const grossMinutes = Math.round((correction.proposedClockOutAt.getTime() - clockInAt.getTime()) / 60000);
+  const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes);
+
+  const updatedRecord = await prisma.attendanceRecord.update({
+    where: { id: targetRecord.id },
+    data: {
+      clockOutAt: correction.proposedClockOutAt,
+      totalWorkedMinutes,
+      isCorrected: true,
+      correctionReason: correction.reason,
+    },
+  });
+  await prisma.attendanceCorrectionRequest.update({ where: { id: correction.id }, data: { status: 'APPROVED' } });
+
+  return { updatedRecord, totalWorkedMinutes, correction };
+}

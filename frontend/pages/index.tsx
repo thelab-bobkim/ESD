@@ -63,12 +63,19 @@ const WEEKLY_LIMIT_MINUTES = 52 * 60;
 // 상태 아이콘을 잘못 눌렀을 때 흔적 없이 취소할 수 있는 "되돌리기" 허용 시간(2026-09-04) —
 // 백엔드 /attendance/status/undo 의 UNDO_WINDOW_MS와 반드시 같은 값을 유지해야 한다.
 const UNDO_WINDOW_MS = 10 * 60 * 1000;
+// 마지막 근무위치(본사/고객사)를 이만큼 계속 벗어나 있으면 퇴근 제안을 만든다(2026-09-04).
+const DEPARTURE_AWAY_THRESHOLD_MS = 30 * 60 * 1000;
 
 interface MeResponse {
   name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null; mustChangePassword: boolean; locationConsentGiven: boolean; privacyConsentGiven: boolean;
 }
 interface StatusLog { status: string; changedAt: string; source: string; note: string | null; }
-interface MeAttendance { record: { clockInAt: string | null; clockOutAt: string | null } | null; latestStatus: StatusLog | null; }
+interface MeAttendance {
+  record: { clockInAt: string | null; clockOutAt: string | null } | null;
+  latestStatus: StatusLog | null;
+  // 고객사작업/미팅 중일 때만 채워진다 — 위치이탈 자동감지가 "지금 근무중인 고객사"를 알아내는 데 쓴다.
+  latestEffort: { clientName: string } | null;
+}
 interface WeeklySummary { from: string; to: string; totalMinutes: number; days: number; }
 
 function nowHHMM(): string {
@@ -112,6 +119,17 @@ function fmtClock(iso: string): string {
   return new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 }
 
+/** 상태 note 안 자유서술 고객사명과 등록된 고객사 목록을 느슨하게(부분일치, 양방향) 매칭한다 —
+ * 백엔드가 위치대조에 쓰는 매칭 방식과 같은 원칙(attendance.routes.ts LOCATION_CHECK_STATUSES 참고). */
+function findClientCoords(
+  clientLocations: { name: string; latitude: number; longitude: number }[],
+  name: string | null | undefined
+): { latitude: number; longitude: number } | null {
+  const trimmed = name?.trim();
+  if (!trimmed) return null;
+  return clientLocations.find((c) => c.name.includes(trimmed) || trimmed.includes(c.name)) ?? null;
+}
+
 function hoursLabel(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
@@ -128,7 +146,13 @@ export default function EmployeeHome() {
   const [clientLocations, setClientLocations] = useState<{ name: string; latitude: number; longitude: number }[]>([]);
   const [arrivedClient, setArrivedClient] = useState<string | null>(null);
   const hqPromptSnoozedUntilRef = useRef(0);
-  const clientPromptSnoozedUntilRef = useRef(0);  const [message, setMessage] = useState<string | null>(null);
+  const clientPromptSnoozedUntilRef = useRef(0);
+  // 마지막 근무위치(본사/고객사) 이탈 감지용 — 계속 벗어나 있는 시간을 재기 위한 시작시각과,
+  // "아직 근무중이에요"로 오탐 처리했을 때 잠시 다시 안 물어보게 하는 스누즈 시각.
+  const departureAwaySinceRef = useRef<{ anchorKey: string; since: number } | null>(null);
+  const departureSnoozedUntilRef = useRef(0);
+  const [departureSuggestion, setDepartureSuggestion] = useState<{ correctionRequestId: string; estimatedAt: string } | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [messageIsError, setMessageIsError] = useState(false);
   const [myStatus, setMyStatus] = useState<MeAttendance | null>(null);
   const currentStatus = myStatus?.latestStatus;
@@ -260,29 +284,84 @@ export default function EmployeeHome() {
       .catch(() => {});
   }, []);
 
-  // 5분마다 위치를 확인해서, 본사 근처인데 아직 "본사근무"가 아니면 복귀 알림을 띄운다.
-  // 위치는 이 순간에만 잠깐 확인하고 서버로 보내지 않으며(브라우저 안에서만 거리 계산), 강제로 상태를
-  // 바꾸지 않고 직원이 직접 확인 버튼을 눌러야 상태가 바뀐다.
+  // 이 상태들은 이미 "고객사에 있다"고 등록된 상태라, 고객사 도착 제안이나 이탈 감지를 또 띄울
+  // 필요가 없다(대체휴무/휴가도 근무중이 아니니 당연히 제외).
+  const CLIENT_PROMPT_SKIP_STATUSES = new Set(['CLIENT_WORK', 'CLIENT_MEETING', 'RESIDENT_ONSITE', 'ON_LEAVE', 'ALT_DAY_OFF']);
+
+  // 5분마다 위치를 확인해서 (1) 본사/고객사 근처인데 아직 그 상태가 아니면 등록 제안을, (2) 반대로
+  // 마지막 근무위치를 30분 이상 벗어났으면 퇴근 제안을 띄운다. 위치는 이 순간에만 잠깐 확인하고
+  // 서버로 좌표 자체를 보내지 않으며(브라우저 안에서만 거리 계산), 강제로 상태를 바꾸지 않고
+  // 직원이 직접 확인 버튼을 눌러야 확정된다(2026-09-04: 이전엔 고객사 감지가 "이동중" 상태일 때만
+  // 동작했는데, 상태와 무관하게 항상 동작하도록 넓혔다 + 퇴근 이탈감지 신설).
   useEffect(() => {
     if (!me?.locationConsentGiven) return;
+    const latestEffortClientName = myStatus?.latestEffort?.clientName ?? null;
+    const assignedClient = me.assignedClient;
+
+    function resolveWorkAnchor(): { lat: number; lng: number } | null {
+      if (!currentStatus) return null;
+      if (currentStatus.status === 'HQ_WORKING') return hqLocation;
+      if (currentStatus.status === 'RESIDENT_ONSITE') {
+        const c = findClientCoords(clientLocations, assignedClient);
+        return c ? { lat: c.latitude, lng: c.longitude } : null;
+      }
+      if (currentStatus.status === 'CLIENT_WORK' || currentStatus.status === 'CLIENT_MEETING') {
+        const c = findClientCoords(clientLocations, latestEffortClientName);
+        return c ? { lat: c.latitude, lng: c.longitude } : null;
+      }
+      return null; // 재택/이동중/야간작업/출장은 고정된 근무위치가 없어 이탈감지 대상이 아니다.
+    }
+
     const checkArrival = async () => {
       if (clockedOut) return;
 
-      // "이동중" 상태면 등록된 고객사 근처 도착을 감지해서 고객사작업/미팅 등록을 제안한다.
-      if (currentStatus?.status === 'MOVING' && clientLocations.length > 0 && Date.now() >= clientPromptSnoozedUntilRef.current) {
-        const loc = await getCurrentLocation();
-        if (loc) {
-          const nearby = clientLocations.find((c) => distanceMeters(loc.lat, loc.lng, c.latitude, c.longitude) <= 300);
-          if (nearby) { setArrivedClient(nearby.name); return; }
-        }
+      const wantsClientCheck = !(currentStatus && CLIENT_PROMPT_SKIP_STATUSES.has(currentStatus.status))
+        && clientLocations.length > 0
+        && Date.now() >= clientPromptSnoozedUntilRef.current;
+      const wantsHqCheck = Boolean(hqLocation) && currentStatus?.status !== 'HQ_WORKING' && Date.now() >= hqPromptSnoozedUntilRef.current;
+      const anchor = !departureSuggestion && Date.now() >= departureSnoozedUntilRef.current ? resolveWorkAnchor() : null;
+      if (!anchor) departureAwaySinceRef.current = null;
+
+      // 위치 확인이 여러 번 필요하더라도(고객사 도착/본사 복귀/이탈 감지) GPS는 이 틱에서 딱 한 번만
+      // 읽어서 재사용한다 — 매번 새로 읽으면 배터리도 더 쓰고 권한 프롬프트도 잦아진다.
+      if (!wantsClientCheck && !wantsHqCheck && !anchor) return;
+      const loc = await getCurrentLocation();
+      if (!loc) return;
+
+      // 고객사 도착 감지 — 이미 고객사에 있다고 등록된 상태/휴무가 아니면 상태와 무관하게 항상 확인한다.
+      if (wantsClientCheck) {
+        const nearby = clientLocations.find((c) => distanceMeters(loc.lat, loc.lng, c.latitude, c.longitude) <= 300);
+        if (nearby) { setArrivedClient(nearby.name); return; }
       }
 
       // 본사 복귀 감지
-      if (hqLocation && currentStatus?.status !== 'HQ_WORKING' && Date.now() >= hqPromptSnoozedUntilRef.current) {
-        const loc = await getCurrentLocation();
-        if (loc) {
-          const dist = distanceMeters(loc.lat, loc.lng, hqLocation.lat, hqLocation.lng);
-          if (dist <= 300) setShowHqReturnPrompt(true);
+      if (wantsHqCheck && hqLocation) {
+        const dist = distanceMeters(loc.lat, loc.lng, hqLocation.lat, hqLocation.lng);
+        if (dist <= 300) { setShowHqReturnPrompt(true); return; }
+      }
+
+      // 마지막 근무위치 이탈 감지 — 본사/고객사에 있어야 할 상태인데 30분 이상 계속 벗어나 있으면
+      // 퇴근시각 후보를 만들어 확인을 요청한다(본인이 확정하지 않으면 관리자 승인함으로 넘어간다).
+      if (anchor) {
+        const dist = distanceMeters(loc.lat, loc.lng, anchor.lat, anchor.lng);
+        const anchorKey = `${currentStatus?.status}:${currentStatus?.changedAt}`;
+        if (dist > 300) {
+          if (!departureAwaySinceRef.current || departureAwaySinceRef.current.anchorKey !== anchorKey) {
+            departureAwaySinceRef.current = { anchorKey, since: Date.now() };
+          } else if (Date.now() - departureAwaySinceRef.current.since >= DEPARTURE_AWAY_THRESHOLD_MS) {
+            const estimatedAt = new Date(departureAwaySinceRef.current.since);
+            try {
+              const res = await apiFetch<{ correctionRequestId: string; proposedClockOutAt: string }>(
+                '/attendance/departure-suggest',
+                { method: 'POST', body: JSON.stringify({ estimatedClockOutAt: estimatedAt.toISOString() }) }
+              );
+              setDepartureSuggestion({ correctionRequestId: res.correctionRequestId, estimatedAt: res.proposedClockOutAt });
+            } catch {
+              // 실패해도 조용히 넘어간다 — 다음 5분 주기에 다시 시도된다.
+            }
+          }
+        } else {
+          departureAwaySinceRef.current = null;
         }
       }
     };
@@ -290,7 +369,7 @@ export default function EmployeeHome() {
     const timeout = setTimeout(checkArrival, 30 * 1000); // 페이지 켠 직후에도 한 번 확인
     return () => { clearInterval(interval); clearTimeout(timeout); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hqLocation, clientLocations, me?.locationConsentGiven, currentStatus?.status, clockedOut]);
+  }, [hqLocation, clientLocations, me?.locationConsentGiven, me?.assignedClient, currentStatus?.status, currentStatus?.changedAt, myStatus?.latestEffort?.clientName, clockedOut, departureSuggestion]);
 
   async function run(action: () => Promise<unknown>, successMsg: string, onSuccess?: (data: unknown) => void) {
     setMessage(null);
@@ -326,6 +405,28 @@ export default function EmployeeHome() {
         }),
       `'${info.label}' 등록을 취소하고 이전 상태로 되돌렸어요. 😊`
     );
+  }
+
+  /** 마지막 근무위치를 벗어난 지 30분이 지났을 때, 본인이 직접 확인하고 그 시각으로 퇴근을 확정한다. */
+  async function confirmDepartureSuggestion() {
+    if (!departureSuggestion) return;
+    const info = departureSuggestion;
+    setDepartureSuggestion(null);
+    departureAwaySinceRef.current = null;
+    run(
+      () => apiFetch('/attendance/departure-suggest/confirm', { method: 'POST', body: JSON.stringify({ correctionRequestId: info.correctionRequestId }) }),
+      `${fmtClock(info.estimatedAt)}에 퇴근하신 걸로 확정했어요. ${clockOutGreeting(weather)}`
+    );
+  }
+
+  /** "아직 근무중이에요" — 오탐이었다고 알려주면 대기중이던 제안을 취소한다. */
+  function dismissDepartureSuggestion() {
+    if (!departureSuggestion) return;
+    const info = departureSuggestion;
+    setDepartureSuggestion(null);
+    departureAwaySinceRef.current = null;
+    departureSnoozedUntilRef.current = Date.now() + 30 * 60 * 1000; // 30분 동안 다시 안 물어봄
+    apiFetch('/attendance/departure-suggest/dismiss', { method: 'POST', body: JSON.stringify({ correctionRequestId: info.correctionRequestId }) }).catch(() => {});
   }
 
   // 2026-09-02: 본사 위치확인이 서버에서 막히는 경우(AWAY_FROM_HQ/LOCATION_REQUIRED_FOR_CLOCKIN) —
@@ -390,6 +491,9 @@ export default function EmployeeHome() {
 
   async function changeStatus(code: string, prefilledClientName?: string) {
     const alreadyInThisStatus = currentStatus?.status === code;
+    // 새 상태를 등록한다는 건 본인이 여전히 활동중이라는 뜻이므로, 혹시 떠 있던 "퇴근 이탈감지"
+    // 제안이 있다면 더 이상 맞지 않는 추정이니 같이 정리한다(오탐으로 조용히 취소).
+    if (!alreadyInThisStatus && departureSuggestion) dismissDepartureSuggestion();
     // 직전 상태의 내용을 아직 안 채운 채로 다른 상태로 넘어가는 경우, 막지는 않되(사용자가 화면에
     // 갇히면 안 되므로) "직전 것도 잊지 마세요" 정도의 부드러운 리마인더만 붙여준다.
     const pendingPrev = currentStatus && !currentStatus.note && !alreadyInThisStatus ? currentStatus : null;
@@ -775,6 +879,20 @@ export default function EmployeeHome() {
               }}
             >
               아니요, 아직이에요
+            </button>
+          </div>
+        </div>
+      )}
+
+      {departureSuggestion && (
+        <div className="card col-full notice-tint-orange">
+          🚪 마지막 근무위치를 벗어난 지 30분이 지났어요. <strong>{fmtClock(departureSuggestion.estimatedAt)}</strong>에 퇴근하신 걸로 확정할까요?
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button style={{ width: 'auto', margin: 0 }} onClick={confirmDepartureSuggestion}>
+              네, 확정할게요
+            </button>
+            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={dismissDepartureSuggestion}>
+              아니요, 아직 근무중이에요
             </button>
           </div>
         </div>
