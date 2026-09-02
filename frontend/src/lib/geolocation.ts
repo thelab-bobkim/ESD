@@ -61,6 +61,15 @@ export async function reverseGeocode(lat: number, lng: number): Promise<string |
 }
 
 /**
+ * 2026-09-02: enableHighAccuracy를 지정하지 않으면(=false가 기본값) 브라우저가 GPS 대신
+ * WiFi/IP 기반의 부정확한 위치를 반환할 수 있다(실내/데스크탑에서 특히 심함 — 실제로 본사
+ * 건물 안에 있는데도 수백m~수km 떨어진 것으로 잡히는 사례가 있었다). true로 지정해 가능한 한
+ * 실제 GPS 수신을 요청한다. maximumAge도 0으로 낮춰 캐시된(어긋났을 수 있는) 좌표를 재사용하지
+ * 않게 하고, GPS 정밀 수신에 시간이 더 걸릴 수 있어 timeout도 늘렸다.
+ */
+const GEOLOCATION_OPTIONS: PositionOptions = { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 };
+
+/**
  * 현재 위치를 가져온다. 실패하거나 권한이 없으면 null을 반환한다(위치확인은 선택적 기능이라
  * 실패해도 상태등록 자체는 막지 않는다).
  */
@@ -73,7 +82,7 @@ export function getCurrentLocation(): Promise<{ lat: number; lng: number } | nul
     navigator.geolocation.getCurrentPosition(
       (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
       () => resolve(null),
-      { timeout: 8000, maximumAge: 60000 }
+      GEOLOCATION_OPTIONS
     );
   });
 }
@@ -113,7 +122,7 @@ export async function getCurrentLocationWithStatus(
     navigator.geolocation.getCurrentPosition(
       (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
       (err) => resolve({ errorCode: err.code }),
-      { timeout: 8000, maximumAge: 60000 }
+      GEOLOCATION_OPTIONS
     );
   });
 
@@ -137,7 +146,7 @@ export async function getCurrentLocationDetailed(locationConsentGiven: boolean):
     navigator.geolocation.getCurrentPosition(
       (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
       (err) => resolve({ errorCode: err.code }),
-      { timeout: 8000, maximumAge: 60000 }
+      GEOLOCATION_OPTIONS
     );
   });
 

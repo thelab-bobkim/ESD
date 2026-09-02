@@ -42,7 +42,11 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
   });
   const json = await res.json();
   if (!res.ok || json.success === false) {
-    throw new Error(json?.error?.message || '요청 처리 중 오류가 발생했습니다.');
+    const err = new Error(json?.error?.message || '요청 처리 중 오류가 발생했습니다.');
+    // 서버가 내려준 에러 코드(예: AWAY_FROM_HQ)를 같이 실어 보낸다 — 호출하는 쪽에서 메시지
+    // 문자열이 아니라 이 코드로 특정 상황(위치 재시도 등)을 구분해서 처리할 수 있게.
+    (err as Error & { code?: string }).code = json?.error?.code;
+    throw err;
   }
   return json.data as T;
 }

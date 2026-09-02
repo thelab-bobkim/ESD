@@ -284,6 +284,29 @@ export default function EmployeeHome() {
     }
   }
 
+  // 2026-09-02: 본사 위치확인이 서버에서 막히는 경우(AWAY_FROM_HQ/LOCATION_REQUIRED_FOR_CLOCKIN) —
+  // 실내(특히 대형 건물)에서는 브라우저가 GPS 대신 WiFi/IP 기반의 부정확한 첫 위치를 줄 수 있다.
+  // geolocation.ts에서 enableHighAccuracy를 켜두긴 했지만, 그래도 첫 시도가 부정확할 수 있어
+  // 이 두 에러코드에 한해 위치를 다시 캡처해서 자동으로 딱 한 번만 재시도한다. 재시도까지
+  // 같은 이유로 실패하면(=진짜로 본사에서 먼 경우 포함) 원래 에러를 그대로 보여준다 — "위치가
+  // 잡혔는데 실제로 멀면 항상 차단"이라는 정책은 그대로 유지된다(실제 불일치를 봐주지 않음).
+  const LOCATION_RETRY_CODES = new Set(['AWAY_FROM_HQ', 'LOCATION_REQUIRED_FOR_CLOCKIN']);
+  async function attemptWithLocationRetry<T>(
+    submit: () => Promise<T>,
+    refreshLocation?: () => Promise<void>
+  ): Promise<T> {
+    try {
+      return await submit();
+    } catch (err) {
+      const code = err instanceof Error ? (err as Error & { code?: string }).code : undefined;
+      if (!refreshLocation || !code || !LOCATION_RETRY_CODES.has(code)) throw err;
+      setMessage('📡 위치 정확도를 높여 다시 확인하고 있어요. 잠시만 기다려주세요...');
+      setMessageIsError(false);
+      await refreshLocation();
+      return submit();
+    }
+  }
+
   function openDetailForm(code: string, prefilledClientName?: string) {
     setDetailStatus(code);
     setClientName(prefilledClientName ?? (code === 'RESIDENT_ONSITE' ? (me?.assignedClient ?? '') : ''));
@@ -346,13 +369,21 @@ export default function EmployeeHome() {
       // 본사근무는 실제로 본사에 있는지 위치로 확인한다 — 아니면 서버에서 막고 고객사미팅/작업으로
       // 유도한다. 위치 확보 실패 사유(locationStatus)까지 같이 보내야 서버가 "오늘 첫 실패는
       // 봐준다" 판단을 할 수 있다(고객사작업/미팅과 동일한 방식).
-      if (code === 'HQ_WORKING') {
+      const refreshHqQuickLocation = async () => {
         const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
         if (coords) body.location = coords;
+        else delete body.location;
         body.locationStatus = locStatus;
+      };
+      if (code === 'HQ_WORKING') {
+        await refreshHqQuickLocation();
       }
       run(
-        () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+        () =>
+          attemptWithLocationRetry(
+            () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+            code === 'HQ_WORKING' ? refreshHqQuickLocation : undefined
+          ),
         pendingPrev
           ? `⚠️ 상태가 '${STATUS_META[code].label}'(으)로 변경됐지만, 직전 '${STATUS_META[pendingPrev.status]?.label ?? pendingPrev.status}' 내용을 아직 안 채우셨어요! 잊지 말고 채워주세요.`
           : `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요.`
@@ -457,15 +488,16 @@ export default function EmployeeHome() {
     }
     // 고객사미팅/고객사작업은 등록 순간 위치를 확인해서 등록된 고객사 위치와 대조한다(동의한 경우에만).
     // 위치 확보 실패 사유(locationStatus)까지 같이 보내야 서버가 "오늘 첫 실패는 봐준다" 판단을 할 수 있다.
-    if (LOCATION_CHECK_STATUSES.has(code)) {
+    const needsLocationCheck = LOCATION_CHECK_STATUSES.has(code) || code === 'HQ_WORKING';
+    // 본사근무도 고객사작업/미팅과 동일하게 위치 확보 실패 사유까지 같이 보낸다("오늘 첫 실패는 봐준다" 판단용).
+    const refreshDetailFormLocation = async () => {
       const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
       if (coords) body.location = coords;
+      else delete body.location;
       body.locationStatus = locStatus;
-    } else if (code === 'HQ_WORKING') {
-      // 본사근무도 고객사작업/미팅과 동일하게 위치 확보 실패 사유까지 같이 보낸다("오늘 첫 실패는 봐준다" 판단용).
-      const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
-      if (coords) body.location = coords;
-      body.locationStatus = locStatus;
+    };
+    if (needsLocationCheck) {
+      await refreshDetailFormLocation();
     }
 
     if (code === 'NIGHT_WORK') {
@@ -488,7 +520,11 @@ export default function EmployeeHome() {
     }
 
     run(
-      () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+      () =>
+        attemptWithLocationRetry(
+          () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+          needsLocationCheck ? refreshDetailFormLocation : undefined
+        ),
       `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`
     );
     setDetailStatus(null);
@@ -695,11 +731,21 @@ export default function EmployeeHome() {
                 setMessage(null);
                 setMessageIsError(false);
                 try {
-                  const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
-                  const result = await apiFetch<{ locationConfirmed?: boolean }>('/attendance/clock-in', {
-                    method: 'POST',
-                    body: JSON.stringify({ ...(coords ? { location: coords } : {}), locationStatus: locStatus }),
-                  });
+                  const clockInBody: Record<string, unknown> = {};
+                  const refreshClockInLocation = async () => {
+                    const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+                    if (coords) clockInBody.location = coords;
+                    else delete clockInBody.location;
+                    clockInBody.locationStatus = locStatus;
+                  };
+                  await refreshClockInLocation();
+                  const result = await attemptWithLocationRetry(
+                    () => apiFetch<{ locationConfirmed?: boolean }>('/attendance/clock-in', {
+                      method: 'POST',
+                      body: JSON.stringify(clockInBody),
+                    }),
+                    refreshClockInLocation
+                  );
                   setMessage(result.locationConfirmed ? '✅ 위치 확인 완료 — 정상출근 처리되었습니다.' : '출근 처리되었습니다.');
                   refreshMyStatus();
                 } catch (err) {
