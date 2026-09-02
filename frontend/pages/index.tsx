@@ -60,6 +60,9 @@ const MEETING_PURPOSE_OPTIONS = ['백업미팅', '식사', '신규방문', '프�
 // 본사근무는 고객사 작업과 성격이 달라서(기술지원/셀프스터디 등) 별도 유형 목록을 쓴다.
 const HQ_WORK_TYPE_OPTIONS = ['기술지원', '셀프스터디', '교육', '문서작성', '내부미팅', '기타'];
 const WEEKLY_LIMIT_MINUTES = 52 * 60;
+// 상태 아이콘을 잘못 눌렀을 때 흔적 없이 취소할 수 있는 "되돌리기" 허용 시간(2026-09-04) —
+// 백엔드 /attendance/status/undo 의 UNDO_WINDOW_MS와 반드시 같은 값을 유지해야 한다.
+const UNDO_WINDOW_MS = 10 * 60 * 1000;
 
 interface MeResponse {
   name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null; mustChangePassword: boolean; locationConsentGiven: boolean; privacyConsentGiven: boolean;
@@ -134,6 +137,24 @@ export default function EmployeeHome() {
   const isAdminAccount = Boolean(me?.roles?.some((r) => ['SYSTEM_ADMIN', 'HR_ADMIN'].includes(r)));
   const [weekly, setWeekly] = useState<WeeklySummary | null>(null);
   const [weather, setWeather] = useState<WeatherInfo>({ condition: null, tempC: null });
+  // 방금(오탭 포함) 등록한 상태를 되돌릴 수 있는 정보 — 9개 아이콘 즉시등록 직후에만 채워진다.
+  const [undoInfo, setUndoInfo] = useState<{
+    statusLogId: string;
+    effortLogId?: string;
+    nightWorkId?: string;
+    businessTripLogId?: string;
+    label: string;
+    expiresAt: number;
+  } | null>(null);
+
+  // 되돌리기 유효시간(10분)이 지나면 알림을 자동으로 치운다.
+  useEffect(() => {
+    if (!undoInfo) return;
+    const remain = undoInfo.expiresAt - Date.now();
+    if (remain <= 0) { setUndoInfo(null); return; }
+    const timer = setTimeout(() => setUndoInfo(null), remain);
+    return () => clearTimeout(timer);
+  }, [undoInfo]);
 
   // 고객사미팅/고객사작업/야간작업 공용 상세입력 폼 상태
   const [detailStatus, setDetailStatus] = useState<string | null>(null);
@@ -271,17 +292,40 @@ export default function EmployeeHome() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hqLocation, clientLocations, me?.locationConsentGiven, currentStatus?.status, clockedOut]);
 
-  async function run(action: () => Promise<unknown>, successMsg: string) {
+  async function run(action: () => Promise<unknown>, successMsg: string, onSuccess?: (data: unknown) => void) {
     setMessage(null);
     setMessageIsError(false);
     try {
-      await action();
+      const data = await action();
       setMessage(successMsg);
       refreshMyStatus();
+      onSuccess?.(data);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
       setMessageIsError(true);
     }
+  }
+
+  /** 방금(오탭 포함) 등록한 상태를 취소한다 — /status 응답으로 받은 id들을 그대로 되돌려보낸다. */
+  async function undoLastStatusChange() {
+    if (!undoInfo) return;
+    const info = undoInfo;
+    setUndoInfo(null);
+    // 방금 취소한 상태의 세부입력폼이 화면에 열려있으면(오탭 직후 자동으로 열림) 같이 닫아준다.
+    setDetailStatus(null);
+    run(
+      () =>
+        apiFetch('/attendance/status/undo', {
+          method: 'POST',
+          body: JSON.stringify({
+            statusLogId: info.statusLogId,
+            effortLogId: info.effortLogId,
+            nightWorkId: info.nightWorkId,
+            businessTripLogId: info.businessTripLogId,
+          }),
+        }),
+      `'${info.label}' 등록을 취소하고 이전 상태로 되돌렸어요. 😊`
+    );
   }
 
   // 2026-09-02: 본사 위치확인이 서버에서 막히는 경우(AWAY_FROM_HQ/LOCATION_REQUIRED_FOR_CLOCKIN) —
@@ -386,7 +430,26 @@ export default function EmployeeHome() {
           ),
         pendingPrev
           ? `⚠️ 상태가 '${STATUS_META[code].label}'(으)로 변경됐지만, 직전 '${STATUS_META[pendingPrev.status]?.label ?? pendingPrev.status}' 내용을 아직 안 채우셨어요! 잊지 말고 채워주세요.`
-          : `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요.`
+          : `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요.`,
+        (data) => {
+          // 아이콘을 잘못 눌렀을 때 흔적 없이 되돌릴 수 있게, 방금 만들어진 기록들의 id를 잠깐 기억해둔다.
+          const res = data as {
+            statusLog?: { id: string };
+            effortLog?: { id: string } | null;
+            nightWork?: { session?: { id: string } } | null;
+            businessTripLog?: { id: string } | null;
+          } | null;
+          if (res?.statusLog?.id) {
+            setUndoInfo({
+              statusLogId: res.statusLog.id,
+              effortLogId: res.effortLog?.id,
+              nightWorkId: res.nightWork?.session?.id,
+              businessTripLogId: res.businessTripLog?.id,
+              label: STATUS_META[code].label,
+              expiresAt: Date.now() + UNDO_WINDOW_MS,
+            });
+          }
+        }
       );
       // 상태변경과 동시에 세부내용 입력폼도 바로 아래에 띄운다(두 번 누를 필요 없게).
       openDetailForm(code, prefilledClientName);
@@ -406,6 +469,9 @@ export default function EmployeeHome() {
   async function submitDetailForm() {
     if (!detailStatus) return;
     const code = detailStatus;
+    // 세부내용을 채워 정식 제출하면 새 상태기록이 생겨 방금 즉시등록된 기록은 더 이상 "현재
+    // 상태"가 아니게 된다(되돌리기 대상에서 자동으로 제외됨) — 알림도 같이 치운다.
+    setUndoInfo(null);
 
     if (code === 'BUSINESS_TRIP') {
       if (!tripDestination.trim() || !tripStart || !tripPurpose.trim()) return;
@@ -841,6 +907,17 @@ export default function EmployeeHome() {
                 );
               })}
             </div>
+            {undoInfo && (
+              <div
+                className="notice-inline-orange"
+                style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 8, marginBottom: 0 }}
+              >
+                <span>↩️ 방금 '{undoInfo.label}'(으)로 등록했어요. 잘못 누르셨다면 지금 되돌릴 수 있어요(10분 이내).</span>
+                <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={undoLastStatusChange}>
+                  되돌리기
+                </button>
+              </div>
+            )}
           </div>
 
           {me.assignedClient && (

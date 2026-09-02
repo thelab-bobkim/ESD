@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
@@ -524,6 +525,88 @@ attendanceRouter.post('/status', async (req, res) => {
 
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'status_change_log', targetId: log.id, afterValue: { log, effortLog, nightWork, businessTripLog } });
   return res.json({ success: true, data: { statusLog: log, effortLog, nightWork, businessTripLog } });
+});
+
+// 9개 상태 아이콘은 확인창 없이 눌리는 즉시 등록된다(2026-08 설계, "우선 등록 후 세부내용은
+// 나중에"). 그래서 화면을 잘못 터치했을 때 흔적 없이 취소할 수 있는 안전장치가 필요하다
+// (2026-09-04, 직원들의 오탭 신고에 따른 개선). 아무 로그나 지울 수 있게 하면 근태기록이
+// 조작될 위험이 있으므로 세 가지를 반드시 만족해야만 되돌릴 수 있다:
+// (1) 본인 소유의 로그인가, (2) 그 뒤로 다른 상태변경이 없는(=지금도 "현재 상태"인) 가장
+// 최근 로그인가, (3) 등록한 지 10분이 지나지 않았는가.
+const UNDO_WINDOW_MS = 10 * 60 * 1000;
+
+const undoStatusSchema = z.object({
+  statusLogId: z.string().min(1),
+  effortLogId: z.string().optional(),
+  nightWorkId: z.string().optional(),
+  businessTripLogId: z.string().optional(),
+});
+
+/** 방금 등록한 상태(오탭 포함)를 취소한다 — /status POST 응답으로 받은 id들을 그대로 되돌려보낸다. */
+attendanceRouter.post('/status/undo', async (req, res) => {
+  const parsed = undoStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '요청 형식을 확인하세요.' } });
+  }
+  const userId = req.authUser!.userId;
+  const { statusLogId, effortLogId, nightWorkId, businessTripLogId } = parsed.data;
+
+  const log = await prisma.statusChangeLog.findUnique({ where: { id: statusLogId } });
+  if (!log || log.userId !== userId) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '되돌릴 상태 기록을 찾을 수 없습니다.' } });
+  }
+
+  const newerExists = await prisma.statusChangeLog.findFirst({ where: { userId, changedAt: { gt: log.changedAt } } });
+  if (newerExists) {
+    return res.status(400).json({ success: false, error: { code: 'UNDO_STALE', message: '이미 다른 상태로 변경되어 되돌릴 수 없습니다.' } });
+  }
+  if (Date.now() - log.changedAt.getTime() > UNDO_WINDOW_MS) {
+    return res.status(400).json({ success: false, error: { code: 'UNDO_EXPIRED', message: '등록 후 10분이 지나 되돌릴 수 없습니다.' } });
+  }
+
+  // 오늘의 첫 상태 등록이었다면 이 로그가 ensureClockIn으로 출근시각을 자동으로 찍었을 수 있다.
+  // 그 사이 "출근" 버튼 등 다른 경로로 출근시각이 찍혔을 가능성도 있으니, 이 로그 시각과
+  // 거의 동시(10초 이내)일 때만 안전하게 확신하고 같이 되돌린다.
+  const workDate = todayDateOnly();
+  const { start: dayStart } = realDayWindow(workDate);
+  const olderTodayLog = await prisma.statusChangeLog.findFirst({ where: { userId, changedAt: { gte: dayStart, lt: log.changedAt } } });
+  const wasFirstToday = !olderTodayLog;
+
+  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    if (effortLogId) {
+      const effort = await tx.effortLog.findUnique({ where: { id: effortLogId } });
+      if (effort && effort.userId === userId) await tx.effortLog.delete({ where: { id: effortLogId } });
+    }
+    if (businessTripLogId) {
+      const trip = await tx.businessTripLog.findUnique({ where: { id: businessTripLogId } });
+      if (trip && trip.userId === userId) await tx.businessTripLog.delete({ where: { id: businessTripLogId } });
+    }
+    if (nightWorkId) {
+      const session = await tx.nightWorkSession.findUnique({ where: { id: nightWorkId } });
+      // 이 세션이 "이번 탭에서 새로 만들어진 것"이 확실할 때만 지운다 — 직전부터 진행중이던
+      // 세션을 이번 호출이 그냥 이어받아 조회만 한 경우까지 지우면, 실제로 진행중인 야간작업
+      // 기록이 사라져버린다(recordNightWork()는 IN_PROGRESS 세션이 있으면 새로 만들지 않고 재사용함).
+      if (
+        session
+        && session.userId === userId
+        && session.status === 'IN_PROGRESS'
+        && Math.abs(session.startedAt.getTime() - log.changedAt.getTime()) < 10_000
+      ) {
+        await tx.nightWorkSession.delete({ where: { id: nightWorkId } });
+      }
+    }
+    await tx.statusChangeLog.delete({ where: { id: statusLogId } });
+
+    if (wasFirstToday) {
+      const record = await tx.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate } } });
+      if (record?.clockInAt && !record.clockOutAt && Math.abs(record.clockInAt.getTime() - log.changedAt.getTime()) < 10_000) {
+        await tx.attendanceRecord.update({ where: { id: record.id }, data: { clockInAt: null } });
+      }
+    }
+  });
+
+  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'status_change_log', targetId: statusLogId, afterValue: { undone: true } });
+  return res.json({ success: true, data: { undone: true } });
 });
 
 /** 본인 오늘 근태 조회 (상태는 "오늘" 것만 — 며칠 지난 상태를 현재처럼 보여주지 않는다) */
