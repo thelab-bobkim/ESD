@@ -56,10 +56,12 @@ function fmtTime(iso: string | null): string {
   if (!iso) return '-';
   return new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 }
+// 2026-09-06: 이동시간처럼 1시간 미만인 경우가 흔해져서, "0시간 31분"처럼 항상 "0시간"을 붙이던
+// 것을 "31분"으로 줄였다 — 표가 한결 덜 복잡해 보인다(1시간 이상은 기존과 동일하게 "N시간 M분").
 function hoursLabel(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  return `${h}시간 ${m}분`;
+  return h > 0 ? `${h}시간 ${m}분` : `${m}분`;
 }
 /** <input type="datetime-local">에 넣을 값 (YYYY-MM-DDTHH:MM, 로컬시간 기준) */
 function toDateTimeLocal(d: Date): string {
@@ -141,66 +143,68 @@ function AttendanceRowTr({
         </div>
       </td>
       {!hideDept && <td>{r.department}</td>}
-      <td>{fmtTime(r.clockInAt)}</td>
-      <td>
+      <td className="num">{fmtTime(r.clockInAt)}</td>
+      <td className="num">
         {r.travelMinutes > 0 ? (
-          <>
+          <span>
             {hoursLabel(r.travelMinutes)}
             {r.travelHasEstimate && (
-              <div style={{ fontSize: 11, color: '#1c7ed6' }} title="이동중 상태를 직접 찍지 않은 구간이 있어 일부는 자동추정치입니다.">
-                🚙 자동추정 포함
-              </div>
+              <span
+                className="att-pill att-pill-info"
+                style={{ marginLeft: 6 }}
+                title="이동중 상태를 직접 찍지 않은 구간이 있어 일부는 자동추정치입니다."
+              >
+                🚙 추정
+              </span>
             )}
-          </>
+          </span>
         ) : (
-          '-'
+          <span style={{ color: 'var(--dsti-text-faint)' }}>-</span>
         )}
       </td>
       <td>
         {r.clockOutAt ? (
-          <>
-            {fmtTime(r.clockOutAt)}
-            {r.isCorrected && r.correctionReason && (
-              // 강제확정(관리자)/위치이탈 자동감지 확정 등으로 정정된 기록임을 배지로 표시 —
-              // 사유(추정시각 등 원래 제안 내용)는 마우스를 올리면 툴팁으로 확인할 수 있다.
-              <div
-                style={{ fontSize: 11, color: '#e8590c', fontWeight: 600, marginTop: 2, cursor: 'help' }}
-                title={r.correctionReason}
-              >
-                ✏️ 정정됨
-              </div>
-            )}
-            {r.clockOutLocation && <div style={{ fontSize: 11, color: '#868e96' }}>📍 {r.clockOutLocation}</div>}
-          </>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span className="num">{fmtTime(r.clockOutAt)}</span>
+              {r.isCorrected && r.correctionReason && (
+                // 강제확정(관리자)/위치이탈 자동감지 확정 등으로 정정된 기록임을 배지로 표시 —
+                // 사유(추정시각 등 원래 제안 내용)는 마우스를 올리면 툴팁으로 확인할 수 있다.
+                <span className="att-pill att-pill-warn" title={r.correctionReason}>✏️ 정정됨</span>
+              )}
+            </div>
+            {r.clockOutLocation && <div className="att-addr" title={r.clockOutLocation}>📍 {r.clockOutLocation}</div>}
+          </div>
         ) : isPastDayUnresolved ? (
           <span
-            style={{ color: '#e03131', fontWeight: 600, textDecoration: 'underline', cursor: 'pointer' }}
+            className="att-pill att-pill-danger"
             title="클릭해서 실제 퇴근 시각을 입력하고 정정합니다"
             onClick={(e) => { e.stopPropagation(); onForceClockOut({ recordId: r.recordId, clockInAt: r.clockInAt }); }}
           >
-            ⚠ 미해결(지난 근무일) — 클릭해서 정정
+            ⚠ 미해결 · 정정필요
           </span>
         ) : isUnconfirmedAfter18 ? (
           // 2026-09-01: 저녁 6시(정규 퇴근 마감 기본값)가 지나도록 퇴근을 안 누른 경우를
           // "진행중"과 구분해서 보여준다 — 화면만 다르게 보일 뿐, 여기서 clockOutAt을 자동으로
           // 채우지는 않는다(시스템이 근로시간을 일방적으로 확정하지 않는다는 원칙 유지). 실제
           // 값은 여전히 본인의 퇴근 버튼 클릭 또는 정정 신청으로만 채워진다.
-          <span style={{ color: '#e8590c', fontWeight: 600 }} title="18시가 지났지만 아직 퇴근 버튼을 누르지 않았습니다">
-            ⏰ 18시 경과 · 퇴근 미확정
+          <span className="att-pill att-pill-warn" title="18시가 지났지만 아직 퇴근 버튼을 누르지 않았습니다">
+            ⏰ 18시 경과
           </span>
         ) : (
-          <span style={{ color: '#f08c00', fontWeight: 600 }}>● 진행중</span>
+          <span className="att-pill att-pill-info">● 진행중</span>
         )}
       </td>
-      <td>
+      <td className="num">
         {r.totalWorkedMinutes != null ? (
           hoursLabel(r.totalWorkedMinutes)
         ) : isUnconfirmedAfter18 && r.clockInAt ? (
-          <span style={{ color: '#e8590c' }} title="18시 기준으로 어림 계산한 값 — 확정 아님(정정신청 승인 시 실제 값으로 바뀜)">
-            {hoursLabel(tentativeMinutesTo18(r.clockInAt))} (18시 기준 잠정)
+          <span title="18시 기준으로 어림 계산한 값 — 확정 아님(정정신청 승인 시 실제 값으로 바뀜)">
+            {hoursLabel(tentativeMinutesTo18(r.clockInAt))}
+            <span className="att-pill att-pill-neutral" style={{ marginLeft: 6 }}>잠정</span>
           </span>
         ) : (
-          '-'
+          <span style={{ color: 'var(--dsti-text-faint)' }}>-</span>
         )}
       </td>
     </tr>
@@ -461,40 +465,39 @@ export default function AdminReportsPage() {
           {!attendanceDetail && <div className="board-empty">불러오는 중...</div>}
           {attendanceDetail && attendanceDetail.rows.length === 0 && <div className="board-empty">이 날짜에 출근 기록이 없습니다.</div>}
 
-          {attendanceDetail && attendanceDetail.rows.length > 0 && !groupByDept && (
+          {/* 2026-09-06: 부서마다 표를 따로 그리던 것을(헤더가 부서 수만큼 반복되어 복잡해 보임) 표
+              하나 + 부서 구분줄로 통일했다. 표 틀은 부서별/전체 보기 모두 동일하고, 부서별 보기일 때만
+              "부서" 열 대신 구분줄로 부서를 나눈다. */}
+          {attendanceDetail && attendanceDetail.rows.length > 0 && (
             <div className="table-scroll">
-              <table>
+              <table className="att-table">
                 <thead>
-                  <tr><th>이름</th><th>부서</th><th>출근</th><th>이동</th><th>퇴근</th><th>근무시간</th></tr>
+                  <tr>
+                    <th>이름</th>
+                    {!groupByDept && <th>부서</th>}
+                    <th className="num">출근</th>
+                    <th className="num">이동</th>
+                    <th>퇴근</th>
+                    <th className="num">근무시간</th>
+                  </tr>
                 </thead>
                 <tbody>
-                  {attendanceRowsSorted.map((r) => (
-                    <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail.date} onClick={() => openTimeline(r.userId, attendanceDetail.date)} onForceClockOut={openForceClockOut} />
-                  ))}
+                  {groupByDept
+                    ? attendanceByDept?.flatMap(({ department, rows }) => [
+                        <tr className="att-dept-row" key={`dept-${department}`}>
+                          <td colSpan={5}>🏷️ {department}<span className="att-dept-count">{rows.length}명</span></td>
+                        </tr>,
+                        ...rows.map((r) => (
+                          <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail.date} onClick={() => openTimeline(r.userId, attendanceDetail.date)} onForceClockOut={openForceClockOut} hideDept />
+                        )),
+                      ])
+                    : attendanceRowsSorted.map((r) => (
+                        <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail.date} onClick={() => openTimeline(r.userId, attendanceDetail.date)} onForceClockOut={openForceClockOut} />
+                      ))}
                 </tbody>
               </table>
             </div>
           )}
-
-          {attendanceByDept && attendanceByDept.length > 0 && groupByDept && attendanceByDept.map(({ department, rows }) => (
-            <div key={department} style={{ marginBottom: 18 }}>
-              <div style={{ fontWeight: 700, fontSize: 14, color: '#2f6feb', margin: '10px 0 4px' }}>
-                🏷️ {department} <span style={{ color: '#868e96', fontWeight: 400 }}>({rows.length}명)</span>
-              </div>
-              <div className="table-scroll">
-                <table>
-                  <thead>
-                    <tr><th>이름</th><th>출근</th><th>이동</th><th>퇴근</th><th>근무시간</th></tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((r) => (
-                      <AttendanceRowTr key={r.userId} r={r} date={attendanceDetail!.date} onClick={() => openTimeline(r.userId, attendanceDetail!.date)} onForceClockOut={openForceClockOut} hideDept />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ))}
         </div>
       )}
 
@@ -511,9 +514,9 @@ export default function AdminReportsPage() {
           {worktime && worktime.rows.length === 0 && <div className="board-empty">이 기간에 확정된 근무기록이 없습니다.</div>}
           {worktime && worktime.rows.length > 0 && (
             <div className="table-scroll">
-              <table>
+              <table className="att-table">
                 <thead>
-                  <tr><th>이름</th><th>부서</th><th>누계</th><th>근무일수</th></tr>
+                  <tr><th>이름</th><th>부서</th><th className="num">누계</th><th className="num">근무일수</th></tr>
                 </thead>
                 <tbody>
                   {worktimeRowsSorted.map((r) => {
@@ -528,10 +531,11 @@ export default function AdminReportsPage() {
                           </div>
                         </td>
                         <td>{r.department}</td>
-                        <td style={{ color: over ? '#e03131' : undefined, fontWeight: over ? 700 : undefined }}>
-                          {hoursLabel(r.totalMinutes)}{over ? ' ⚠ 52시간 초과' : ''}
+                        <td className="num" style={{ color: over ? '#e03131' : undefined, fontWeight: over ? 700 : undefined }}>
+                          {hoursLabel(r.totalMinutes)}
+                          {over && <span className="att-pill att-pill-danger" style={{ marginLeft: 6, cursor: 'default' }}>⚠ 52시간 초과</span>}
                         </td>
-                        <td>{r.days}일</td>
+                        <td className="num">{r.days}일</td>
                       </tr>
                     );
                   })}
@@ -566,13 +570,17 @@ export default function AdminReportsPage() {
                           <strong style={{ color: meta.color }}>
                             {meta.label}
                             {t.estimated && (
-                              <span style={{ fontSize: 11, color: '#1c7ed6', fontWeight: 400, marginLeft: 6 }} title="이동중 상태를 직접 찍지 않아 시스템이 정책 기본값만큼 자동으로 떼어낸 추정치입니다.">
-                                (자동추정)
+                              <span
+                                className="att-pill att-pill-info"
+                                style={{ marginLeft: 6 }}
+                                title="이동중 상태를 직접 찍지 않아 시스템이 정책 기본값만큼 자동으로 떼어낸 추정치입니다."
+                              >
+                                자동추정
                               </span>
                             )}
                           </strong>
                           <span style={{ fontSize: 13, color: '#495057' }}>
-                            {fmtTime(t.changedAt)} · {t.ongoing ? <span style={{ color: '#f08c00' }}>진행중</span> : hoursLabel(t.durationMinutes)}
+                            {fmtTime(t.changedAt)} · {t.ongoing ? <span className="att-pill att-pill-warn">진행중</span> : hoursLabel(t.durationMinutes)}
                           </span>
                         </div>
                         {t.note && <div style={{ fontSize: 12, color: '#868e96', marginTop: 2, fontStyle: 'italic' }}>“{t.note}”</div>}
