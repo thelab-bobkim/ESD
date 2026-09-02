@@ -65,6 +65,14 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
         statusNote: statusOnDay?.note ?? null,
         locationMatch: statusOnDay?.locationMatch ?? checkinOnDay?.locationMatch ?? null,
         locationDistanceMeters: statusOnDay?.locationDistanceMeters ?? checkinOnDay?.locationDistanceMeters ?? null,
+        // 2026-09-02: locationMatch가 null인 이유를 상황판에서 구분해서 보여주기 위해 추가.
+        // (1) 위치확인 자체를 안 하는 상태(재택/출장 등)라 애초에 시도조차 안 한 건지,
+        // (2) 동의는 했는데 그 순간 캡처가 실패했는지(권한거부/시간초과 등, ResidentCheckin에는
+        //     이 값이 없어 그 경우는 항상 null), (3) 애초에 동의를 안 해서 시도조차 못 한 건지 —
+        // 프론트에서 이 값과 아래 동의 여부를 같이 보고 판단한다.
+        locationCaptureStatus: statusOnDay?.locationCaptureStatus ?? null,
+        locationConsentGiven: u.locationConsentAt != null,
+        privacyConsentGiven: u.privacyConsentAt != null,
         lastConfirmedAt: checkinOnDay?.lastConfirmedAt ?? null,
         clockedOut,
         clockOutAt: attendanceOnDay?.clockOutAt ?? null,

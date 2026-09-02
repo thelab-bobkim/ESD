@@ -38,6 +38,11 @@ const OFF_STATUSES = new Set(['ALT_DAY_OFF', 'ON_LEAVE']);
 
 const REFRESH_INTERVAL_MS = 15000; // 15초마다 자동 갱신 (실시간에 가까운 폴링)
 
+// 위치대조를 실제로 시도하는 상태만 — 백엔드 LOCATION_CHECK_STATUSES(고객사미팅/작업) +
+// HQ_WORKING(본사 위치 자체 확인, attendance.routes.ts 참고)과 동일하게 맞춘다. 나머지 상태
+// (재택/출장/이동중 등)는 애초에 위치를 확인하지 않으므로 배지 자체를 안 보여준다.
+const LOCATION_CHECK_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
+
 // "한눈에 보는 동선"용 대분류 — 9개 세부상태를 4개 그룹으로 묶어서 즉시 파악되게 한다.
 const MACRO_GROUPS: { key: string; label: string; icon: string; color: string; statuses: string[] }[] = [
   { key: 'ONSITE', label: '사내', icon: '🏢', color: '#2f9e44', statuses: ['HQ_WORKING'] },
@@ -50,10 +55,25 @@ const MACRO_GROUPS: { key: string; label: string; icon: string; color: string; s
 interface EmployeeRow {
   userId: string; name: string; department: string; client: string | null; workType: string;
   status: string | null; statusChangedAt: string | null; statusSource: string | null; statusNote: string | null; lastConfirmedAt: string | null;
-  locationMatch: boolean | null; locationDistanceMeters: number | null;
+  locationMatch: boolean | null; locationDistanceMeters: number | null; locationCaptureStatus: string | null;
+  locationConsentGiven: boolean; privacyConsentGiven: boolean;
   clockedOut: boolean; clockOutAt: string | null;
 }
 interface CompanyBoard { summary: Record<string, number>; employees: EmployeeRow[]; }
+
+// 위치대조를 시도하는 상태(LOCATION_CHECK_STATUSES)에서만 의미가 있는 배지 — 셋 중 하나로 갈린다:
+// (1) 애초에 개인정보/위치 동의를 안 한 직원 → "개인정보 활용 미동의"(동의를 해야 위치대조 자체가
+//     시작된다는 걸 알려서 참여를 유도), (2) 동의는 했지만 그 순간 위치가 안 잡혔거나 대조 결과가
+//     아직 없는 경우 → "위치 미확인"(등록된 고객사와 멀리 떨어져 있다는 뜻이 절대 아님 — 그냥 결과가
+//     없다는 뜻), (3) 실제로 위치가 확인/불일치까지 된 경우 → 기존 그대로.
+function locationBadge(e: EmployeeRow): { text: string; color: string } | null {
+  if (!e.locationConsentGiven || !e.privacyConsentGiven) {
+    return { text: '🚫 개인정보 활용 미동의', color: '#868e96' };
+  }
+  if (e.locationMatch === true) return { text: '📍 위치 확인됨', color: '#2f9e44' };
+  if (e.locationMatch === false) return { text: `📍 위치 불일치 (약 ${e.locationDistanceMeters}m)`, color: '#e03131' };
+  return { text: '⚠ 위치 미확인', color: '#f08c00' };
+}
 
 function timeAgo(iso: string | null): string {
   if (!iso) return '-';
@@ -346,11 +366,14 @@ export default function AdminDashboard() {
                     {code === 'CLOCKED_OUT' && e.status && STATUS_META[e.status] && (
                       <div className="meta">마지막 상태: {STATUS_META[e.status].icon} {STATUS_META[e.status].label}</div>
                     )}
-                    {e.locationMatch !== null && (
-                      <div className="meta" style={{ color: e.locationMatch ? '#2f9e44' : '#e03131', fontWeight: 600 }}>
-                        {e.locationMatch ? '📍 위치 확인됨' : `📍 위치 불일치 (약 ${e.locationDistanceMeters}m)`}
-                      </div>
-                    )}
+                    {e.status && LOCATION_CHECK_STATUSES.has(e.status) && (() => {
+                      const badge = locationBadge(e);
+                      return badge && (
+                        <div className="meta" style={{ color: badge.color, fontWeight: 600 }} title={e.locationCaptureStatus ?? undefined}>
+                          {badge.text}
+                        </div>
+                      );
+                    })()}
                     <div className="meta">{code === 'CLOCKED_OUT' ? `퇴근 ${timeAgo(e.clockOutAt)}` : timeAgo(e.statusChangedAt)}</div>
                   </div>
                 ))}
