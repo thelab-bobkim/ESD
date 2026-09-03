@@ -97,6 +97,10 @@ export default function AdminDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [justRefreshed, setJustRefreshed] = useState(false);
   const [pendingApprovalCount, setPendingApprovalCount] = useState<number | null>(null);
+  // 출퇴근 알림(푸시) 미설정 직원 현황(2026-09-03 추가) — 알림이 옵트인이라 실제로 몇 명이나
+  // 켜뒀는지 볼 방법이 없었던 문제를 해결하기 위해, HR이 직접 챙길 수 있게 목록으로 보여준다.
+  const [pushStatus, setPushStatus] = useState<{ userId: string; name: string; department: string; subscribed: boolean }[] | null>(null);
+  const [showPushList, setShowPushList] = useState(false);
 
   // TSB-Ver2.1: 전사 상황판을 다크 관제형 테마로 바꾸면서, 페이지 바깥(뷰포트 좌우 여백)까지
   // 어둡게 보이도록 body에도 클래스를 붙인다(다른 5개 관리자 화면엔 영향 없음 — 언마운트되면 제거).
@@ -110,6 +114,17 @@ export default function AdminDashboard() {
       .then((rows) => setPendingApprovalCount(Array.isArray(rows) ? rows.length : 0))
       .catch(() => setPendingApprovalCount(null));
   }, [board]);
+
+  useEffect(() => {
+    apiFetch<{ userId: string; name: string; department: string; subscribed: boolean }[]>('/push/admin/status')
+      .then(setPushStatus)
+      .catch(() => setPushStatus(null));
+  }, [board]);
+
+  const unsubscribedEmployees = useMemo(
+    () => (pushStatus ?? []).filter((p) => !p.subscribed).sort((a, b) => a.name.localeCompare(b.name, 'ko')),
+    [pushStatus]
+  );
 
   async function load() {
     setRefreshing(true);
@@ -331,7 +346,42 @@ export default function AdminDashboard() {
             승인함 바로가기 →
           </button>
         </div>
+        <div className="cc-stat-card" style={{ borderColor: unsubscribedEmployees.length ? '#3a2340' : undefined }}>
+          <div className="cc-stat-label">🔕 알림 미설정</div>
+          <div className="cc-stat-value" style={{ color: unsubscribedEmployees.length ? '#f59e0b' : undefined }}>
+            {pushStatus ? unsubscribedEmployees.length : '-'}<small>{pushStatus ? `명 / ${pushStatus.length}명 중` : ''}</small>
+          </div>
+          <button
+            className="secondary"
+            style={{ marginTop: 10, width: '100%' }}
+            disabled={!pushStatus || unsubscribedEmployees.length === 0}
+            onClick={() => setShowPushList((v) => !v)}
+          >
+            {showPushList ? '목록 접기 ▴' : '명단 보기 ▾'}
+          </button>
+        </div>
       </div>
+
+      {showPushList && unsubscribedEmployees.length > 0 && (
+        <>
+          <div className="cc-section-title">🔕 출퇴근 알림 미설정 직원 <span className="cnt">{unsubscribedEmployees.length}</span></div>
+          <div className="cc-alert-grid">
+            {unsubscribedEmployees.map((p) => (
+              <div className="cc-alert-card" key={p.userId} style={{ '--cc-accent': '#f59e0b' } as CSSProperties}>
+                <div className="cc-alert-head">
+                  <div className="cc-alert-name">
+                    <div className="cc-avatar">{p.name.slice(-2)}</div>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="nm">{p.name}</div>
+                      <div className="dept">{p.department}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <div className="toolbar">
         <button style={{ width: 'auto' }} disabled={syncing !== null} onClick={runSyncEmployees}>

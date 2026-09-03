@@ -33,7 +33,12 @@ const DETAIL_FORM_STATUSES = new Set([
 // 날짜/장소/사유 같은 세부내용을 나중에 채워넣을 수 있다("우선 등록, 내용은 나중에" 원칙).
 // 9개 항목 전부 클릭 즉시 상태변경(체크 표시)된다. 다만 이전 상태의 내용(note)을 아직 안 채웠는데
 // 다른 상태로 넘어가려 하면 changeStatus()에서 막고 경고 후 그 상태의 입력폼을 대신 열어준다.
-const QUICK_REGISTER_STATUSES = new Set(DETAIL_FORM_STATUSES);
+// 2026-09-02: 고객사미팅/고객사작업은 예외 — 어떤 고객사인지 모르면 등록해봐야 리포트에서
+// 쓸모가 없어서(공수 산정 불가), 이 두 개만 즉시등록에서 빼고 항상 고객사 선택 폼을 먼저 연다
+// (백엔드도 이 두 상태는 clientName을 필수로 요구하도록 함께 바꿈 — 사용자 확인 완료).
+const QUICK_REGISTER_STATUSES = new Set(
+  Array.from(DETAIL_FORM_STATUSES).filter((s) => s !== 'CLIENT_MEETING' && s !== 'CLIENT_WORK')
+);
 // 이 상태들은 프로젝트별 공수(工數) 집계 대상이라 프로젝트명 필드가 필요하다.
 // REMOTE(재택)는 대부분 고객사에 원격 접속해서 작업하므로, 고객사작업과 동일하게 접속시작~종료를
 // 추적한다(백엔드 EFFORT_STATUSES와 반드시 같은 값을 유지해야 한다).
@@ -145,6 +150,11 @@ export default function EmployeeHome() {
   const [lateClockOutSuggestion, setLateClockOutSuggestion] = useState<{ overMinutes: number; suggestedStart: string; suggestedEnd: string } | null>(null);
   const [clientLocations, setClientLocations] = useState<{ name: string; latitude: number; longitude: number }[]>([]);
   const [arrivedClient, setArrivedClient] = useState<string | null>(null);
+  // 고객사미팅/고객사작업 등록 시 검색·선택하는 전체 고객사 목록(좌표 유무 무관) — 2026-09-02 추가.
+  const [clientOptions, setClientOptions] = useState<{ id: string; name: string }[]>([]);
+  const [clientQuery, setClientQuery] = useState('');
+  const [clientPickerOpen, setClientPickerOpen] = useState(false);
+  const [addingClientBusy, setAddingClientBusy] = useState(false);
   const hqPromptSnoozedUntilRef = useRef(0);
   const clientPromptSnoozedUntilRef = useRef(0);
   // 마지막 근무위치(본사/고객사) 이탈 감지용 — 계속 벗어나 있는 시간을 재기 위한 시작시각과,
@@ -209,6 +219,9 @@ export default function EmployeeHome() {
   const detailFormRef = useRef<HTMLDivElement | null>(null);
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
+  // 알림을 아직 안 켠 직원에게 먼저 물어봐서 옵트인율을 올리기 위한 배너(2026-09-03 추가) —
+  // 화면 아래 작은 버튼만으로는 존재조차 모르는 직원이 많았을 것으로 보여 추가.
+  const [showPushPrompt, setShowPushPrompt] = useState(false);
   const [pendingCorrections, setPendingCorrections] = useState<PendingCorrectionRow[]>([]);
   const [showClockOutConfirm, setShowClockOutConfirm] = useState(false);
   // 아직 신청조차 안 했거나, 신청했다가 반려된 지난 근무일이 하나라도 있으면 상태 아이콘을 잠근다.
@@ -222,8 +235,35 @@ export default function EmployeeHome() {
   }
 
   useEffect(() => {
-    isPushSubscribed().then(setPushSubscribed).catch(() => {});
+    isPushSubscribed().then((subscribed) => {
+      setPushSubscribed(subscribed);
+      // 이미 켜져 있거나, 브라우저 알림권한을 이미 허용/거부해서 결론이 난 경우엔 배너를 안 띄운다
+      // (거부한 사람에게 다시 물어봐도 브라우저가 자동으로 막아서 의미가 없다). 이번 방문(세션)에서
+      // 이미 "나중에요"를 눌렀으면 같은 세션 안에서는 다시 안 띄운다.
+      if (subscribed || typeof window === 'undefined' || !('Notification' in window) || Notification.permission !== 'default') return;
+      try {
+        if (sessionStorage.getItem('pushPromptDismissed')) return;
+      } catch {
+        // sessionStorage 접근 불가(사파리 프라이빗 모드 등)해도 배너는 그냥 보여준다.
+      }
+      setShowPushPrompt(true);
+    }).catch(() => {});
   }, []);
+
+  function dismissPushPrompt() {
+    setShowPushPrompt(false);
+    try {
+      sessionStorage.setItem('pushPromptDismissed', '1');
+    } catch {}
+  }
+
+  async function acceptPushPrompt() {
+    setShowPushPrompt(false);
+    try {
+      sessionStorage.setItem('pushPromptDismissed', '1');
+    } catch {}
+    await togglePush();
+  }
 
   async function togglePush() {
     setPushLoading(true);
@@ -236,7 +276,7 @@ export default function EmployeeHome() {
       } else {
         await subscribeToPush();
         setPushSubscribed(true);
-        setMessage('출퇴근 알림을 켰습니다. 오전 9시까지 상태 등록을 안 하셨거나, 저녁에 퇴근을 안 누르셨으면 알려드립니다.');
+        setMessage('출퇴근 알림을 켰습니다. 오전 9시까지 상태 등록을 안 하셨거나, 저녁에 퇴근을 안 누르셨으면 등록하실 때까지 계속 알려드립니다.');
         setMessageIsError(false);
       }
     } catch (err) {
@@ -281,6 +321,9 @@ export default function EmployeeHome() {
       .catch(() => {});
     apiFetch<{ name: string; latitude: number; longitude: number }[]>('/attendance/clients-with-location')
       .then(setClientLocations)
+      .catch(() => {});
+    apiFetch<{ id: string; name: string }[]>('/attendance/clients')
+      .then(setClientOptions)
       .catch(() => {});
   }, []);
 
@@ -454,7 +497,12 @@ export default function EmployeeHome() {
 
   function openDetailForm(code: string, prefilledClientName?: string) {
     setDetailStatus(code);
-    setClientName(prefilledClientName ?? (code === 'RESIDENT_ONSITE' ? (me?.assignedClient ?? '') : ''));
+    const initialClientName = prefilledClientName ?? (code === 'RESIDENT_ONSITE' ? (me?.assignedClient ?? '') : '');
+    setClientName(initialClientName);
+    // 고객사미팅/고객사작업의 검색창 콤보박스도 같은 초기값으로 맞춰준다(예: GPS 도착감지로
+    // 이미 고객사명이 채워진 경우, 검색창에도 바로 그 이름이 보이게).
+    setClientQuery(initialClientName);
+    setClientPickerOpen(false);
     setProjectName('');
     setWorkStart(nowHHMM());
     setWorkEnd('');
@@ -628,7 +676,9 @@ export default function EmployeeHome() {
     // 함수 안에서도 한 번 더 지킨다(다른 경로로 호출되더라도 항상 지켜지도록).
     const minDetailLen = code === 'HQ_WORKING' ? 15 : 10;
     if (workDetail.trim().length < minDetailLen) return;
-    if (code === 'HQ_WORKING' && !clientName.trim()) return;
+    // 본사근무는 관련 프로젝트/고객사 자유서술이 필수, 고객사미팅/고객사작업은 등록된 고객사
+    // 목록에서 고른 이름이 필수다(빈칸으로 저장되면 리포트에서 통째로 누락됨 — 2026-09-02).
+    if ((code === 'HQ_WORKING' || LOCATION_CHECK_STATUSES.has(code)) && !clientName.trim()) return;
     if (!SIMPLIFIED_EFFORT_STATUSES.has(code) && !workReason.trim()) return;
     // 작업위치(원격/현장, 필수) · 작업인원(선택) · 진행률/차수(선택, 야간작업만) — 야간작업/고객사미팅/고객사작업만 해당.
     if (SITE_DETAIL_STATUSES.has(code) && !siteType) return;
@@ -703,6 +753,41 @@ export default function EmployeeHome() {
   function logout() {
     clearToken();
     router.push('/login');
+  }
+
+  // 고객사미팅/고객사작업 검색창에 입력한 글자로 등록된 고객사 목록을 걸러준다(2026-09-02).
+  const filteredClientOptions = useMemo(() => {
+    const q = clientQuery.trim().toLowerCase();
+    if (!q) return clientOptions.slice(0, 20);
+    return clientOptions.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 20);
+  }, [clientOptions, clientQuery]);
+  // 입력한 글자가 등록된 고객사명과 완전히 같으면(대소문자 무관) "새로 등록" 버튼을 안 보여준다 —
+  // 이미 있는 고객사를 실수로 중복 등록하는 걸 막기 위함.
+  const exactClientMatch = useMemo(
+    () => clientOptions.some((c) => c.name.toLowerCase() === clientQuery.trim().toLowerCase()),
+    [clientOptions, clientQuery]
+  );
+
+  /** 목록에 없는 새 고객사를 그 자리에서 등록하고 바로 선택 상태로 만든다. */
+  async function addNewClientAndSelect() {
+    const name = clientQuery.trim();
+    if (!name || addingClientBusy) return;
+    setAddingClientBusy(true);
+    try {
+      const created = await apiFetch<{ id: string; name: string }>('/attendance/clients', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      setClientOptions((prev) => (prev.some((c) => c.id === created.id) ? prev : [...prev, created].sort((a, b) => a.name.localeCompare(b.name))));
+      setClientName(created.name);
+      setClientQuery(created.name);
+      setClientPickerOpen(false);
+    } catch {
+      setMessage('고객사 등록에 실패했습니다. 다시 시도해주세요.');
+      setMessageIsError(true);
+    } finally {
+      setAddingClientBusy(false);
+    }
   }
 
   const weeklyPct = useMemo(() => {
@@ -800,6 +885,20 @@ export default function EmployeeHome() {
       </div>
 
       <PastDayCorrectionCard rows={pendingCorrections} onSubmitted={refreshMyStatus} />
+
+      {showPushPrompt && (
+        <div className="card col-full notice-tint-blue">
+          🔔 출근/퇴근 등록을 깜빡하실 때 알려드릴까요? 오전 9시까지 출근 등록이 없거나 저녁에 퇴근을 안 누르시면, 등록하실 때까지 알림을 보내드려요.
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button style={{ width: 'auto', margin: 0 }} disabled={pushLoading} onClick={acceptPushPrompt}>
+              {pushLoading ? '처리 중...' : '네, 알림 받을게요'}
+            </button>
+            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={dismissPushPrompt}>
+              나중에요
+            </button>
+          </div>
+        </div>
+      )}
 
       {arrivedClient && (
         <div className="card col-full notice-tint-blue">
@@ -1190,10 +1289,64 @@ export default function EmployeeHome() {
                 </p>
               )}
               <label className="field-label">
-                {detailStatus === 'HQ_WORKING' ? '고객사/관련 프로젝트 (필수)' : detailStatus === 'REMOTE' ? '지원 고객사' : '고객사명'}
+                {detailStatus === 'HQ_WORKING' ? '고객사/관련 프로젝트 (필수)' : detailStatus === 'REMOTE' ? '지원 고객사' : LOCATION_CHECK_STATUSES.has(detailStatus) ? '고객사명 (필수 — 목록에서 선택)' : '고객사명'}
                 {detailStatus === 'NIGHT_WORK' ? '(내부 작업이면 비워두세요)' : ''}
               </label>
-              <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
+              {LOCATION_CHECK_STATUSES.has(detailStatus) ? (
+                <div className="client-combobox" style={{ position: 'relative' }}>
+                  <input
+                    value={clientQuery}
+                    onChange={(e) => {
+                      setClientQuery(e.target.value);
+                      setClientName(''); // 목록에서 다시 고르거나 새로 등록하기 전까지는 미확정 상태로 둔다.
+                      setClientPickerOpen(true);
+                    }}
+                    onFocus={() => setClientPickerOpen(true)}
+                    onBlur={() => setTimeout(() => setClientPickerOpen(false), 150)}
+                    placeholder="고객사명 검색 (예: OO상사)"
+                  />
+                  {clientPickerOpen && (
+                    <div className="client-combobox-list">
+                      {filteredClientOptions.length === 0 && !clientQuery.trim() && (
+                        <div className="client-combobox-empty">등록된 고객사가 없습니다. 아래에 이름을 입력해 새로 등록해주세요.</div>
+                      )}
+                      {filteredClientOptions.map((c) => (
+                        <button
+                          type="button"
+                          key={c.id}
+                          className="client-combobox-item"
+                          onMouseDown={(e) => {
+                            e.preventDefault(); // onBlur보다 먼저 선택이 처리되게(안 그러면 목록이 먼저 닫혀버림).
+                            setClientName(c.name);
+                            setClientQuery(c.name);
+                            setClientPickerOpen(false);
+                          }}
+                        >
+                          {c.name}
+                        </button>
+                      ))}
+                      {clientQuery.trim() && !exactClientMatch && (
+                        <button
+                          type="button"
+                          className="client-combobox-item client-combobox-add"
+                          disabled={addingClientBusy}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            addNewClientAndSelect();
+                          }}
+                        >
+                          ➕ &ldquo;{clientQuery.trim()}&rdquo; 새 고객사로 등록
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {!clientName.trim() && (
+                    <p className="hint-box" style={{ marginTop: 4 }}>* 목록에서 고객사를 선택하거나, 목록에 없으면 새로 등록해주세요.</p>
+                  )}
+                </div>
+              ) : (
+                <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
+              )}
 
               {EFFORT_STATUSES.has(detailStatus) && detailStatus !== 'HQ_WORKING' && (
                 <>
@@ -1273,6 +1426,9 @@ export default function EmployeeHome() {
                   workDetail.trim().length < (detailStatus === 'HQ_WORKING' ? 15 : 10)
                   || (!SIMPLIFIED_EFFORT_STATUSES.has(detailStatus) && !workReason.trim())
                   || (detailStatus === 'HQ_WORKING' ? !clientName.trim() : !workStart)
+                  // 고객사미팅/고객사작업은 위 workStart 조건과 별개로 고객사 선택(clientName)도 필수다
+                  // (목록에서 고르거나 새로 등록해야 확정되므로, 검색창 글자만 입력한 상태로는 등록 불가).
+                  || (LOCATION_CHECK_STATUSES.has(detailStatus) && !clientName.trim())
                   || (SITE_DETAIL_STATUSES.has(detailStatus) && !siteType)
                 }
                 onClick={submitDetailForm}
