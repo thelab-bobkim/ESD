@@ -10,6 +10,9 @@ const NAV_ITEMS = [
   { href: '/admin/approvals', label: '승인함', icon: '✅' },
   { href: '/admin/clients', label: '고객사 위치관리', icon: '📍' },
   { href: '/admin/board-scope', label: '표시 대상 관리', icon: '🎯' },
+  // 2026-09-04: 휴가현황 연동 가능 여부를 확인하기 위한 1회성 진단 화면 — 확인이 끝나면
+  // 이 메뉴 항목과 페이지를 지워도 된다(admin/dauoffice-probe.tsx 상단 설명 참고).
+  { href: '/admin/dauoffice-probe', label: '다우오피스 코드 진단', icon: '🔍' },
 ];
 
 interface Props {
