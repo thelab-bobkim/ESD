@@ -71,6 +71,18 @@ const UNDO_WINDOW_MS = 10 * 60 * 1000;
 // 마지막 근무위치(본사/고객사)를 이만큼 계속 벗어나 있으면 퇴근 제안을 만든다(2026-09-04).
 const DEPARTURE_AWAY_THRESHOLD_MS = 30 * 60 * 1000;
 
+// 부서별로 (1) 9개 상태 아이콘 중 실제로 보여줄 것, (2) 그중 등록만 하고 세부입력폼은 아예
+// 열지 않을 것을 다르게 설정한다(2026-09-04, 경영관리부 요청 — "본사출근은 확인만 하면 되고,
+// 고객사 관련 상태는 애초에 안 보여도 된다"). 부서명은 다우오피스 동기화 부서명과 정확히
+// 일치해야 하며, 여기 없는 부서는 기존과 동일하게 전체 상태 + 세부폼을 그대로 유지한다.
+// 다른 부서도 필요해지면 이 맵에 항목만 추가하면 된다.
+const DEPARTMENT_STATUS_OVERRIDES: Record<string, { visibleStatuses: string[]; noFormStatuses: string[] }> = {
+  경영관리부: {
+    visibleStatuses: ['REMOTE', 'HQ_WORKING', 'MOVING', 'BUSINESS_TRIP', 'ON_LEAVE'],
+    noFormStatuses: ['HQ_WORKING'],
+  },
+};
+
 interface MeResponse {
   name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null; mustChangePassword: boolean; locationConsentGiven: boolean; privacyConsentGiven: boolean;
 }
@@ -172,6 +184,12 @@ export default function EmployeeHome() {
   const clockedOut = Boolean(myStatus?.record?.clockOutAt);
   // 관리자 권한 계정은 퇴근 후에도 테스트할 수 있게 상태변경 잠금에서 예외로 둔다.
   const isAdminAccount = Boolean(me?.roles?.some((r) => ['SYSTEM_ADMIN', 'HR_ADMIN'].includes(r)));
+  // 부서별 상태 아이콘/입력폼 커스터마이징(DEPARTMENT_STATUS_OVERRIDES 참고) — 해당 부서가
+  // 아니면 undefined이고, 그 경우 아래 로직은 전부 기존 동작(9개 전부 + 세부폼) 그대로다.
+  const deptStatusOverride = me?.department ? DEPARTMENT_STATUS_OVERRIDES[me.department] : undefined;
+  const visibleStatusOrder = deptStatusOverride
+    ? STATUS_ORDER.filter((code) => deptStatusOverride.visibleStatuses.includes(code))
+    : STATUS_ORDER;
   const [weekly, setWeekly] = useState<WeeklySummary | null>(null);
   const [weather, setWeather] = useState<WeatherInfo>({ condition: null, tempC: null });
   // 방금(오탭 포함) 등록한 상태를 되돌릴 수 있는 정보 — 9개 아이콘 즉시등록 직후에만 채워진다.
@@ -554,8 +572,11 @@ export default function EmployeeHome() {
     // 제안이 있다면 더 이상 맞지 않는 추정이니 같이 정리한다(오탐으로 조용히 취소).
     if (!alreadyInThisStatus && departureSuggestion) dismissDepartureSuggestion();
     // 직전 상태의 내용을 아직 안 채운 채로 다른 상태로 넘어가는 경우, 막지는 않되(사용자가 화면에
-    // 갇히면 안 되므로) "직전 것도 잊지 마세요" 정도의 부드러운 리마인더만 붙여준다.
-    const pendingPrev = currentStatus && !currentStatus.note && !alreadyInThisStatus ? currentStatus : null;
+    // 갇히면 안 되므로) "직전 것도 잊지 마세요" 정도의 부드러운 리마인더만 붙여준다. 다만 직전
+    // 상태가 부서 설정상 애초에 세부폼이 없는 상태(noFormStatuses)였다면 채울 내용 자체가 없으니
+    // 리마인더를 붙이지 않는다.
+    const prevWasNoForm = Boolean(currentStatus && deptStatusOverride?.noFormStatuses.includes(currentStatus.status));
+    const pendingPrev = currentStatus && !currentStatus.note && !alreadyInThisStatus && !prevWasNoForm ? currentStatus : null;
 
     // 즉시등록 대상은 처음 누르면 상세폼 없이 바로 등록해서 상황판에 즉시 반영한다.
     // ("세부내용은 나중에 작성" — 시작하는 시점엔 아직 쓸 내용이 없는 게 당연하므로.)
@@ -585,6 +606,9 @@ export default function EmployeeHome() {
       if (code === 'HQ_WORKING') {
         await refreshHqQuickLocation();
       }
+      // 부서 설정(DEPARTMENT_STATUS_OVERRIDES)에서 이 상태를 "세부폼 없이 등록만"으로 지정했으면,
+      // 등록 즉시 끝난다 — 아래 세부입력폼을 아예 열지 않고, 안내 문구도 "입력해주세요"를 뺀다.
+      const skipDetailForm = deptStatusOverride?.noFormStatuses.includes(code) ?? false;
       run(
         () =>
           attemptWithLocationRetry(
@@ -593,7 +617,9 @@ export default function EmployeeHome() {
           ),
         pendingPrev
           ? `⚠️ 상태가 '${STATUS_META[code].label}'(으)로 변경됐지만, 직전 '${STATUS_META[pendingPrev.status]?.label ?? pendingPrev.status}' 내용을 아직 안 채우셨어요! 잊지 말고 채워주세요.`
-          : `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요.`,
+          : skipDetailForm
+            ? `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`
+            : `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요.`,
         (data) => {
           // 아이콘을 잘못 눌렀을 때 흔적 없이 되돌릴 수 있게, 방금 만들어진 기록들의 id를 잠깐 기억해둔다.
           const res = data as {
@@ -614,12 +640,18 @@ export default function EmployeeHome() {
           }
         }
       );
-      // 상태변경과 동시에 세부내용 입력폼도 바로 아래에 띄운다(두 번 누를 필요 없게).
-      openDetailForm(code, prefilledClientName);
+      // 상태변경과 동시에 세부내용 입력폼도 바로 아래에 띄운다(두 번 누를 필요 없게) — 다만
+      // 세부폼이 필요없는 부서·상태 조합이면 이 단계에서 그냥 끝낸다.
+      if (!skipDetailForm) {
+        openDetailForm(code, prefilledClientName);
+      }
       return;
     }
 
     if (DETAIL_FORM_STATUSES.has(code)) {
+      // 이미 같은 상태인 채로 아이콘을 다시 눌러 세부폼을 열려는 경우도, 세부폼이 필요없는
+      // 부서·상태 조합이면 열 내용이 없으니 그냥 둔다.
+      if (deptStatusOverride?.noFormStatuses.includes(code)) return;
       openDetailForm(code, prefilledClientName);
       return;
     }
@@ -1139,7 +1171,7 @@ export default function EmployeeHome() {
               </div>
             )}
             <div className="status-icon-grid">
-              {STATUS_ORDER.map((code) => {
+              {visibleStatusOrder.map((code) => {
                 // 퇴근(낮근무 종료) 후에도 야간작업자는 계속 상태를 등록해야 하니 예외로 둔다.
                 // 지난 근무일 퇴근 미해결 건이 있으면(정정 신청 전까지) 야간작업 예외 없이 전부 잠근다 —
                 // 오늘 상태를 계속 쌓아가기 전에 어제 문제부터 정리하게 하기 위함.
