@@ -31,6 +31,9 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
       ...(userIds ? { id: { in: userIds } } : {}),
       // 파일럿 초기 세팅용 SAMPLE_ 테스트 계정은 실제 상황판에서 제외한다.
       name: { not: { startsWith: 'SAMPLE_' } },
+      // 2026-09-04: 다우오피스 전체 조직도가 아니라 admin/board-scope에서 명시적으로 켠 부서/인원만
+      // 상황판에 표시한다(회사 요청으로 시범 범위를 좁힘) — users.routes.ts board-scope 참고.
+      includedInBoard: true,
     },
     include: { department: true, assignedClient: true },
   });

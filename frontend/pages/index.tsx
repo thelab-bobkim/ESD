@@ -152,6 +152,9 @@ export default function EmployeeHome() {
   const [arrivedClient, setArrivedClient] = useState<string | null>(null);
   // 고객사미팅/고객사작업 등록 시 검색·선택하는 전체 고객사 목록(좌표 유무 무관) — 2026-09-02 추가.
   const [clientOptions, setClientOptions] = useState<{ id: string; name: string }[]>([]);
+  // 2026-09-04: 목록을 못 불러온 건지(네트워크 오류) 아니면 진짜로 등록된 고객사가 없는 건지
+  // 화면에서 구분이 안 돼서 "목록이 안 보여요" 문의가 들어옴 — 원인 파악용으로 구분해서 보여준다.
+  const [clientOptionsError, setClientOptionsError] = useState(false);
   const [clientQuery, setClientQuery] = useState('');
   const [clientPickerOpen, setClientPickerOpen] = useState(false);
   const [addingClientBusy, setAddingClientBusy] = useState(false);
@@ -324,7 +327,7 @@ export default function EmployeeHome() {
       .catch(() => {});
     apiFetch<{ id: string; name: string }[]>('/attendance/clients')
       .then(setClientOptions)
-      .catch(() => {});
+      .catch(() => setClientOptionsError(true));
   }, []);
 
   // 이 상태들은 이미 "고객사에 있다"고 등록된 상태라, 고객사 도착 제안이나 이탈 감지를 또 띄울
@@ -1293,7 +1296,7 @@ export default function EmployeeHome() {
                 {detailStatus === 'NIGHT_WORK' ? '(내부 작업이면 비워두세요)' : ''}
               </label>
               {LOCATION_CHECK_STATUSES.has(detailStatus) ? (
-                <div className="client-combobox" style={{ position: 'relative' }}>
+                <div className="client-combobox">
                   <input
                     value={clientQuery}
                     onChange={(e) => {
@@ -1305,9 +1308,15 @@ export default function EmployeeHome() {
                     onBlur={() => setTimeout(() => setClientPickerOpen(false), 150)}
                     placeholder="고객사명 검색 (예: OO상사)"
                   />
+                  {/* 2026-09-04: position:absolute로 입력창 아래 띄우던 걸 일반 흐름으로 바꿨다 —
+                      모바일에서 화면키보드가 뜨면 절대좌표로 겹쳐 그려지는 목록이 키보드에 가려져
+                      "목록이 안 보여요" 문제가 있었다. 그냥 아래로 밀어내는 방식이 항상 보인다. */}
                   {clientPickerOpen && (
                     <div className="client-combobox-list">
-                      {filteredClientOptions.length === 0 && !clientQuery.trim() && (
+                      {clientOptionsError && (
+                        <div className="client-combobox-empty">⚠ 고객사 목록을 불러오지 못했습니다. 인터넷 연결을 확인하고 화면을 새로고침 해주세요.</div>
+                      )}
+                      {!clientOptionsError && filteredClientOptions.length === 0 && !clientQuery.trim() && (
                         <div className="client-combobox-empty">등록된 고객사가 없습니다. 아래에 이름을 입력해 새로 등록해주세요.</div>
                       )}
                       {filteredClientOptions.map((c) => (

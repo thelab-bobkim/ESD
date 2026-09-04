@@ -107,9 +107,15 @@ authRouter.post('/login', async (req, res) => {
     });
     return res.status(401).json({ success: false, error: { code: 'INVALID_CREDENTIALS', message: '아이디 또는 비밀번호가 올바르지 않습니다.' } });
   }
-  if (user.failedLoginAttempts > 0 || user.lockedUntil) {
-    await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: 0, lockedUntil: null } });
-  }
+  // 2026-09-04: "앱을 실제로 쓰는지" 관리자가 확인할 수 있게 로그인 성공 시각을 남긴다
+  // (admin/board-scope 화면 참고). 실패 카운터 초기화가 필요 없는 경우에도 이 값은 항상 갱신한다.
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      lastLoginAt: new Date(),
+      ...(user.failedLoginAttempts > 0 || user.lockedUntil ? { failedLoginAttempts: 0, lockedUntil: null } : {}),
+    },
+  });
 
   const roles = user.userRoles.map((ur) => ur.role.code);
   const token = signAccessToken({ userId: user.id, roles, departmentId: user.departmentId, tokenVersion: user.tokenVersion });

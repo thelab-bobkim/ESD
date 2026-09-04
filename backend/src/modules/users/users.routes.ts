@@ -1,10 +1,54 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 
 export const usersRouter = Router();
 usersRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN'));
+
+/**
+ * 상황판/출퇴근 현황 표시 대상 관리(2026-09-04 추가) — 다우오피스 전체 조직도가 아니라 특정
+ * 부서·인원만 시범적으로 표시하길 원해서, 부서별로 묶어서 한눈에 보고 부서 단위/개별로 켜고
+ * 끌 수 있게 재직중인 전 직원 목록을 반환한다(HR_ADMIN/SYSTEM_ADMIN 전용 — TEAM_LEAD는 접근 불가).
+ * 로그인 이력(lastLoginAt)도 함께 내려줘서 같은 화면에서 "앱을 안 쓰는 사람"도 바로 보이게 한다.
+ */
+usersRouter.get('/board-scope', requireRole('HR_ADMIN', 'SYSTEM_ADMIN'), async (_req, res) => {
+  const users = await prisma.user.findMany({
+    where: { employmentStatus: 'ACTIVE', name: { not: { startsWith: 'SAMPLE_' } } },
+    select: {
+      id: true,
+      name: true,
+      employeeNo: true,
+      includedInBoard: true,
+      lastLoginAt: true,
+      department: { select: { id: true, name: true } },
+    },
+    orderBy: [{ department: { name: 'asc' } }, { name: 'asc' }],
+  });
+  return res.json({ success: true, data: users });
+});
+
+const boardScopeUpdateSchema = z.object({
+  userIds: z.array(z.string().uuid()).min(1),
+  included: z.boolean(),
+});
+
+usersRouter.post('/board-scope', requireRole('HR_ADMIN', 'SYSTEM_ADMIN'), async (req, res) => {
+  const parsed = boardScopeUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '입력값을 확인하세요.' } });
+  }
+  const { userIds, included } = parsed.data;
+  await prisma.user.updateMany({ where: { id: { in: userIds } }, data: { includedInBoard: included } });
+  await recordAuditLog({
+    actorUserId: req.authUser!.userId,
+    actionType: 'POLICY_CHANGE',
+    targetType: 'user.includedInBoard',
+    afterValue: { userIds, included },
+  });
+  return res.json({ success: true, data: { updated: userIds.length, included } });
+});
 
 /**
  * 직원 상세 조회. 역할에 따라 필드를 마스킹한다.

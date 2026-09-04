@@ -372,6 +372,14 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'TIME_REQUIRED', message: '작업시작 시간을 입력해야 합니다.' } });
   }
 
+  // 고객사작업/고객사미팅은 어떤 고객사인지 반드시 알아야 공수 산정·리포트가 의미가 있다
+  // (2026-09-02: 빈칸으로 저장되던 기록이 리포트에서 통째로 누락되는 문제 해결 — 사용자 확인 완료).
+  // 등록된 고객사 목록에서 고른 이름이어야 하며, 목록에 없는 새 이름이면 프론트에서 먼저
+  // POST /attendance/clients로 등록한 뒤 그 이름을 넘겨야 한다.
+  if (LOCATION_CHECK_STATUSES.has(status) && !effort?.clientName?.trim()) {
+    return res.status(400).json({ success: false, error: { code: 'CLIENT_NAME_REQUIRED', message: '고객사를 선택해야 합니다.' } });
+  }
+
   // 원격/현장 — 고객사미팅/고객사작업/야간작업은 필수 선택. 미선택이면 등록 자체를 막는다.
   if (REQUIRE_SITE_TYPE_STATUSES.has(status) && !siteType) {
     return res.status(400).json({ success: false, error: { code: 'SITE_TYPE_REQUIRED', message: '작업위치(원격/현장)를 선택해야 합니다.' } });
@@ -805,6 +813,43 @@ attendanceRouter.get('/clients-with-location', async (_req, res) => {
     select: { name: true, latitude: true, longitude: true },
   });
   return res.json({ success: true, data: clients });
+});
+
+/**
+ * 등록된 전체 고객사 목록(id/이름만, 좌표 유무 무관) — 고객사작업/미팅 등록 시 검색·선택용
+ * 콤보박스 데이터 소스. clients.routes.ts의 관리자 전용 목록과 달리 직원이면 누구나 조회 가능
+ * (2026-09-02: 클릭 한 번으로 즉시등록되던 고객사작업/미팅을 "목록에서 고르기"로 바꾸며 추가).
+ */
+attendanceRouter.get('/clients', async (_req, res) => {
+  const clients = await prisma.client.findMany({
+    where: { name: { not: { startsWith: 'SAMPLE_' } } },
+    select: { id: true, name: true },
+    orderBy: { name: 'asc' },
+  });
+  return res.json({ success: true, data: clients });
+});
+
+const createClientSchema = z.object({ name: z.string().min(1) });
+
+/**
+ * 목록에 없는 새 고객사를 직원이 그 자리에서 등록한다(관리자 승인 대기 없이 즉시 사용 가능해야
+ * "귀찮아서 안 적는다"는 원래 문제가 재발하지 않는다). 좌표는 비워두고, 나중에 관리자가
+ * clients.routes.ts에서 좌표를 채우면 위치대조 기능도 자동으로 적용된다. 이름이 이미 있으면
+ * (대소문자 무관) 새로 만들지 않고 기존 것을 그대로 반환한다 — 같은 고객사가 오타 없이도
+ * 중복 등록되는 것을 막기 위함.
+ */
+attendanceRouter.post('/clients', async (req, res) => {
+  const parsed = createClientSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '고객사명을 입력하세요.' } });
+  }
+  const name = parsed.data.name.trim();
+  const existing = await prisma.client.findFirst({ where: { name: { equals: name, mode: 'insensitive' } } });
+  if (existing) {
+    return res.json({ success: true, data: { id: existing.id, name: existing.name } });
+  }
+  const created = await prisma.client.create({ data: { name } });
+  return res.json({ success: true, data: { id: created.id, name: created.name } });
 });
 
 /**

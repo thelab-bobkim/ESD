@@ -35,7 +35,8 @@ reportsRouter.get('/worktime-summary', async (req, res) => {
   }
   const { from, to } = parsed.data;
   const records = await prisma.attendanceRecord.findMany({
-    where: { workDate: { gte: new Date(from), lte: new Date(to) } },
+    // 2026-09-04: attendance-detail과 동일하게 표시대상(includedInBoard)만 집계한다.
+    where: { workDate: { gte: new Date(from), lte: new Date(to) }, user: { includedInBoard: true } },
     include: { user: { include: { department: true } } },
   });
 
@@ -199,6 +200,7 @@ reportsRouter.get('/effort-export', async (req, res) => {
 
 reportsRouter.get('/attendance-export', async (req, res) => {
   const records = await prisma.attendanceRecord.findMany({
+    where: { user: { includedInBoard: true } },
     include: { user: { select: { name: true, employeeNo: true } } },
     orderBy: { workDate: 'desc' },
     take: 1000,
@@ -218,6 +220,7 @@ reportsRouter.get('/attendance-export', async (req, res) => {
 
 reportsRouter.get('/night-work-export', async (req, res) => {
   const sessions = await prisma.nightWorkSession.findMany({
+    where: { user: { includedInBoard: true } },
     include: { user: { select: { name: true, employeeNo: true } }, leaveConversionRequest: true },
     orderBy: { startedAt: 'desc' },
     take: 1000,
@@ -248,17 +251,30 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'date(YYYY-MM-DD)가 필요합니다.' } });
   }
   const workDate = new Date(`${parsed.data.date}T00:00:00.000Z`);
-  const records = await prisma.attendanceRecord.findMany({
-    where: { workDate, user: { name: { not: { startsWith: 'SAMPLE_' } } } },
-    include: { user: { include: { department: true } } },
-    orderBy: { clockInAt: 'asc' },
+
+  // 2026-09-04: 예전엔 그날 출근기록(attendanceRecord)이 있는 사람만 조회했는데, 그러면 그날
+  // 앱을 아예 안 켠(출근조차 안 찍은) 직원은 목록에서 통째로 빠져서 "이 사람 오늘 출근했나?"를
+  // 확인할 방법이 없었다. 지금은 표시대상(includedInBoard) 전원을 기준으로 조회하고, 그날
+  // 기록이 없으면 출근/퇴근을 전부 null로 둔 채 "미출근" 상태로 보여준다(회사 요청 — 모든
+  // 대상자가 항상 보이고, 앱을 안 쓰는 사람도 바로 드러나야 함).
+  const scopedUsers = await prisma.user.findMany({
+    where: { includedInBoard: true, employmentStatus: 'ACTIVE', name: { not: { startsWith: 'SAMPLE_' } } },
+    include: { department: true },
+    orderBy: [{ department: { name: 'asc' } }, { name: 'asc' }],
   });
+  const userIds = scopedUsers.map((u) => u.id);
+
+  const records = await prisma.attendanceRecord.findMany({
+    where: { workDate, userId: { in: userIds } },
+  });
+  const recordByUser = new Map<string, (typeof records)[number]>();
+  for (const r of records) recordByUser.set(r.userId, r);
 
   // 이 날짜의 이동시간(자동추정 포함)을 각 직원별로 계산하기 위해, 전 직원의 상태변경 로그를
   // 한 번에 불러와서 userId로 묶는다(직원마다 따로 조회하지 않도록).
   const { start: dayStart, end: dayEnd } = realDayWindow(workDate);
   const dayLogs = await prisma.statusChangeLog.findMany({
-    where: { changedAt: { gte: dayStart, lt: dayEnd }, userId: { in: records.map((r) => r.userId) } },
+    where: { changedAt: { gte: dayStart, lt: dayEnd }, userId: { in: userIds } },
     orderBy: { changedAt: 'asc' },
     select: { userId: true, status: true, changedAt: true, note: true },
   });
@@ -270,26 +286,27 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
   }
   const defaultTravelMinutes = await getPolicyNumber('DEFAULT_TRAVEL_MINUTES', 30);
 
-  const rows = records.map((r) => {
+  const rows = scopedUsers.map((u) => {
+    const r = recordByUser.get(u.id) ?? null;
     const { totalTravelMinutes, hasEstimatedTravel } = computeTimelineSegments(
-      logsByUser.get(r.userId) ?? [],
-      r.clockOutAt,
+      logsByUser.get(u.id) ?? [],
+      r?.clockOutAt ?? null,
       defaultTravelMinutes
     );
     return {
-      recordId: r.id,
-      userId: r.userId,
-      employeeNo: r.user.employeeNo,
-      name: r.user.name,
-      department: r.user.department.name,
-      clockInAt: r.clockInAt,
-      clockOutAt: r.clockOutAt,
-      clockOutLocation: r.clockOutLocation,
-      totalWorkedMinutes: r.totalWorkedMinutes,
+      recordId: r?.id ?? null,
+      userId: u.id,
+      employeeNo: u.employeeNo,
+      name: u.name,
+      department: u.department.name,
+      clockInAt: r?.clockInAt ?? null,
+      clockOutAt: r?.clockOutAt ?? null,
+      clockOutLocation: r?.clockOutLocation ?? null,
+      totalWorkedMinutes: r?.totalWorkedMinutes ?? null,
       // 정정(관리자 강제확정/위치이탈 자동감지 확정 포함)된 기록인지 — 관리자 화면에서 "정정됨" 배지와
       // 사유(추정시각 vs 실제 등)를 보여주는 데 쓴다.
-      isCorrected: r.isCorrected,
-      correctionReason: r.correctionReason,
+      isCorrected: r?.isCorrected ?? false,
+      correctionReason: r?.correctionReason ?? null,
       // 이동시간(공수 산정용) — 본인이 "이동중"으로 직접 찍은 시간 + 미기록 구간 자동추정치의 합.
       travelMinutes: totalTravelMinutes,
       travelHasEstimate: hasEstimatedTravel,

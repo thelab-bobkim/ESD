@@ -28,7 +28,9 @@ interface WorktimeRow {
 interface WorktimeSummary { from: string; to: string; rows: WorktimeRow[]; }
 
 interface AttendanceDetailRow {
-  recordId: string; userId: string; employeeNo: string; name: string; department: string;
+  // 2026-09-04: 표시대상(includedInBoard) 전원을 항상 보여주도록 바뀌면서, 그날 아직 아무
+  // 기록도 없는 사람은 recordId가 null로 내려온다("미출근" 상태 — 아래 AttendanceRowTr 참고).
+  recordId: string | null; userId: string; employeeNo: string; name: string; department: string;
   clockInAt: string | null; clockOutAt: string | null; clockOutLocation: string | null; totalWorkedMinutes: number | null;
   isCorrected: boolean; correctionReason: string | null;
   // 이동시간(공수 산정용) — 본인이 "이동중"으로 직접 찍은 시간 + 미기록 구간 자동추정치의 합.
@@ -131,13 +133,17 @@ function AttendanceRowTr({
   r: AttendanceDetailRow; date: string; onClick: () => void; hideDept?: boolean;
   onForceClockOut: (row: { recordId: string; clockInAt: string | null }) => void;
 }) {
-  const isPastDayUnresolved = !r.clockOutAt && date < todayWorkDateKST();
-  const isUnconfirmedAfter18 = !r.clockOutAt && !isPastDayUnresolved && new Date().getHours() >= 18 && !!r.clockInAt;
+  // 2026-09-04: 그날 아예 아무 기록도 없는 사람("미출근" — 앱을 안 쓴 건지, 정말 안 나온 건지는
+  // 별도로 admin/board-scope의 로그인 이력에서 확인) — 이 경우엔 "정정 필요"가 아니라 그냥
+  // "출근 자체가 없었다"는 걸로, 아래의 출근-후-미해결 상태와는 구분해서 보여준다.
+  const neverClockedIn = !r.clockInAt;
+  const isPastDayUnresolved = !neverClockedIn && !r.clockOutAt && date < todayWorkDateKST();
+  const isUnconfirmedAfter18 = !neverClockedIn && !r.clockOutAt && !isPastDayUnresolved && new Date().getHours() >= 18;
   return (
     <tr style={{ cursor: 'pointer' }} onClick={onClick}>
       <td>
         <div className="chip-row">
-          <div className="chip-avatar" style={{ background: r.clockOutAt ? '#2f9e44' : isPastDayUnresolved ? '#e03131' : '#f08c00' }}>{r.name.slice(-2)}</div>
+          <div className="chip-avatar" style={{ background: r.clockOutAt ? '#2f9e44' : neverClockedIn ? '#94a3b8' : isPastDayUnresolved ? '#e03131' : '#f08c00' }}>{r.name.slice(-2)}</div>
           {r.name}
           <span style={{ fontSize: 11, color: '#2f6feb', marginLeft: 4 }}>상세보기 ▸</span>
         </div>
@@ -175,11 +181,15 @@ function AttendanceRowTr({
             </div>
             {r.clockOutLocation && <div className="att-addr" title={r.clockOutLocation}>📍 {r.clockOutLocation}</div>}
           </div>
+        ) : neverClockedIn ? (
+          <span className="att-pill att-pill-neutral" title="이 날짜에 출근을 포함해 아무 상태도 등록하지 않았습니다">
+            ⚪ 미출근
+          </span>
         ) : isPastDayUnresolved ? (
           <span
             className="att-pill att-pill-danger"
             title="클릭해서 실제 퇴근 시각을 입력하고 정정합니다"
-            onClick={(e) => { e.stopPropagation(); onForceClockOut({ recordId: r.recordId, clockInAt: r.clockInAt }); }}
+            onClick={(e) => { e.stopPropagation(); if (r.recordId) onForceClockOut({ recordId: r.recordId, clockInAt: r.clockInAt }); }}
           >
             ⚠ 미해결 · 정정필요
           </span>

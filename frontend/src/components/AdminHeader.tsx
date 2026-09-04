@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { href: '/admin/calendar', label: '캘린더', icon: '🗓️' },
   { href: '/admin/approvals', label: '승인함', icon: '✅' },
   { href: '/admin/clients', label: '고객사 위치관리', icon: '📍' },
+  { href: '/admin/board-scope', label: '표시 대상 관리', icon: '🎯' },
 ];
 
 interface Props {
