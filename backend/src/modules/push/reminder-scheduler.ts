@@ -20,6 +20,19 @@ let lastClockOutSentAt = new Map<string, number>();
 // 신고 — 이동중 상태가 너무 오래 지속되면(=도착했는데 상태를 안 바꿨을 가능성) 팝업과 별개로
 // 푸시 알림도 보낸다. 앱을 안 열어놔도 알림이 오므로 "인지를 못 한다"는 문제를 보완한다.
 let lastStaleTransitSentAt = new Map<string, number>();
+// 2026-09-04: 본사근무/고객사작업/고객사미팅은 "우선 등록, 세부내용은 나중에" 원칙상 아이콘을
+// 누르는 즉시 상태만 등록되고(note가 비어있음) 그 아래 열리는 입력폼을 따로 제출해야 고객사명·
+// 업무내용이 채워진다 — 그리고 이 세 상태는 그 입력폼을 제출하는 순간에야 위치대조(GPS)도 함께
+// 이뤄지므로, 폼을 안 채우고 방치하면 상황판에 "위치 미확인"만 계속 남고 내용도 비어보인다.
+// (관리자 문의: "고객사 정보 없이 등록된 사람이 있다 / 왜 위치 미확인이 안 없어지냐") 이동중과
+// 같은 방식으로, 등록만 되고 세부내용이 빈 채로 정책값(기본 20분) 이상 지나면 재알림한다.
+const PENDING_DETAIL_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
+const PENDING_DETAIL_LABELS: Record<string, string> = {
+  HQ_WORKING: '본사근무',
+  CLIENT_MEETING: '고객사미팅',
+  CLIENT_WORK: '고객사작업',
+};
+let lastPendingDetailSentAt = new Map<string, number>();
 let trackedDateKey: string | null = null;
 
 function kstHourOf(now: Date): number {
@@ -43,6 +56,12 @@ async function clockOutReminderStartHourKST(): Promise<number> {
  * 세 번째로, 그날 가장 최근 상태가 "이동중"(MOVING)인 채로 정책값(기본 30분) 이상 지난 직원에게도
  * 같은 방식으로 재알림한다 — GPS 도착 감지 팝업은 앱을 열어놔야만 뜨기 때문에, 이동중 상태로
  * 도착한 뒤 앱을 안 보고 있으면 본인이 알아챌 방법이 없다는 문제를 보완하기 위함이다.
+ *
+ * 네 번째로, 그날 가장 최근 상태가 본사근무/고객사작업/고객사미팅인데 세부내용(고객사·업무내용
+ * 등)을 아직 입력하지 않은 채로 정책값(기본 20분) 이상 지난 직원에게도 재알림한다 — 이 세 상태는
+ * "우선 등록, 세부내용은 나중에" 원칙상 아이콘을 누르는 즉시 등록되고, 위치대조는 그 아래 열리는
+ * 입력폼을 실제로 제출하는 순간에야 이뤄진다. 그래서 폼을 안 채우고 방치하면 상황판 관리자
+ * 화면에 고객사/업무내용 없이 "위치 미확인"만 계속 남게 되는데, 이 알림이 그 상태를 인지시켜준다.
  */
 export function startClockInReminderScheduler() {
   setInterval(async () => {
@@ -59,6 +78,7 @@ export function startClockInReminderScheduler() {
         lastClockInSentAt = new Map();
         lastClockOutSentAt = new Map();
         lastStaleTransitSentAt = new Map();
+        lastPendingDetailSentAt = new Map();
       }
       if (kstHour >= QUIET_HOUR_KST || kstHour < 9) return; // 조용한 시간대엔 아무것도 안 보낸다.
 
@@ -121,12 +141,12 @@ export function startClockInReminderScheduler() {
       const dayLogs = await prisma.statusChangeLog.findMany({
         where: { changedAt: { gte: dayStart, lt: dayEnd }, userId: { in: activeUsers.map((u: { id: string }) => u.id) } },
         orderBy: { changedAt: 'asc' },
-        select: { userId: true, status: true, changedAt: true },
+        select: { userId: true, status: true, changedAt: true, note: true },
       });
       // 오름차순으로 순회하며 계속 덮어쓰면, 각 유저별로 마지막에 남는 값이 "오늘 가장 최근 상태"가 된다.
-      const latestStatusByUser = new Map<string, { status: string; changedAt: Date }>();
+      const latestStatusByUser = new Map<string, { status: string; changedAt: Date; note: string | null }>();
       for (const log of dayLogs) {
-        latestStatusByUser.set(log.userId, { status: log.status, changedAt: log.changedAt });
+        latestStatusByUser.set(log.userId, { status: log.status, changedAt: log.changedAt, note: log.note });
       }
       let staleTransitSentCount = 0;
       for (const u of activeUsers) {
@@ -146,6 +166,32 @@ export function startClockInReminderScheduler() {
       if (staleTransitSentCount > 0) {
         // eslint-disable-next-line no-console
         console.log(`[StaleTransitReminder] 이동중 장시간 재알림 ${staleTransitSentCount}명 발송`);
+      }
+
+      // 2026-09-04: 본사근무/고객사작업/고객사미팅으로 등록만 되고 세부내용(고객사·업무내용 등)을
+      // 아직 안 채운 채로 정책값(기본 20분) 이상 지나면 재알림한다 — 이 세 상태는 세부내용 입력폼을
+      // 제출해야만 위치대조도 함께 이뤄지므로, 이 알림이 결국 "위치 미확인" 문제도 같이 해소해준다.
+      const pendingDetailMinutes = await getPolicyNumber('PENDING_DETAIL_REMINDER_MINUTES', 20);
+      let pendingDetailSentCount = 0;
+      for (const u of activeUsers) {
+        const latest = latestStatusByUser.get(u.id);
+        if (!latest || !PENDING_DETAIL_STATUSES.has(latest.status)) continue;
+        if (latest.note && latest.note.trim()) continue;
+        if (now.getTime() - latest.changedAt.getTime() < pendingDetailMinutes * 60 * 1000) continue;
+        const last = lastPendingDetailSentAt.get(u.id);
+        if (last && now.getTime() - last < ESCALATION_INTERVAL_MS) continue;
+        lastPendingDetailSentAt.set(u.id, now.getTime());
+        pendingDetailSentCount++;
+        const label = PENDING_DETAIL_LABELS[latest.status] ?? latest.status;
+        await sendPushToUser(u.id, {
+          title: 'DSTI-TSB',
+          body: `'${label}'(으)로 등록만 되고 고객사·업무내용을 아직 입력하지 않으셨어요. 앱에서 마저 입력해주세요 — 위치 확인도 그때 함께 이뤄져요! (등록 전까지 계속 알려드려요)`,
+          url: '/',
+        });
+      }
+      if (pendingDetailSentCount > 0) {
+        // eslint-disable-next-line no-console
+        console.log(`[PendingDetailReminder] 세부내용 미입력 재알림 ${pendingDetailSentCount}명 발송`);
       }
     } catch (err) {
       // eslint-disable-next-line no-console

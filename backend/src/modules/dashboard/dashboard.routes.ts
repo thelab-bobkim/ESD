@@ -4,6 +4,13 @@ import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { realDayWindow } from '../../common/attendance-helpers';
 
+// 본사근무/고객사작업/고객사미팅/재택은 "우선 등록, 세부내용은 나중에" 원칙상 등록 직후엔
+// note가 비어있을 수 있다(attendance.routes.ts EFFORT_STATUSES와 동일하게 유지). 이 경우에도
+// 실제로는 클라이언트명이 effort_logs에 남아있는 경우가 있어(예: GPS 도착팝업으로 고객사명은
+// 정해졌지만 세부폼은 아직 제출 전), 상황판에서 "고객사 정보가 아예 없다"고 오해하지 않도록
+// 그 값을 별도 필드(effortClientName)로 함께 내려준다(2026-09-04, 관리자 문의 대응).
+const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE']);
+
 export const dashboardRouter = Router();
 dashboardRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'));
 
@@ -56,6 +63,12 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
       });
       const clockedOut = Boolean(attendanceOnDay?.clockOutAt)
         && (!statusOnDay || statusOnDay.changedAt <= attendanceOnDay!.clockOutAt!);
+      // note가 비어있는데 상태가 공수 대상(EFFORT_STATUSES)이면, 세부폼 제출 전이라도 이미
+      // 남아있을 수 있는 effort_logs의 고객사명을 대신 조회해서 보여준다(위 EFFORT_STATUSES 주석 참고).
+      const needsEffortFallback = !statusOnDay?.note && statusOnDay?.status && EFFORT_STATUSES.has(statusOnDay.status);
+      const fallbackEffort = needsEffortFallback
+        ? await prisma.effortLog.findFirst({ where: { userId: u.id, workDate: workDateLabel }, orderBy: { startTime: 'desc' } })
+        : null;
       return {
         userId: u.id,
         name: u.name,
@@ -66,6 +79,7 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
         statusChangedAt: statusOnDay?.changedAt ?? null,
         statusSource: statusOnDay?.source ?? null,
         statusNote: statusOnDay?.note ?? null,
+        effortClientName: fallbackEffort?.clientName || null,
         locationMatch: statusOnDay?.locationMatch ?? checkinOnDay?.locationMatch ?? null,
         locationDistanceMeters: statusOnDay?.locationDistanceMeters ?? checkinOnDay?.locationDistanceMeters ?? null,
         // 2026-09-02: locationMatch가 null인 이유를 상황판에서 구분해서 보여주기 위해 추가.

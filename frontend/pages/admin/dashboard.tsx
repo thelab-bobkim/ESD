@@ -55,6 +55,9 @@ const MACRO_GROUPS: { key: string; label: string; icon: string; color: string; s
 interface EmployeeRow {
   userId: string; name: string; department: string; client: string | null; workType: string;
   status: string | null; statusChangedAt: string | null; statusSource: string | null; statusNote: string | null; lastConfirmedAt: string | null;
+  // 세부내용(statusNote)을 아직 안 채운 채로 등록된 경우에도, effort_logs에 남아있는 고객사명이
+  // 있으면 여기 담겨온다(2026-09-04 — "고객사 정보 없이 등록된 사람" 문의 대응. dashboard.routes.ts 참고).
+  effortClientName: string | null;
   locationMatch: boolean | null; locationDistanceMeters: number | null; locationCaptureStatus: string | null;
   locationConsentGiven: boolean; privacyConsentGiven: boolean;
   clockedOut: boolean; clockOutAt: string | null;
@@ -440,7 +443,19 @@ export default function AdminDashboard() {
                     </div>
                     {badge && <span className={`cc-alert-flag${flagClass ? ` ${flagClass}` : ''}`}>{badge.text.replace(/^\S+\s/, '')}</span>}
                   </div>
-                  {e.statusNote && <div className="cc-alert-note">“{e.statusNote}”</div>}
+                  {e.statusNote ? (
+                    <div className="cc-alert-note">“{e.statusNote}”</div>
+                  ) : e.effortClientName ? (
+                    <div className="cc-alert-note" style={{ color: '#94a3b8', fontStyle: 'italic' }}>
+                      고객사: {e.effortClientName} (세부내용 아직 미입력 — 본인이 앱에서 마저 입력해야 위치확인도 완료돼요)
+                    </div>
+                  ) : (
+                    e.status && LOCATION_CHECK_STATUSES.has(e.status) && (
+                      <div className="cc-alert-note" style={{ color: '#94a3b8', fontStyle: 'italic' }}>
+                        등록만 되고 세부내용 미입력 상태예요 — 본인이 앱에서 마저 입력해야 위치확인도 완료돼요
+                      </div>
+                    )
+                  )}
                   <div className="cc-stat-foot" style={{ marginTop: 8 }}>{timeAgo(e.statusChangedAt)} 등록</div>
                 </div>
               );
