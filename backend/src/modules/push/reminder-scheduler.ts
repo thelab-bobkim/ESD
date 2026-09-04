@@ -1,6 +1,6 @@
 import { prisma } from '../../common/prisma';
 import { sendPushToUser, isPushConfigured } from '../../common/push';
-import { todayDateOnly } from '../../common/attendance-helpers';
+import { todayDateOnly, realDayWindow } from '../../common/attendance-helpers';
 import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 
 const CHECK_INTERVAL_MS = 60 * 1000; // 1분마다 "지금이 알림 보낼 시각인지" 확인
@@ -16,6 +16,10 @@ const QUIET_HOUR_KST = 22;
 // 재시작 직후 한 번 더 나갈 수 있지만 최악의 경우 하루 넘게 조용해지는 것보다는 낫다고 판단.
 let lastClockInSentAt = new Map<string, number>();
 let lastClockOutSentAt = new Map<string, number>();
+// 2026-09-04: "이동중" 상태로 도착체크 팝업(GPS 기반, 앱을 열어놔야 뜬다)을 놓치는 직원이 많다는
+// 신고 — 이동중 상태가 너무 오래 지속되면(=도착했는데 상태를 안 바꿨을 가능성) 팝업과 별개로
+// 푸시 알림도 보낸다. 앱을 안 열어놔도 알림이 오므로 "인지를 못 한다"는 문제를 보완한다.
+let lastStaleTransitSentAt = new Map<string, number>();
 let trackedDateKey: string | null = null;
 
 function kstHourOf(now: Date): number {
@@ -35,6 +39,10 @@ async function clockOutReminderStartHourKST(): Promise<number> {
  *
  * 또한 정책값으로 정한 저녁 시각(기본 오후 6시)부터, 그날 출근은 했지만 아직 퇴근을 안 누른
  * 직원에게도 같은 방식(5분 간격, 밤 10시까지)으로 "퇴근 등록해주세요" 알림을 보낸다.
+ *
+ * 세 번째로, 그날 가장 최근 상태가 "이동중"(MOVING)인 채로 정책값(기본 30분) 이상 지난 직원에게도
+ * 같은 방식으로 재알림한다 — GPS 도착 감지 팝업은 앱을 열어놔야만 뜨기 때문에, 이동중 상태로
+ * 도착한 뒤 앱을 안 보고 있으면 본인이 알아챌 방법이 없다는 문제를 보완하기 위함이다.
  */
 export function startClockInReminderScheduler() {
   setInterval(async () => {
@@ -50,6 +58,7 @@ export function startClockInReminderScheduler() {
         trackedDateKey = todayKey;
         lastClockInSentAt = new Map();
         lastClockOutSentAt = new Map();
+        lastStaleTransitSentAt = new Map();
       }
       if (kstHour >= QUIET_HOUR_KST || kstHour < 9) return; // 조용한 시간대엔 아무것도 안 보낸다.
 
@@ -102,6 +111,41 @@ export function startClockInReminderScheduler() {
           // eslint-disable-next-line no-console
           console.log(`[ClockOutReminder] 미퇴근 재알림 ${clockOutSentCount}명 발송`);
         }
+      }
+
+      // 2026-09-04: "이동중" 상태가 정책값(기본 30분) 이상 그대로면, 도착 후 상태를 안 바꾼
+      // 것으로 보고 5분마다 재알림한다. GPS 도착 팝업(index.tsx)은 앱을 열어놔야만 뜨므로,
+      // 이 푸시 알림이 앱을 안 보고 있는 직원에게 "상태를 확인해달라"고 알려주는 보완책이다.
+      const staleTransitMinutes = await getPolicyNumber('STALE_TRANSIT_REMINDER_MINUTES', 30);
+      const { start: dayStart, end: dayEnd } = realDayWindow(workDate);
+      const dayLogs = await prisma.statusChangeLog.findMany({
+        where: { changedAt: { gte: dayStart, lt: dayEnd }, userId: { in: activeUsers.map((u: { id: string }) => u.id) } },
+        orderBy: { changedAt: 'asc' },
+        select: { userId: true, status: true, changedAt: true },
+      });
+      // 오름차순으로 순회하며 계속 덮어쓰면, 각 유저별로 마지막에 남는 값이 "오늘 가장 최근 상태"가 된다.
+      const latestStatusByUser = new Map<string, { status: string; changedAt: Date }>();
+      for (const log of dayLogs) {
+        latestStatusByUser.set(log.userId, { status: log.status, changedAt: log.changedAt });
+      }
+      let staleTransitSentCount = 0;
+      for (const u of activeUsers) {
+        const latest = latestStatusByUser.get(u.id);
+        if (!latest || latest.status !== 'MOVING') continue;
+        if (now.getTime() - latest.changedAt.getTime() < staleTransitMinutes * 60 * 1000) continue;
+        const last = lastStaleTransitSentAt.get(u.id);
+        if (last && now.getTime() - last < ESCALATION_INTERVAL_MS) continue;
+        lastStaleTransitSentAt.set(u.id, now.getTime());
+        staleTransitSentCount++;
+        await sendPushToUser(u.id, {
+          title: 'DSTI-TSB',
+          body: `이동중 상태가 ${staleTransitMinutes}분 넘게 계속되고 있어요. 도착하셨다면 상태를 업데이트해주세요! (등록 전까지 계속 알려드려요)`,
+          url: '/',
+        });
+      }
+      if (staleTransitSentCount > 0) {
+        // eslint-disable-next-line no-console
+        console.log(`[StaleTransitReminder] 이동중 장시간 재알림 ${staleTransitSentCount}명 발송`);
       }
     } catch (err) {
       // eslint-disable-next-line no-console
