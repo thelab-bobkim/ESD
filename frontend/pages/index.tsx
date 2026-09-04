@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
-import { isPushSubscribed, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
+import { isPushSubscribed, subscribeToPush, unsubscribeFromPush, isIOSDevice, isStandalonePWA } from '@/lib/push';
 import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, reverseGeocode } from '@/lib/geolocation';
 import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greetings';
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
@@ -225,6 +225,9 @@ export default function EmployeeHome() {
   // 알림을 아직 안 켠 직원에게 먼저 물어봐서 옵트인율을 올리기 위한 배너(2026-09-03 추가) —
   // 화면 아래 작은 버튼만으로는 존재조차 모르는 직원이 많았을 것으로 보여 추가.
   const [showPushPrompt, setShowPushPrompt] = useState(false);
+  // 2026-09-04: 아이폰 사파리는 홈 화면에 추가한 앱(standalone)에서만 알림을 지원한다(iOS 정책).
+  // 이 경우 알림 켜기 버튼을 눌러도 항상 실패하므로, 미리 감지해서 버튼 문구/동작을 안내로 바꾼다.
+  const [iosNeedsInstall, setIosNeedsInstall] = useState(false);
   const [pendingCorrections, setPendingCorrections] = useState<PendingCorrectionRow[]>([]);
   const [showClockOutConfirm, setShowClockOutConfirm] = useState(false);
   // 아직 신청조차 안 했거나, 신청했다가 반려된 지난 근무일이 하나라도 있으면 상태 아이콘을 잠근다.
@@ -238,12 +241,17 @@ export default function EmployeeHome() {
   }
 
   useEffect(() => {
+    const needsInstall = isIOSDevice() && !isStandalonePWA();
+    setIosNeedsInstall(needsInstall);
     isPushSubscribed().then((subscribed) => {
       setPushSubscribed(subscribed);
       // 이미 켜져 있거나, 브라우저 알림권한을 이미 허용/거부해서 결론이 난 경우엔 배너를 안 띄운다
       // (거부한 사람에게 다시 물어봐도 브라우저가 자동으로 막아서 의미가 없다). 이번 방문(세션)에서
-      // 이미 "나중에요"를 눌렀으면 같은 세션 안에서는 다시 안 띄운다.
-      if (subscribed || typeof window === 'undefined' || !('Notification' in window) || Notification.permission !== 'default') return;
+      // 이미 "나중에요"를 눌렀으면 같은 세션 안에서는 다시 안 띄운다. 아이폰인데 아직 홈 화면
+      // 앱으로 안 열었으면(needsInstall) 어차피 알림을 켤 수 없으니, "네, 알림 받을게요" 배너
+      // 대신 설치 안내 배너를 보여준다(아래 JSX에서 분기).
+      if (subscribed || typeof window === 'undefined') return;
+      if (!needsInstall && (!('Notification' in window) || Notification.permission !== 'default')) return;
       try {
         if (sessionStorage.getItem('pushPromptDismissed')) return;
       } catch {
@@ -892,7 +900,20 @@ export default function EmployeeHome() {
 
       <PastDayCorrectionCard rows={pendingCorrections} onSubmitted={refreshMyStatus} />
 
-      {showPushPrompt && (
+      {showPushPrompt && iosNeedsInstall && (
+        // 2026-09-04: 아이폰 사파리는 홈 화면에 추가한 앱에서만 알림이 되므로(애플 정책), 여기서는
+        // 알림을 "켜는" 버튼 대신 설치 방법만 안내한다 — 버튼을 눌러도 실패할 게 뻔한데 누르게
+        // 하는 건 의미가 없다.
+        <div className="card col-full notice-tint-blue">
+          🍎 아이폰에서 출근/퇴근 알림을 받으시려면, 먼저 하단 공유 버튼(⬆️) → <strong>&quot;홈 화면에 추가&quot;</strong>로 앱을 설치하신 뒤, 그 아이콘으로 다시 열어서 알림을 켜주세요.
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={dismissPushPrompt}>
+              알겠어요
+            </button>
+          </div>
+        </div>
+      )}
+      {showPushPrompt && !iosNeedsInstall && (
         <div className="card col-full notice-tint-blue">
           🔔 출근/퇴근 등록을 깜빡하실 때 알려드릴까요? 오전 9시까지 출근 등록이 없거나 저녁에 퇴근을 안 누르시면, 등록하실 때까지 알림을 보내드려요.
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
@@ -1092,9 +1113,17 @@ export default function EmployeeHome() {
                 {' '}"출근" 버튼은 본사 위치가 확인될 때만 처리돼요. 고객사로 바로 가는 날, 출장이나 상주근무인 날은 "출근" 버튼 대신 도착 후 상태를 눌러주세요. 하루를 마치면 꼭 "퇴근"을 눌러야 근무가 확정돼요.
               </span>
             </div>
-            <button className="secondary" disabled={pushLoading} onClick={togglePush}>
-              {pushLoading ? '처리 중...' : pushSubscribed ? '🔔 출퇴근 알림 끄기' : '🔕 출퇴근 알림 켜기(출근 오전 9시·퇴근 저녁)'}
-            </button>
+            {!pushSubscribed && iosNeedsInstall ? (
+              // 2026-09-04: 아이폰 사파리(홈 화면 앱이 아닌 상태)에서는 눌러도 항상 실패하므로,
+              // 버튼 대신 이유와 방법을 바로 보여준다 — "안 된다"가 아니라 "이렇게 하면 된다"로.
+              <div className="notice-inline-orange">
+                🍎 아이폰에서는 하단 공유 버튼(⬆️) → <strong>&quot;홈 화면에 추가&quot;</strong>로 앱을 설치한 뒤, 그 아이콘으로 열어야 알림을 켤 수 있어요(애플 정책 — 사파리 탭에서는 지원 안 함).
+              </div>
+            ) : (
+              <button className="secondary" disabled={pushLoading} onClick={togglePush}>
+                {pushLoading ? '처리 중...' : pushSubscribed ? '🔔 출퇴근 알림 끄기' : '🔕 출퇴근 알림 켜기(출근 오전 9시·퇴근 저녁)'}
+              </button>
+            )}
           </div>
 
           <div className="card">
