@@ -36,6 +36,10 @@ interface AttendanceDetailRow {
   // 이동시간(공수 산정용) — 본인이 "이동중"으로 직접 찍은 시간 + 미기록 구간 자동추정치의 합.
   // travelHasEstimate는 그중 일부가 자동추정인지(=실제로 이동중을 안 찍은 구간이 있었는지) 표시한다.
   travelMinutes: number; travelHasEstimate: boolean;
+  // 2026-09-04: 미출근이어도 "이동중"처럼 정식 출근으로 안 이어지는 상태를 등록했을 수 있어서,
+  // 그날의 가장 최근 상태변경을 같이 받는다 — "출근을 안 찍은 직원이 지금 뭘 하고 있는지"를
+  // 이 화면에서 바로 보여주기 위함(admin/board-scope의 로그인 이력과는 별개).
+  latestStatus: { status: string; changedAt: string; note: string | null } | null;
 }
 interface AttendanceDetail { date: string; rows: AttendanceDetailRow[]; }
 
@@ -143,7 +147,7 @@ function AttendanceRowTr({
     <tr style={{ cursor: 'pointer' }} onClick={onClick}>
       <td>
         <div className="chip-row">
-          <div className="chip-avatar" style={{ background: r.clockOutAt ? '#2f9e44' : neverClockedIn ? '#94a3b8' : isPastDayUnresolved ? '#e03131' : '#f08c00' }}>{r.name.slice(-2)}</div>
+          <div className="chip-avatar" style={{ background: r.clockOutAt ? '#2f9e44' : neverClockedIn ? (r.latestStatus ? '#1c7ed6' : '#94a3b8') : isPastDayUnresolved ? '#e03131' : '#f08c00' }}>{r.name.slice(-2)}</div>
           {r.name}
           <span style={{ fontSize: 11, color: '#2f6feb', marginLeft: 4 }}>상세보기 ▸</span>
         </div>
@@ -182,9 +186,20 @@ function AttendanceRowTr({
             {r.clockOutLocation && <div className="att-addr" title={r.clockOutLocation}>📍 {r.clockOutLocation}</div>}
           </div>
         ) : neverClockedIn ? (
-          <span className="att-pill att-pill-neutral" title="이 날짜에 출근을 포함해 아무 상태도 등록하지 않았습니다">
-            ⚪ 미출근
-          </span>
+          r.latestStatus ? (
+            // 2026-09-04: 정식 출근으로는 안 이어지는 상태("이동중" 등)만 찍은 경우 — 미출근이라도
+            // 지금 뭘 하고 있는지 짐작할 단서가 있다는 뜻이라 "미출근" 대신 그 상태를 보여준다.
+            <span
+              className="att-pill att-pill-info"
+              title={`${fmtTime(r.latestStatus.changedAt)}에 마지막으로 등록한 상태입니다. 정식 출근으로는 아직 이어지지 않았어요.${r.latestStatus.note ? ` (메모: ${r.latestStatus.note})` : ''}`}
+            >
+              {TIMELINE_STATUS_META[r.latestStatus.status]?.icon ?? '❔'} {TIMELINE_STATUS_META[r.latestStatus.status]?.label ?? r.latestStatus.status} · {fmtTime(r.latestStatus.changedAt)}
+            </span>
+          ) : (
+            <span className="att-pill att-pill-neutral" title="이 날짜에 출근을 포함해 아무 상태도 등록하지 않았습니다 — 앱을 아예 안 쓰고 있을 수 있습니다. '표시 대상 관리' 화면의 로그인 이력을 확인해보세요.">
+              ⚪ 미출근
+            </span>
+          )
         ) : isPastDayUnresolved ? (
           <span
             className="att-pill att-pill-danger"

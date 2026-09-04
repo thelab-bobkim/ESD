@@ -288,11 +288,17 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
 
   const rows = scopedUsers.map((u) => {
     const r = recordByUser.get(u.id) ?? null;
+    const userLogs = logsByUser.get(u.id) ?? [];
     const { totalTravelMinutes, hasEstimatedTravel } = computeTimelineSegments(
-      logsByUser.get(u.id) ?? [],
+      userLogs,
       r?.clockOutAt ?? null,
       defaultTravelMinutes
     );
+    // 2026-09-04: 출근을 안 찍은 직원이 "지금 어디서 뭘 하고 있는지" 관리자가 이 화면에서 바로
+    // 알 수 있도록, 그날 등록한 상태변경 로그(userLogs, changedAt 오름차순) 중 가장 최근 것을
+    // 함께 내려준다. "이동중"처럼 정식 출근으로 안 이어지는 상태도 여기 잡힌다(attendance.routes.ts의
+    // WORK_START_STATUSES에 없는 상태) — 즉 미출근이어도 최근 상태가 있을 수 있다.
+    const lastLog = userLogs.length > 0 ? userLogs[userLogs.length - 1] : null;
     return {
       recordId: r?.id ?? null,
       userId: u.id,
@@ -310,6 +316,7 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
       // 이동시간(공수 산정용) — 본인이 "이동중"으로 직접 찍은 시간 + 미기록 구간 자동추정치의 합.
       travelMinutes: totalTravelMinutes,
       travelHasEstimate: hasEstimatedTravel,
+      latestStatus: lastLog ? { status: lastLog.status, changedAt: lastLog.changedAt, note: lastLog.note } : null,
     };
   });
   return res.json({ success: true, data: { date: parsed.data.date, rows } });

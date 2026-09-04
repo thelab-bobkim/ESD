@@ -759,10 +759,13 @@ export default function EmployeeHome() {
   }
 
   // 고객사미팅/고객사작업 검색창에 입력한 글자로 등록된 고객사 목록을 걸러준다(2026-09-02).
+  // 2026-09-04: 검색어가 없을 때 20개로 잘라서 보여주던 게 "고객사 목록이 일부만 나온다"는
+  // 문제였다 — 목록 영역이 이미 스크롤(max-height 220px, overflow-y auto) 처리돼 있어서 자를
+  // 이유가 없었다. 이제 전체를 보여주고, 목록이 너무 길면 검색으로 좁히면 된다.
   const filteredClientOptions = useMemo(() => {
     const q = clientQuery.trim().toLowerCase();
-    if (!q) return clientOptions.slice(0, 20);
-    return clientOptions.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 20);
+    if (!q) return clientOptions;
+    return clientOptions.filter((c) => c.name.toLowerCase().includes(q));
   }, [clientOptions, clientQuery]);
   // 입력한 글자가 등록된 고객사명과 완전히 같으면(대소문자 무관) "새로 등록" 버튼을 안 보여준다 —
   // 이미 있는 고객사를 실수로 중복 등록하는 걸 막기 위함.
