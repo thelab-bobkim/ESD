@@ -4,7 +4,6 @@ import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { syncEmployeesFromDauoffice } from './sync-employees';
-import { probeAttendanceCodes } from './probe-attendance-codes';
 
 export const dauofficeRouter = Router();
 dauofficeRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN'));
@@ -21,30 +20,12 @@ dauofficeRouter.post('/sync/employees', async (req, res) => {
 // 직접 누른 것만 기록으로 인정한다. 조직도(직원) 동기화는 부서 변경 등을 반영해야 하므로 유지.
 // (구현은 sync-attendance.ts에 남아있지만 더 이상 라우트에 연결하지 않는다.)
 
-const probeSchema = z.object({
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-});
-
-/**
- * 2026-09-04: "다우오피스 전사휴가현황을 상황판에 연동해달라"는 요청 때문에 만든 1회성 진단
- * 엔드포인트 — DB에는 아무것도 쓰지 않고, attnd-v2/attnd 응답의 코드값 조합만 모아서 그대로
- * 보여준다. 휴가로 보이는 날짜(예: 다우오피스 전사휴가현황에서 확인한 실제 휴가자·날짜)와
- * 여기 결과를 대조해서 어떤 dayWorkStatusCode가 휴가를 의미하는지 확인한 뒤, 확인되면
- * 정식 연동 기능으로 옮긴다.
- */
-dauofficeRouter.get('/probe/attendance-codes', async (req, res) => {
-  const parsed = probeSchema.safeParse(req.query);
-  if (!parsed.success) {
-    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'startDate, endDate(YYYY-MM-DD)가 필요합니다.' } });
-  }
-  try {
-    const result = await probeAttendanceCodes(parsed.data.startDate, parsed.data.endDate);
-    return res.json({ success: true, data: result });
-  } catch (err) {
-    return res.status(400).json({ success: false, error: { code: 'DAUOFFICE_ERROR', message: (err as Error).message } });
-  }
-});
+// 2026-09-04: 휴가현황 연동 가능 여부를 확인하려고 만들었던 진단 엔드포인트(/probe/attendance-codes)는
+// 제거했다 — 실제로 조회해보니 다우오피스 attnd-v2/attnd 응답의 dayWorkStatusCode/workGroupCode/
+// shiftWorkPolicyCode가 이 계정에서는 전부 null로만 내려오고, 출근시각 유무만으로는 다우오피스
+// "전사 휴가현황"의 실제 휴가자와 맞지 않는 것을 확인했다(우리 앱으로 출퇴근을 관리하다 보니
+// 다우오피스 자체 출근체크를 안 쓰는 사람이 대부분이라 "출근없음"이 휴가와 무관하게 대량 발생).
+// 즉 이 API로는 휴가 여부를 구분할 수 없다 — 정식 휴가 API가 확인되면 그때 다시 시도한다.
 
 /** 부서명 수동 보정값 목록 조회 (AMS의 하드코딩 DEPT_MAP을 대체하는 테이블) */
 dauofficeRouter.get('/department-overrides', async (_req, res) => {
