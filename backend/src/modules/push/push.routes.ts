@@ -54,8 +54,12 @@ pushRouter.post('/unsubscribe', async (req, res) => {
  * 직원 전원과 각자의 구독 여부를 반환한다(2026-09-03 추가 — 사용자 확인 완료).
  */
 pushRouter.get('/admin/status', requireRole('HR_ADMIN', 'SYSTEM_ADMIN'), async (_req, res) => {
+  // 2026-09-04: 전 직원(136명) 기준으로 "알림 미설정" 인원을 세고 있었는데, 상황판 자체가
+  // 이미 표시 대상(includedInBoard)으로 범위를 좁힌 상태라 분모가 안 맞았다(회사 요청 —
+  // 상황판에 안 보이는 사람까지 "알림 미설정"에 잡히는 건 의미가 없음). 표시 대상 인원(90명)
+  // 기준으로만 집계하도록 맞췄다.
   const users = await prisma.user.findMany({
-    where: { employmentStatus: 'ACTIVE', name: { not: { startsWith: 'SAMPLE_' } } },
+    where: { employmentStatus: 'ACTIVE', name: { not: { startsWith: 'SAMPLE_' } }, includedInBoard: true },
     select: { id: true, name: true, department: { select: { name: true } } },
     orderBy: { name: 'asc' },
   });
