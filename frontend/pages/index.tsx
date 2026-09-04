@@ -76,11 +76,39 @@ const DEPARTURE_AWAY_THRESHOLD_MS = 30 * 60 * 1000;
 // 고객사 관련 상태는 애초에 안 보여도 된다"). 부서명은 다우오피스 동기화 부서명과 정확히
 // 일치해야 하며, 여기 없는 부서는 기존과 동일하게 전체 상태 + 세부폼을 그대로 유지한다.
 // 다른 부서도 필요해지면 이 맵에 항목만 추가하면 된다.
-const DEPARTMENT_STATUS_OVERRIDES: Record<string, { visibleStatuses: string[]; noFormStatuses: string[] }> = {
+type StatusOverride = { visibleStatuses: string[]; noFormStatuses: string[] };
+
+// 2026-09-04: 보안/솔루션/arctera/Cohesity/BlL/DX/Pre-Sales사업부(엔지니어링 계열) 요청 —
+// 재택·본사근무는 버튼은 남기되 입력폼 없이 클릭만으로 등록되고, 그 외엔 고객사상주·이동중·
+// 고객사미팅·야간작업·출장·휴가만 있으면 된다(고객사작업/대체휴무는 안 보임 — 이 팀들은 고객사
+// 방문 시 "고객사상주"로 등록하고 별도 "고객사작업"은 안 쓴다는 전제).
+const FIELD_ENGINEERING_OVERRIDE: StatusOverride = {
+  visibleStatuses: ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'NIGHT_WORK', 'BUSINESS_TRIP', 'ON_LEAVE'],
+  noFormStatuses: ['REMOTE', 'HQ_WORKING'],
+};
+
+const DEPARTMENT_STATUS_OVERRIDES: Record<string, StatusOverride> = {
   경영관리부: {
     visibleStatuses: ['REMOTE', 'HQ_WORKING', 'MOVING', 'BUSINESS_TRIP', 'ON_LEAVE'],
     noFormStatuses: ['HQ_WORKING'],
   },
+  보안사업부: FIELD_ENGINEERING_OVERRIDE,
+  솔루션사업부: FIELD_ENGINEERING_OVERRIDE,
+  arctera사업부: FIELD_ENGINEERING_OVERRIDE,
+  Cohesity사업부: FIELD_ENGINEERING_OVERRIDE,
+  BlL사업부: FIELD_ENGINEERING_OVERRIDE,
+  DX사업부: FIELD_ENGINEERING_OVERRIDE,
+  // 다우오피스 동기화 부서명이 대시보드에 "Pre-Sales사업부"(대문자 S)로 표시되는 걸 확인해서
+  // 그 표기를 그대로 맞췄다(요청 메시지의 "Pre-sales"와 대소문자가 다름 — 정확히 일치해야
+  // 적용되므로 실제 동기화 표기를 우선했다).
+  'Pre-Sales사업부': FIELD_ENGINEERING_OVERRIDE,
+};
+
+// 부서와 무관하게 특정 개인에게 적용하는 예외(2026-09-04, 이종갑님 요청 — 부서 소속과 별개로
+// 개인별로 지정). 부서 설정보다 우선한다. 이름으로 매칭하므로, 동명이인이 있으면 둘 다 적용될
+// 수 있다는 점은 감안해야 한다(사번으로 바꾸려면 /auth/me 응답에 사번을 추가해야 함).
+const USER_STATUS_OVERRIDES: Record<string, StatusOverride> = {
+  이종갑: FIELD_ENGINEERING_OVERRIDE,
 };
 
 interface MeResponse {
@@ -184,9 +212,11 @@ export default function EmployeeHome() {
   const clockedOut = Boolean(myStatus?.record?.clockOutAt);
   // 관리자 권한 계정은 퇴근 후에도 테스트할 수 있게 상태변경 잠금에서 예외로 둔다.
   const isAdminAccount = Boolean(me?.roles?.some((r) => ['SYSTEM_ADMIN', 'HR_ADMIN'].includes(r)));
-  // 부서별 상태 아이콘/입력폼 커스터마이징(DEPARTMENT_STATUS_OVERRIDES 참고) — 해당 부서가
-  // 아니면 undefined이고, 그 경우 아래 로직은 전부 기존 동작(9개 전부 + 세부폼) 그대로다.
-  const deptStatusOverride = me?.department ? DEPARTMENT_STATUS_OVERRIDES[me.department] : undefined;
+  // 부서별/개인별 상태 아이콘·입력폼 커스터마이징(DEPARTMENT_STATUS_OVERRIDES, USER_STATUS_OVERRIDES
+  // 참고) — 개인별 설정이 있으면 그게 우선이고, 없으면 부서 설정을 쓴다. 둘 다 없으면 undefined이고,
+  // 그 경우 아래 로직은 전부 기존 동작(9개 전부 + 세부폼) 그대로다.
+  const deptStatusOverride = (me?.name ? USER_STATUS_OVERRIDES[me.name] : undefined)
+    ?? (me?.department ? DEPARTMENT_STATUS_OVERRIDES[me.department] : undefined);
   const visibleStatusOrder = deptStatusOverride
     ? STATUS_ORDER.filter((code) => deptStatusOverride.visibleStatuses.includes(code))
     : STATUS_ORDER;
