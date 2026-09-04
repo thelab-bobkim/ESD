@@ -95,6 +95,12 @@ export default function AdminBoardScopePage() {
     return { total: all.length, includedCount: included.length, neverLoggedIn: neverLoggedIn.length, inactive: inactive.length };
   }, [users]);
 
+  // 2026-09-04: "조직도 전체 인원에서 CS1팀/CS2팀만 빼고 전부 가져오라"는 요청 — 부서가 36개라
+  // 하나하나 "이 부서 전체 포함"을 누르게 하는 대신, 한 번에 전체를 켜고 나서 CS1팀/CS2팀만
+  // 부서 단위로 제외(그 부서 카드의 "이 부서 전체 제외" 버튼)한 뒤, CS1팀 안에서 예외로 남겨야
+  // 하는 인원만 개별 체크로 다시 켜는 순서로 쓰도록 만든 전체 일괄 포함 버튼.
+  const allUserIds = useMemo(() => (users ?? []).map((u) => u.id), [users]);
+
   return (
     <div className="admin-shell">
       <AdminHeader title="표시 대상 관리" />
@@ -128,6 +134,16 @@ export default function AdminBoardScopePage() {
           onChange={(e) => setSearch(e.target.value)}
         />
         <div className="spacer" />
+        <button
+          style={{ width: 'auto' }}
+          onClick={() => {
+            if (allUserIds.length === 0) return;
+            if (!confirm(`전체 재직 인원 ${allUserIds.length}명을 모두 표시 대상으로 포함할까요? (CS1팀·CS2팀 등 제외할 부서는 이후 해당 부서 카드에서 "이 부서 전체 제외"로 빼주세요)`)) return;
+            toggleUsers(allUserIds, true);
+          }}
+        >
+          전체 재직 인원 포함
+        </button>
         <button onClick={load}>새로고침</button>
       </div>
 
