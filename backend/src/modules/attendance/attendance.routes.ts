@@ -848,7 +848,10 @@ attendanceRouter.post('/clients', async (req, res) => {
   if (existing) {
     return res.json({ success: true, data: { id: existing.id, name: existing.name } });
   }
-  const created = await prisma.client.create({ data: { name } });
+  // address는 DB상 필수 컬럼이지만, 직원이 현장에서 급하게 등록하는 상황이라 주소까지 입력받지
+  // 않는다 — 빈 값으로 만들어두고, 나중에 관리자가 admin/clients.tsx에서 주소·좌표를 채워넣으면
+  // 위치대조 기능도 그때부터 적용된다.
+  const created = await prisma.client.create({ data: { name, address: '' } });
   return res.json({ success: true, data: { id: created.id, name: created.name } });
 });
 
