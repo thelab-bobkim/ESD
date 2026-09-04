@@ -408,6 +408,30 @@ attendanceRouter.post('/status', async (req, res) => {
     }
   }
 
+  // 야간작업 시각 제한(2026-09-04, 관리자 요청): 낮 시간에도 "야간작업"으로 등록하는 직원이 있어서,
+  // 위 정규 출근 마감시각과 같은 정책값(기본 18시, KST)을 기준으로 그 이전에는 야간작업 등록 자체를
+  // 막는다. 위와 같은 정책값을 그대로 재사용해서 "정규근무/야간작업의 경계 시각"이 한 곳(관리자
+  // 정책설정)에서만 관리되게 했다 — 따로 두면 둘이 어긋날 수 있어서다.
+  if (status === 'NIGHT_WORK') {
+    const nightWorkStartHour = await getPolicyNumber('REGULAR_WORK_END_HOUR', 18);
+    const kstHourForNightWork = (new Date().getUTCHours() + 9) % 24;
+    // 하루 경계(새벽 3시 — todayDateOnly()/realDayWindow()와 동일한 기준)를 함께 고려해야 한다.
+    // 저녁 마감시각(기본 18시)부터 다음날 새벽 3시 전까지를 "밤 시간대"로 보고 허용하고, 그 사이
+    // (새벽 3시~마감시각 전, 예: 03~17시)만 차단한다 — 자정을 넘겨 계속 일하는 야간작업자가
+    // 새벽에도 상태를 등록/수정할 수 있어야 하므로, 단순히 "마감시각 이전"만으로 판단하면 안 된다.
+    const DAY_BOUNDARY_HOUR = 3;
+    const isNightWindow = kstHourForNightWork >= nightWorkStartHour || kstHourForNightWork < DAY_BOUNDARY_HOUR;
+    if (!isNightWindow) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'TOO_EARLY_FOR_NIGHT_WORK',
+          message: `야간작업은 ${nightWorkStartHour}시 이후부터 등록할 수 있습니다. 지금 시간대는 실제 근무형태(본사근무·고객사작업·고객사미팅 등)로 등록해주세요.`,
+        },
+      });
+    }
+  }
+
   // 본사근무 등록: 위치정보가 있고 본사 좌표가 등록되어 있는데 본사와 멀리 떨어져 있으면,
   // "출근" 버튼과 동일하게 본사근무 등록 자체를 막고 고객사미팅/고객사작업으로 유도한다.
   // 고객사작업/미팅과 동일한 원칙 — 위치는 잡혔는데 실제로 멀면 항상 차단하고, 위치 확보
