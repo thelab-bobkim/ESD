@@ -54,6 +54,7 @@ export function createApp() {
   });
   app.use('/api/v1/auth/login', loginLimiter);
   app.use('/api/v1/auth/register-password', loginLimiter);
+  app.use('/api/v1/auth/reset-password', loginLimiter);
 
   app.get('/api/v1/health', (_req, res) => res.json({ success: true, data: { status: 'ok' } }));
 

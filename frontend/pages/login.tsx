@@ -71,6 +71,9 @@ export default function LoginPage() {
         <p style={{ fontSize: 12, color: '#999', marginTop: 8 }}>
           처음 오셨나요? <a href="/register">계정 등록하기</a>
         </p>
+        <p style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+          비밀번호를 잊으셨나요? <a href="/reset-password">비밀번호 재설정</a>
+        </p>
       </div>
     </div>
   );

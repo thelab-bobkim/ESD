@@ -63,6 +63,79 @@ authRouter.post('/register-password', async (req, res) => {
   });
 });
 
+const resetPasswordSchema = z.object({
+  employeeNo: z.string().min(1),
+  name: z.string().min(1),
+  newPassword: z.string().min(10, '비밀번호는 10자 이상이어야 합니다.'),
+});
+
+/**
+ * 비밀번호를 잊어버린 직원을 위한 셀프 재설정(2026-09-04 추가 — 사용자 요청: "전 직원이 재설정할
+ * 수 있게"). register-password와 신원확인 방식(사번+이름)은 같지만, mustChangePassword 여부와
+ * 상관없이 이미 비밀번호를 쓰고 있는 계정도 언제든 다시 쓸 수 있다는 점이 다르다 — 관리자가
+ * 매번 서버에 SQL을 날려 mustChangePassword를 되돌려줄 필요 없이 전 직원이 스스로 해결한다.
+ *
+ * 사번+이름은 비밀글이 아니라서(조직도로 누구나 알 수 있음) 완전한 신원확인은 아니다 — 사내망
+ * 전용 파일럿이라는 전제로 register-password 때와 같은 수준의 가벼운 확인을 그대로 채택했다.
+ * 대신 재설정이 성공하면 tokenVersion을 올려 기존에 발급된 모든 토큰(다른 기기 포함)을 즉시
+ * 무효화한다 — 본인이 아닌 다른 사람이 이름만 알고 몰래 재설정한 경우에도 원래 사용자가 즉시
+ * 로그아웃되어 이상 상황을 바로 알아챌 수 있다. 로그인 실패 잠금 상태였다면 이 기회에 함께 풀어준다.
+ */
+authRouter.post('/reset-password', async (req, res) => {
+  const parsed = resetPasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'INVALID_INPUT', message: parsed.error.issues[0]?.message || '입력값을 확인하세요.' },
+    });
+  }
+  const { employeeNo, name, newPassword } = parsed.data;
+
+  const user = await prisma.user.findUnique({
+    where: { employeeNo },
+    include: { userRoles: { include: { role: true } } },
+  });
+  if (!user) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '사번을 찾을 수 없습니다. 사번을 다시 확인해주세요.' } });
+  }
+  if (user.name.trim() !== name.trim()) {
+    return res.status(401).json({ success: false, error: { code: 'MISMATCH', message: '사번과 이름이 일치하지 않습니다.' } });
+  }
+
+  const newHash = await bcrypt.hash(newPassword, 10);
+  const updated = await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      passwordHash: newHash,
+      mustChangePassword: false,
+      tokenVersion: { increment: 1 },
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+    },
+  });
+  // eslint-disable-next-line no-console
+  console.log(`[PasswordReset] ${updated.employeeNo}(${updated.name}) 비밀번호 셀프 재설정`);
+
+  const roles = user.userRoles.map((ur: { role: { code: string } }) => ur.role.code);
+  const token = signAccessToken({ userId: updated.id, roles, departmentId: updated.departmentId, tokenVersion: updated.tokenVersion });
+
+  return res.json({
+    success: true,
+    data: {
+      accessToken: token,
+      user: {
+        id: updated.id,
+        name: updated.name,
+        email: updated.email,
+        employeeNo: updated.employeeNo,
+        roles,
+        workType: updated.workType,
+        mustChangePassword: false,
+      },
+    },
+  });
+});
+
 const loginSchema = z.object({
   // 이메일이 있는 계정은 이메일로, 다우오피스 동기화 계정(이메일 없음)은 사번/다우오피스 로그인ID로 로그인한다.
   identifier: z.string().min(1),
