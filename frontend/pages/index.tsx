@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush, isIOSDevice, isStandalonePWA } from '@/lib/push';
-import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, reverseGeocode } from '@/lib/geolocation';
+import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, reverseGeocode, isLowAccuracy, accuracyWarningLabel } from '@/lib/geolocation';
 import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greetings';
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
@@ -627,11 +627,16 @@ export default function EmployeeHome() {
       // 본사근무는 실제로 본사에 있는지 위치로 확인한다 — 아니면 서버에서 막고 고객사미팅/작업으로
       // 유도한다. 위치 확보 실패 사유(locationStatus)까지 같이 보내야 서버가 "오늘 첫 실패는
       // 봐준다" 판단을 할 수 있다(고객사작업/미팅과 동일한 방식).
+      // 2026-09 GPS 정확도 개선: 위치 캡처 시 오차범위(accuracy)를 같이 기록해뒀다가, 성공
+      // 메시지에 "정확도가 낮았다"는 안내를 덧붙인다(geolocation.ts가 내부적으로 이미 한 번
+      // 재시도했지만, 그래도 여전히 부정확할 수 있어 본인이 인지하고 있는 게 좋다).
+      const hqQuickLocationMeta: { accuracy: number | null } = { accuracy: null };
       const refreshHqQuickLocation = async () => {
-        const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+        const { status: locStatus, coords, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
         if (coords) body.location = coords;
         else delete body.location;
         body.locationStatus = locStatus;
+        hqQuickLocationMeta.accuracy = accuracyMeters;
       };
       if (code === 'HQ_WORKING') {
         await refreshHqQuickLocation();
@@ -639,6 +644,7 @@ export default function EmployeeHome() {
       // 부서 설정(DEPARTMENT_STATUS_OVERRIDES)에서 이 상태를 "세부폼 없이 등록만"으로 지정했으면,
       // 등록 즉시 끝난다 — 아래 세부입력폼을 아예 열지 않고, 안내 문구도 "입력해주세요"를 뺀다.
       const skipDetailForm = deptStatusOverride?.noFormStatuses.includes(code) ?? false;
+      const accuracyWarningSuffix = isLowAccuracy(hqQuickLocationMeta.accuracy) ? ` (${accuracyWarningLabel(hqQuickLocationMeta.accuracy)})` : '';
       run(
         () =>
           attemptWithLocationRetry(
@@ -648,8 +654,8 @@ export default function EmployeeHome() {
         pendingPrev
           ? `⚠️ 상태가 '${STATUS_META[code].label}'(으)로 변경됐지만, 직전 '${STATUS_META[pendingPrev.status]?.label ?? pendingPrev.status}' 내용을 아직 안 채우셨어요! 잊지 말고 채워주세요.`
           : skipDetailForm
-            ? `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`
-            : `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요.`,
+            ? `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊${accuracyWarningSuffix}`
+            : `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊 아래에서 세부내용을 입력해주세요.${accuracyWarningSuffix}`,
         (data) => {
           // 아이콘을 잘못 눌렀을 때 흔적 없이 되돌릴 수 있게, 방금 만들어진 기록들의 id를 잠깐 기억해둔다.
           const res = data as {
@@ -783,11 +789,13 @@ export default function EmployeeHome() {
     // 위치 확보 실패 사유(locationStatus)까지 같이 보내야 서버가 "오늘 첫 실패는 봐준다" 판단을 할 수 있다.
     const needsLocationCheck = LOCATION_CHECK_STATUSES.has(code) || code === 'HQ_WORKING';
     // 본사근무도 고객사작업/미팅과 동일하게 위치 확보 실패 사유까지 같이 보낸다("오늘 첫 실패는 봐준다" 판단용).
+    const detailFormLocationMeta: { accuracy: number | null } = { accuracy: null };
     const refreshDetailFormLocation = async () => {
-      const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+      const { status: locStatus, coords, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
       if (coords) body.location = coords;
       else delete body.location;
       body.locationStatus = locStatus;
+      detailFormLocationMeta.accuracy = accuracyMeters;
     };
     if (needsLocationCheck) {
       await refreshDetailFormLocation();
@@ -818,7 +826,9 @@ export default function EmployeeHome() {
           () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
           needsLocationCheck ? refreshDetailFormLocation : undefined
         ),
-      `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`
+      `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊${
+        isLowAccuracy(detailFormLocationMeta.accuracy) ? ` (${accuracyWarningLabel(detailFormLocationMeta.accuracy)})` : ''
+      }`
     );
     setDetailStatus(null);
   }
@@ -1105,11 +1115,13 @@ export default function EmployeeHome() {
                 setMessageIsError(false);
                 try {
                   const clockInBody: Record<string, unknown> = {};
+                  const clockInLocationMeta: { accuracy: number | null } = { accuracy: null };
                   const refreshClockInLocation = async () => {
-                    const { status: locStatus, coords } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+                    const { status: locStatus, coords, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
                     if (coords) clockInBody.location = coords;
                     else delete clockInBody.location;
                     clockInBody.locationStatus = locStatus;
+                    clockInLocationMeta.accuracy = accuracyMeters;
                   };
                   await refreshClockInLocation();
                   const result = await attemptWithLocationRetry(
@@ -1119,7 +1131,8 @@ export default function EmployeeHome() {
                     }),
                     refreshClockInLocation
                   );
-                  setMessage(result.locationConfirmed ? '✅ 위치 확인 완료 — 정상출근 처리되었습니다.' : '출근 처리되었습니다.');
+                  const accuracySuffix = isLowAccuracy(clockInLocationMeta.accuracy) ? ` (${accuracyWarningLabel(clockInLocationMeta.accuracy)})` : '';
+                  setMessage((result.locationConfirmed ? '✅ 위치 확인 완료 — 정상출근 처리되었습니다.' : '출근 처리되었습니다.') + accuracySuffix);
                   refreshMyStatus();
                 } catch (err) {
                   setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');

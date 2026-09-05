@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getCurrentLocationDetailed, locationFailureLabel, type LocationCaptureResult } from '@/lib/geolocation';
+import { getCurrentLocationDetailed, locationFailureLabel, isLowAccuracy, accuracyWarningLabel, type LocationCaptureResult } from '@/lib/geolocation';
 
 interface Props {
   clockInAt: string;
@@ -50,7 +50,7 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
     }
     setSubmitting(true);
     try {
-      const result = locationResult === 'checking' ? { status: 'TIMEOUT' as const, address: null } : locationResult;
+      const result = locationResult === 'checking' ? { status: 'TIMEOUT' as const, address: null, accuracyMeters: null } : locationResult;
       await onConfirm({
         locationAddress: result.address ?? undefined,
         locationStatus: result.status,
@@ -88,6 +88,11 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
             <>
               📍 위치 없이 퇴근 기록됩니다 — {locationFailureLabel(locationResult.status)}.
             </>
+          )}
+          {locationResult !== 'checking' && isLowAccuracy(locationResult.accuracyMeters) && (
+            <div style={{ marginTop: 6, color: '#fbbf24' }}>
+              ⚠️ {accuracyWarningLabel(locationResult.accuracyMeters as number)}
+            </div>
           )}
         </div>
         {isEarlyLeave && (

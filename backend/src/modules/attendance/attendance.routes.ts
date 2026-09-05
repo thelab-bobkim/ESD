@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
@@ -7,7 +7,25 @@ import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
 import { checkLocationMatch } from '../../common/location';
-import { getPolicyNumber, getPolicyString } from '../../common/policy-engine/policy-engine';
+import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
+
+/**
+ * 사내망(공인IP) 기반 출근확인: 관리자가 정책값 HQ_ALLOWED_PUBLIC_IPS(JSON 문자열 배열, 예:
+ * ["123.45.67.89"])에 등록해둔 사무실 공인IP와 이 요청의 실제 클라이언트 공인IP가 일치하면
+ * "사내 와이파이에 연결되어 있다"고 보고, GPS 오차·실패와 무관하게 본사근무 위치확인을 통과시킨다.
+ * req.ip는 nginx가 전달하는 X-Real-IP/X-Forwarded-For를 app.ts의 trust proxy 설정으로 이미
+ * 정확히 해석한 값이다. 브라우저에서 실제 WiFi AP/MAC 주소를 스캔하는 것은 불가능하므로(2026-09
+ * GPS 정확도 개선 검토 시 결론), 그 대신 공인IP를 "사내망에 연결되어 있음"의 대리 지표로 쓴다.
+ * 주의: 직원 휴대폰이 사내 와이파이가 아니라 셀룰러 데이터를 쓰는 중이면 이 방법은 통하지 않고
+ * GPS 확인이 별도로 필요하다. 정책값이 비어있으면(관리자가 아직 설정 안 함) 항상 false를 반환해
+ * 기존 GPS 기반 확인 동작을 그대로 유지한다.
+ */
+async function isRequestFromOfficeNetwork(req: Request): Promise<boolean> {
+  const allowedIps = await getPolicyJSON<string[]>('HQ_ALLOWED_PUBLIC_IPS', []);
+  if (!allowedIps.length) return false;
+  const clientIp = (req.ip ?? '').replace(/^::ffff:/, ''); // IPv4-mapped IPv6 표기("::ffff:1.2.3.4") 정리
+  return allowedIps.includes(clientIp);
+}
 
 export const attendanceRouter = Router();
 attendanceRouter.use(requireAuth);
@@ -47,6 +65,8 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   const workDate = todayDateOnly();
   // 좌표는 저장하지 않고, 본사와의 거리 비교에만 즉시 사용하고 폐기한다.
   const location = req.body?.location as { lat: number; lng: number } | undefined;
+  // 사내망(공인IP) 확인 — 회사 와이파이에 연결되어 있으면 아래 GPS 기반 위치확인들을 모두 통과시킨다.
+  const officeNetworkConfirmed = await isRequestFromOfficeNetwork(req);
 
   const existing = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate } } });
   if (existing?.clockInAt) {
@@ -77,7 +97,7 @@ attendanceRouter.post('/clock-in', async (req, res) => {
     const hqLng = await getPolicyString('HQ_LONGITUDE', '');
     if (hqLat && hqLng) {
       const match = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) });
-      if (match && !match.locationMatch) {
+      if (match && !match.locationMatch && !officeNetworkConfirmed) {
         return res.status(400).json({
           success: false,
           error: {
@@ -99,7 +119,8 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   const hqLng = await getPolicyString('HQ_LONGITUDE', '');
   const hqConfigured = Boolean(hqLat && hqLng);
   let hqLocationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
-  if (hqConfigured) {
+  // 사내망(공인IP)으로 이미 확인됐으면 GPS 위치확인 요구 자체를 건너뛴다.
+  if (hqConfigured && !officeNetworkConfirmed) {
     if (!location) {
       return res.status(400).json({
         success: false,
@@ -121,7 +142,7 @@ attendanceRouter.post('/clock-in', async (req, res) => {
       });
     }
   }
-  const locationConfirmed = hqConfigured && Boolean(hqLocationResult?.locationMatch);
+  const locationConfirmed = hqConfigured && (officeNetworkConfirmed || Boolean(hqLocationResult?.locationMatch));
 
   const record = existing
     ? await prisma.attendanceRecord.update({ where: { id: existing.id }, data: { clockInAt: new Date() } })
@@ -354,11 +375,18 @@ attendanceRouter.post('/status', async (req, res) => {
   }
   const userId = req.authUser!.userId;
   const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus } = parsed.data;
-  const locationCaptureStatus = location
+  let locationCaptureStatus = location
     ? 'OK'
     : rawLocationStatus && LOCATION_CAPTURE_STATUSES.has(rawLocationStatus)
       ? (rawLocationStatus as 'NO_CONSENT' | 'PERMISSION_DENIED' | 'TIMEOUT' | 'UNSUPPORTED' | 'GEOCODE_FAILED')
       : undefined;
+  // 사내망(공인IP) 확인 — 본사근무 등록 시 GPS 없이도(또는 GPS가 빗나가도) 위치확인을 통과시킨다.
+  const officeNetworkConfirmed = status === 'HQ_WORKING' ? await isRequestFromOfficeNetwork(req) : false;
+  if (officeNetworkConfirmed) {
+    // 위치가 사내망으로 확인됐으니, 이후 로직·집계(예: priorHqLocationFailures)가 "위치 확인됨"으로
+    // 일관되게 취급하도록 캡처상태를 OK로 남긴다.
+    locationCaptureStatus = 'OK';
+  }
 
   // 출장은 목적지/기간/목적이 필수다(계획된 정보라 즉시 확정해서 남긴다).
   if (status === 'BUSINESS_TRIP' && !businessTrip) {
@@ -438,7 +466,7 @@ attendanceRouter.post('/status', async (req, res) => {
   // 자체가 실패(권한거부/타임아웃/미동의 등)했으면 오늘 첫 실패는 봐주되 그 다음부터는 실제
   // 위치 일치를 요구한다. 이게 없으면 위치를 안 주는 것만으로 검증이 통째로 무력화된다.
   let hqLocationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
-  if (status === 'HQ_WORKING') {
+  if (status === 'HQ_WORKING' && !officeNetworkConfirmed) {
     const hqLat = await getPolicyString('HQ_LATITUDE', '');
     const hqLng = await getPolicyString('HQ_LONGITUDE', '');
     if (hqLat && hqLng) {

@@ -70,6 +70,62 @@ export async function reverseGeocode(lat: number, lng: number): Promise<string |
 const GEOLOCATION_OPTIONS: PositionOptions = { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 };
 
 /**
+ * 2026-09 GPS 정확도 개선: 오차범위(accuracy, 미터)가 이 값보다 크면 "정확도가 낮다"고 보고
+ * 한 번 더 측정을 시도한다. 실내/건물 안에서는 처음 응답이 WiFi/기지국 기반의 부정확한 값으로
+ * 오는 경우가 있는데, 잠깐 사이에 기기가 GPS 위성 신호를 더 잡아 두 번째 시도에서 정확도가
+ * 크게 개선되는 사례가 실제로 있다(사용자 보고: 출근 시 "본사에서 약 835m", 퇴근 시 "오차범위
+ * 약 2km"). 100m를 기준으로 삼은 이유: 본사 위치대조 반경(LOCATION_MATCH_RADIUS_METERS)이
+ * 500m라, 오차범위가 그 절반 이하는 되어야 "본사 안인지 아닌지"를 신뢰성 있게 가를 수 있다.
+ */
+const LOW_ACCURACY_RETRY_THRESHOLD_METERS = 100;
+// 재시도 사이의 대기시간 — 기기가 새 위성신호를 잡을 최소한의 시간을 준다.
+const ACCURACY_RETRY_DELAY_MS = 1500;
+
+function getPositionOnce(): Promise<GeolocationPosition | { errorCode: number } | null> {
+  return new Promise((resolve) => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      resolve(null);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve(pos),
+      (err) => resolve({ errorCode: err.code }),
+      GEOLOCATION_OPTIONS
+    );
+  });
+}
+
+/**
+ * 위치를 가져오되, 오차범위가 크면(LOW_ACCURACY_RETRY_THRESHOLD_METERS 초과) 한 번 더 시도해서
+ * 더 정확한 값이 나오면 그걸 쓴다. 재시도는 최대 한 번만 하고(안 그러면 사용자가 계속 기다려야
+ * 함), 두 번째 시도가 오히려 더 부정확하면 첫 번째 값을 그대로 쓴다. 첫 시도 자체가 실패하면
+ * errorCode를 그대로 반환한다.
+ */
+async function getPositionWithAccuracyRetry(): Promise<{ pos: GeolocationPosition | null; errorCode: number | null }> {
+  const first = await getPositionOnce();
+  if (!first) return { pos: null, errorCode: null };
+  if ('errorCode' in first) return { pos: null, errorCode: first.errorCode };
+  if (first.coords.accuracy <= LOW_ACCURACY_RETRY_THRESHOLD_METERS) {
+    return { pos: first, errorCode: null };
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, ACCURACY_RETRY_DELAY_MS));
+  const second = await getPositionOnce();
+  if (!second || 'errorCode' in second) return { pos: first, errorCode: null };
+  return { pos: second.coords.accuracy < first.coords.accuracy ? second : first, errorCode: null };
+}
+
+/** 오차범위(미터)가 기준치보다 커서 "낮은 정확도" 경고를 보여줘야 하는지 판단한다. */
+export function isLowAccuracy(accuracyMeters: number | null | undefined): accuracyMeters is number {
+  return typeof accuracyMeters === 'number' && accuracyMeters > LOW_ACCURACY_RETRY_THRESHOLD_METERS;
+}
+
+/** 낮은 정확도일 때 사용자에게 보여줄 안내 문구. */
+export function accuracyWarningLabel(accuracyMeters: number): string {
+  return `GPS 정확도가 낮아요(오차범위 약 ${Math.round(accuracyMeters)}m). 실외로 나가거나 창가 쪽으로 이동한 뒤 다시 시도하면 정확도가 개선될 수 있어요.`;
+}
+
+/**
  * 현재 위치를 가져온다. 실패하거나 권한이 없으면 null을 반환한다(위치확인은 선택적 기능이라
  * 실패해도 상태등록 자체는 막지 않는다).
  */
@@ -93,6 +149,7 @@ export type LocationCaptureStatus = 'OK' | 'NO_CONSENT' | 'PERMISSION_DENIED' | 
 export interface LocationCaptureResult {
   status: LocationCaptureStatus;
   address: string | null;
+  accuracyMeters: number | null;
 }
 
 const LOCATION_FAILURE_LABEL: Record<Exclude<LocationCaptureStatus, 'OK'>, string> = {
@@ -114,23 +171,24 @@ export function locationFailureLabel(status: Exclude<LocationCaptureStatus, 'OK'
  */
 export async function getCurrentLocationWithStatus(
   locationConsentGiven: boolean
-): Promise<{ status: LocationCaptureStatus; coords: { lat: number; lng: number } | null }> {
-  if (!locationConsentGiven) return { status: 'NO_CONSENT', coords: null };
-  if (typeof navigator === 'undefined' || !navigator.geolocation) return { status: 'UNSUPPORTED', coords: null };
+): Promise<{ status: LocationCaptureStatus; coords: { lat: number; lng: number } | null; accuracyMeters: number | null }> {
+  if (!locationConsentGiven) return { status: 'NO_CONSENT', coords: null, accuracyMeters: null };
+  if (typeof navigator === 'undefined' || !navigator.geolocation) return { status: 'UNSUPPORTED', coords: null, accuracyMeters: null };
 
-  const result = await new Promise<{ lat: number; lng: number } | { errorCode: number } | null>((resolve) => {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      (err) => resolve({ errorCode: err.code }),
-      GEOLOCATION_OPTIONS
-    );
-  });
-
-  if (!result) return { status: 'UNSUPPORTED', coords: null };
-  if ('errorCode' in result) {
-    return { status: result.errorCode === 3 ? 'TIMEOUT' : result.errorCode === 1 ? 'PERMISSION_DENIED' : 'UNSUPPORTED', coords: null };
+  const { pos, errorCode } = await getPositionWithAccuracyRetry();
+  if (!pos) {
+    if (errorCode === null) return { status: 'UNSUPPORTED', coords: null, accuracyMeters: null };
+    return {
+      status: errorCode === 3 ? 'TIMEOUT' : errorCode === 1 ? 'PERMISSION_DENIED' : 'UNSUPPORTED',
+      coords: null,
+      accuracyMeters: null,
+    };
   }
-  return { status: 'OK', coords: result };
+  return {
+    status: 'OK',
+    coords: { lat: pos.coords.latitude, lng: pos.coords.longitude },
+    accuracyMeters: pos.coords.accuracy,
+  };
 }
 
 /**
@@ -139,24 +197,22 @@ export async function getCurrentLocationWithStatus(
  * (동의 안 한 사용자에게 갑자기 권한 팝업을 띄우지 않기 위함 — 동의 흐름은 LocationConsentModal에서만).
  */
 export async function getCurrentLocationDetailed(locationConsentGiven: boolean): Promise<LocationCaptureResult> {
-  if (!locationConsentGiven) return { status: 'NO_CONSENT', address: null };
-  if (typeof navigator === 'undefined' || !navigator.geolocation) return { status: 'UNSUPPORTED', address: null };
+  if (!locationConsentGiven) return { status: 'NO_CONSENT', address: null, accuracyMeters: null };
+  if (typeof navigator === 'undefined' || !navigator.geolocation) return { status: 'UNSUPPORTED', address: null, accuracyMeters: null };
 
-  const coords = await new Promise<{ lat: number; lng: number } | { errorCode: number } | null>((resolve) => {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      (err) => resolve({ errorCode: err.code }),
-      GEOLOCATION_OPTIONS
-    );
-  });
-
-  if (!coords) return { status: 'UNSUPPORTED', address: null };
-  if ('errorCode' in coords) {
+  const { pos, errorCode } = await getPositionWithAccuracyRetry();
+  if (!pos) {
+    if (errorCode === null) return { status: 'UNSUPPORTED', address: null, accuracyMeters: null };
     // GeolocationPositionError: 1=PERMISSION_DENIED, 2=POSITION_UNAVAILABLE, 3=TIMEOUT
-    return { status: coords.errorCode === 3 ? 'TIMEOUT' : coords.errorCode === 1 ? 'PERMISSION_DENIED' : 'UNSUPPORTED', address: null };
+    return {
+      status: errorCode === 3 ? 'TIMEOUT' : errorCode === 1 ? 'PERMISSION_DENIED' : 'UNSUPPORTED',
+      address: null,
+      accuracyMeters: null,
+    };
   }
 
-  const address = await reverseGeocode(coords.lat, coords.lng);
-  if (!address) return { status: 'GEOCODE_FAILED', address: null };
-  return { status: 'OK', address };
+  const accuracyMeters = pos.coords.accuracy;
+  const address = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
+  if (!address) return { status: 'GEOCODE_FAILED', address: null, accuracyMeters };
+  return { status: 'OK', address, accuracyMeters };
 }
