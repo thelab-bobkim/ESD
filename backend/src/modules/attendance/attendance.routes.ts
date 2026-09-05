@@ -24,7 +24,11 @@ async function isRequestFromOfficeNetwork(req: Request): Promise<boolean> {
   const allowedIps = await getPolicyJSON<string[]>('HQ_ALLOWED_PUBLIC_IPS', []);
   if (!allowedIps.length) return false;
   const clientIp = (req.ip ?? '').replace(/^::ffff:/, ''); // IPv4-mapped IPv6 표기("::ffff:1.2.3.4") 정리
-  return allowedIps.includes(clientIp);
+  const matched = allowedIps.includes(clientIp);
+  // 기능이 실제로 의도대로 작동하는지(또는 IP가 예상과 다르게 잡히는지) 배포 후 바로 확인할 수 있도록
+  // 남기는 진단 로그. `docker compose logs backend | grep OfficeNetworkCheck`로 확인 가능.
+  console.log(`[OfficeNetworkCheck] clientIp=${clientIp} allowed=[${allowedIps.join(',')}] matched=${matched}`);
+  return matched;
 }
 
 export const attendanceRouter = Router();
