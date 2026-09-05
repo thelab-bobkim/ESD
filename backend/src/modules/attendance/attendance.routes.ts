@@ -6,7 +6,7 @@ import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
-import { checkLocationMatch } from '../../common/location';
+import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
 
 /**
@@ -29,6 +29,23 @@ async function isRequestFromOfficeNetwork(req: Request): Promise<boolean> {
   // 남기는 진단 로그. `docker compose logs backend | grep OfficeNetworkCheck`로 확인 가능.
   console.log(`[OfficeNetworkCheck] clientIp=${clientIp} allowed=[${allowedIps.join(',')}] matched=${matched}`);
   return matched;
+}
+
+/**
+ * 카카오맵 역지오코딩 주소 매칭: 관리자가 정책값 HQ_ADDRESS_KEYWORDS(JSON 문자열 배열, 예:
+ * ["신한이노플렉스", "테헤란로"])에 등록해둔 키워드 중 하나라도 이 요청의 주소 문자열에 포함되면
+ * "본사 건물/블록 안에 있다"고 보고 GPS 거리와 무관하게 위치확인을 통과시킨다. 건물명(예:
+ * "신한이노플렉스")과 도로명 주소(예: "테헤란로") 둘 다 키워드로 등록해두면 어느 쪽이든 하나만
+ * 맞아도 통과된다. 주소 문자열 자체는 frontend가 카카오맵 SDK(coord2Address)로 이미 변환해서
+ * 보내주는 값을 그대로 쓴다 — 백엔드에서 별도 역지오코딩 API 키를 새로 발급/설정할 필요가 없다.
+ * (좌표를 이미 신뢰하는 것과 동일한 수준으로 신뢰하는 값이라, 별도의 서버측 재검증은 하지 않는다.)
+ */
+async function isHqAddressMatch(locationAddress: string | undefined): Promise<boolean> {
+  if (!locationAddress) return false;
+  const keywords = await getPolicyJSON<string[]>('HQ_ADDRESS_KEYWORDS', []);
+  if (!keywords.length) return false;
+  const normalizedAddress = locationAddress.replace(/\s+/g, '');
+  return keywords.some((kw) => kw && normalizedAddress.includes(kw.replace(/\s+/g, '')));
 }
 
 export const attendanceRouter = Router();
@@ -69,8 +86,13 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   const workDate = todayDateOnly();
   // 좌표는 저장하지 않고, 본사와의 거리 비교에만 즉시 사용하고 폐기한다.
   const location = req.body?.location as { lat: number; lng: number } | undefined;
+  // 카카오맵 역지오코딩 주소(frontend에서 이미 변환해서 보내줌) — 좌표와 마찬가지로 대조 후 폐기.
+  const locationAddress = req.body?.locationAddress as string | undefined;
   // 사내망(공인IP) 확인 — 회사 와이파이에 연결되어 있으면 아래 GPS 기반 위치확인들을 모두 통과시킨다.
   const officeNetworkConfirmed = await isRequestFromOfficeNetwork(req);
+  // 주소 매칭 확인 — 건물명/도로명 키워드가 맞으면 GPS 거리와 무관하게 통과시킨다.
+  const hqAddressMatched = await isHqAddressMatch(locationAddress);
+  const hqVerifiedByAlternateMeans = officeNetworkConfirmed || hqAddressMatched;
 
   const existing = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate } } });
   if (existing?.clockInAt) {
@@ -100,8 +122,8 @@ attendanceRouter.post('/clock-in', async (req, res) => {
     const hqLat = await getPolicyString('HQ_LATITUDE', '');
     const hqLng = await getPolicyString('HQ_LONGITUDE', '');
     if (hqLat && hqLng) {
-      const match = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) });
-      if (match && !match.locationMatch && !officeNetworkConfirmed) {
+      const match = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS);
+      if (match && !match.locationMatch && !hqVerifiedByAlternateMeans) {
         return res.status(400).json({
           success: false,
           error: {
@@ -123,8 +145,8 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   const hqLng = await getPolicyString('HQ_LONGITUDE', '');
   const hqConfigured = Boolean(hqLat && hqLng);
   let hqLocationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
-  // 사내망(공인IP)으로 이미 확인됐으면 GPS 위치확인 요구 자체를 건너뛴다.
-  if (hqConfigured && !officeNetworkConfirmed) {
+  // 사내망(공인IP) 또는 주소 매칭으로 이미 확인됐으면 GPS 위치확인 요구 자체를 건너뛴다.
+  if (hqConfigured && !hqVerifiedByAlternateMeans) {
     if (!location) {
       return res.status(400).json({
         success: false,
@@ -135,7 +157,7 @@ attendanceRouter.post('/clock-in', async (req, res) => {
         },
       });
     }
-    hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) });
+    hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS);
     if (hqLocationResult && !hqLocationResult.locationMatch) {
       return res.status(400).json({
         success: false,
@@ -146,7 +168,7 @@ attendanceRouter.post('/clock-in', async (req, res) => {
       });
     }
   }
-  const locationConfirmed = hqConfigured && (officeNetworkConfirmed || Boolean(hqLocationResult?.locationMatch));
+  const locationConfirmed = hqConfigured && (hqVerifiedByAlternateMeans || Boolean(hqLocationResult?.locationMatch));
 
   const record = existing
     ? await prisma.attendanceRecord.update({ where: { id: existing.id }, data: { clockInAt: new Date() } })
@@ -349,6 +371,8 @@ const statusSchema = z.object({
   // 위치를 못 가져온 이유(권한거부/타임아웃/미동의 등) — location이 없을 때만 의미 있음.
   // clock-out과 동일한 값 목록(LOCATION_CAPTURE_STATUSES)을 그대로 사용한다.
   locationStatus: z.string().optional(),
+  // 카카오맵 역지오코딩 주소(frontend에서 변환) — 본사근무 등록 시 건물명/도로명 키워드 매칭용.
+  locationAddress: z.string().optional(),
   // 원격/현장 — 고객사미팅/고객사작업/야간작업 등록 시 필수. 상태 종류와 무관하게 항상
   // status_change_logs에 저장되며(EffortLog/NightWorkSession은 상태별로 나뉘어 있어 조회가 불편함),
   // 퇴근 처리 시 "직출/직퇴라 위치 필수" 판단에 이 값을 사용한다.
@@ -378,7 +402,7 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '상태값을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
-  const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus } = parsed.data;
+  const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus, locationAddress } = parsed.data;
   // 아래 let 재할당(사내망 확인 시 'OK'로 덮어쓰기) 때문에 const로 두면 안 되는데, let은 리터럴 타입을
   // string으로 넓혀버려서(literal widening) 이 값을 그대로 Prisma의 LocationCaptureStatus enum
   // 필드에 넣을 때 타입이 안 맞게 된다 — 명시적으로 타입을 지정해서 넓혀지지 않게 고정한다.
@@ -389,9 +413,12 @@ attendanceRouter.post('/status', async (req, res) => {
       : undefined;
   // 사내망(공인IP) 확인 — 본사근무 등록 시 GPS 없이도(또는 GPS가 빗나가도) 위치확인을 통과시킨다.
   const officeNetworkConfirmed = status === 'HQ_WORKING' ? await isRequestFromOfficeNetwork(req) : false;
-  if (officeNetworkConfirmed) {
-    // 위치가 사내망으로 확인됐으니, 이후 로직·집계(예: priorHqLocationFailures)가 "위치 확인됨"으로
-    // 일관되게 취급하도록 캡처상태를 OK로 남긴다.
+  // 주소 매칭 확인 — 건물명/도로명 키워드가 맞으면 GPS 거리와 무관하게 통과시킨다.
+  const hqAddressMatched = status === 'HQ_WORKING' ? await isHqAddressMatch(locationAddress) : false;
+  const hqVerifiedByAlternateMeans = officeNetworkConfirmed || hqAddressMatched;
+  if (hqVerifiedByAlternateMeans) {
+    // 위치가 사내망 또는 주소 매칭으로 확인됐으니, 이후 로직·집계(예: priorHqLocationFailures)가
+    // "위치 확인됨"으로 일관되게 취급하도록 캡처상태를 OK로 남긴다.
     locationCaptureStatus = 'OK';
   }
 
@@ -473,11 +500,11 @@ attendanceRouter.post('/status', async (req, res) => {
   // 자체가 실패(권한거부/타임아웃/미동의 등)했으면 오늘 첫 실패는 봐주되 그 다음부터는 실제
   // 위치 일치를 요구한다. 이게 없으면 위치를 안 주는 것만으로 검증이 통째로 무력화된다.
   let hqLocationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
-  if (status === 'HQ_WORKING' && !officeNetworkConfirmed) {
+  if (status === 'HQ_WORKING' && !hqVerifiedByAlternateMeans) {
     const hqLat = await getPolicyString('HQ_LATITUDE', '');
     const hqLng = await getPolicyString('HQ_LONGITUDE', '');
     if (hqLat && hqLng) {
-      hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) });
+      hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS);
       if (hqLocationResult && !hqLocationResult.locationMatch) {
         return res.status(400).json({
           success: false,

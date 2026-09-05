@@ -633,10 +633,17 @@ export default function EmployeeHome() {
       const hqQuickLocationMeta: { accuracy: number | null } = { accuracy: null };
       const refreshHqQuickLocation = async () => {
         const { status: locStatus, coords, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
-        if (coords) body.location = coords;
-        else delete body.location;
         body.locationStatus = locStatus;
         hqQuickLocationMeta.accuracy = accuracyMeters;
+        if (coords) {
+          body.location = coords;
+          // 카카오맵 역지오코딩 — GPS 오차가 커도(예: 신한이노플렉스 사무실 835m 오차 사례) 주소가
+          // 본사 건물명/도로명과 일치하면 서버에서 통과시켜줄 수 있게, 변환된 주소도 같이 보낸다.
+          body.locationAddress = (await reverseGeocode(coords.lat, coords.lng)) ?? undefined;
+        } else {
+          delete body.location;
+          delete body.locationAddress;
+        }
       };
       if (code === 'HQ_WORKING') {
         await refreshHqQuickLocation();
@@ -792,10 +799,17 @@ export default function EmployeeHome() {
     const detailFormLocationMeta: { accuracy: number | null } = { accuracy: null };
     const refreshDetailFormLocation = async () => {
       const { status: locStatus, coords, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
-      if (coords) body.location = coords;
-      else delete body.location;
       body.locationStatus = locStatus;
       detailFormLocationMeta.accuracy = accuracyMeters;
+      if (coords) {
+        body.location = coords;
+        // 본사근무만 역지오코딩 주소를 같이 보낸다 — 고객사미팅/작업은 등록된 고객사 좌표와
+        // 직접 대조하므로 주소 매칭이 필요 없다(불필요한 카카오맵 호출도 줄인다).
+        body.locationAddress = code === 'HQ_WORKING' ? (await reverseGeocode(coords.lat, coords.lng)) ?? undefined : undefined;
+      } else {
+        delete body.location;
+        delete body.locationAddress;
+      }
     };
     if (needsLocationCheck) {
       await refreshDetailFormLocation();
@@ -1118,10 +1132,15 @@ export default function EmployeeHome() {
                   const clockInLocationMeta: { accuracy: number | null } = { accuracy: null };
                   const refreshClockInLocation = async () => {
                     const { status: locStatus, coords, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
-                    if (coords) clockInBody.location = coords;
-                    else delete clockInBody.location;
                     clockInBody.locationStatus = locStatus;
                     clockInLocationMeta.accuracy = accuracyMeters;
+                    if (coords) {
+                      clockInBody.location = coords;
+                      clockInBody.locationAddress = (await reverseGeocode(coords.lat, coords.lng)) ?? undefined;
+                    } else {
+                      delete clockInBody.location;
+                      delete clockInBody.locationAddress;
+                    }
                   };
                   await refreshClockInLocation();
                   const result = await attemptWithLocationRetry(
