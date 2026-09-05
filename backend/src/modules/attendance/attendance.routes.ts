@@ -375,7 +375,10 @@ attendanceRouter.post('/status', async (req, res) => {
   }
   const userId = req.authUser!.userId;
   const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus } = parsed.data;
-  let locationCaptureStatus = location
+  // 아래 let 재할당(사내망 확인 시 'OK'로 덮어쓰기) 때문에 const로 두면 안 되는데, let은 리터럴 타입을
+  // string으로 넓혀버려서(literal widening) 이 값을 그대로 Prisma의 LocationCaptureStatus enum
+  // 필드에 넣을 때 타입이 안 맞게 된다 — 명시적으로 타입을 지정해서 넓혀지지 않게 고정한다.
+  let locationCaptureStatus: 'OK' | 'NO_CONSENT' | 'PERMISSION_DENIED' | 'TIMEOUT' | 'UNSUPPORTED' | 'GEOCODE_FAILED' | undefined = location
     ? 'OK'
     : rawLocationStatus && LOCATION_CAPTURE_STATUSES.has(rawLocationStatus)
       ? (rawLocationStatus as 'NO_CONSENT' | 'PERMISSION_DENIED' | 'TIMEOUT' | 'UNSUPPORTED' | 'GEOCODE_FAILED')
