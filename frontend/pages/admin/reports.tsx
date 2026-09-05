@@ -155,18 +155,13 @@ function AttendanceRowTr({
       {!hideDept && <td>{r.department}</td>}
       <td className="num">{fmtTime(r.clockInAt)}</td>
       <td className="num">
+        {/* 2026-09-06: 이동시간은 실제 근무시간과 이동시간을 구분해서 보려는 목적이 커서(예:
+            상주/출장이 잦은 직원의 실근무 대비 이동 비중 파악), 다른 숫자 열처럼 맨 텍스트로
+            묻히지 않게 눈에 띄는 색상 알약(pill)으로 항상 강조해서 보여준다. */}
         {r.travelMinutes > 0 ? (
-          <span>
-            {hoursLabel(r.travelMinutes)}
-            {r.travelHasEstimate && (
-              <span
-                className="att-pill att-pill-info"
-                style={{ marginLeft: 6 }}
-                title="이동중 상태를 직접 찍지 않은 구간이 있어 일부는 자동추정치입니다."
-              >
-                🚙 추정
-              </span>
-            )}
+          <span className="att-pill att-pill-travel" title={r.travelHasEstimate ? '이동중 상태를 직접 찍지 않은 구간이 있어 일부는 자동추정치입니다.' : undefined}>
+            🚙 {hoursLabel(r.travelMinutes)}
+            {r.travelHasEstimate && <span className="att-travel-est">추정</span>}
           </span>
         ) : (
           <span style={{ color: 'var(--dsti-text-faint)' }}>-</span>
@@ -495,13 +490,25 @@ export default function AdminReportsPage() {
               "부서" 열 대신 구분줄로 부서를 나눈다. */}
           {attendanceDetail && attendanceDetail.rows.length > 0 && (
             <div className="table-scroll">
-              <table className="att-table">
+              <table className="att-table att-table--daily">
+                {/* 2026-09-06: 열 너비를 브라우저 자동계산에 맡기면 "이름" 열이 내용 없이도 과하게
+                    넓어지고 정작 중요한 이동/근무시간 등은 좁게 눌리는 문제가 있었다. table-layout:
+                    fixed + colgroup으로 열 비율을 직접 지정해 항상 같은 균형을 유지한다. 이동시간은
+                    이동경로 파악에 중요한 정보라 다른 숫자 열보다 살짝 더 넓게 잡았다. */}
+                <colgroup>
+                  <col style={{ width: groupByDept ? '26%' : '20%' }} />
+                  {!groupByDept && <col style={{ width: '13%' }} />}
+                  <col style={{ width: groupByDept ? '13%' : '12%' }} />
+                  <col style={{ width: groupByDept ? '18%' : '17%' }} />
+                  <col style={{ width: groupByDept ? '28%' : '23%' }} />
+                  <col style={{ width: '15%' }} />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>이름</th>
                     {!groupByDept && <th>부서</th>}
                     <th className="num">출근</th>
-                    <th className="num">이동</th>
+                    <th className="num">🚙 이동</th>
                     <th>퇴근</th>
                     <th className="num">근무시간</th>
                   </tr>
