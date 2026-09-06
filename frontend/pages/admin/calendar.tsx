@@ -13,13 +13,14 @@ const STATUS_META: Record<string, { label: string; icon: string; color: string }
   MEETING: { label: '회의중', icon: '👥', color: '#1c7ed6' },
   REMOTE: { label: '재택(집)', icon: '🏠', color: '#6741d9' },
   NIGHT_WORK: { label: '야간작업', icon: '🌙', color: '#f08c00' },
+  WEEKEND_WORK: { label: '주말작업', icon: '🗓️', color: '#f08c00' },
   ALT_DAY_OFF: { label: '대체휴무', icon: '🏖️', color: '#868e96' },
   ON_LEAVE: { label: '휴가', icon: '🌴', color: '#868e96' },
   UNKNOWN: { label: '상태 미확인', icon: '❔', color: '#e03131' },
 };
 const STATUS_ORDER = [
   'HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'MOVING', 'MEETING',
-  'REMOTE', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'UNKNOWN',
+  'REMOTE', 'NIGHT_WORK', 'WEEKEND_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'UNKNOWN',
 ];
 const WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일'];
 

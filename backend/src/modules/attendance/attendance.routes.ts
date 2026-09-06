@@ -54,9 +54,19 @@ attendanceRouter.use(requireAuth);
 // 이 상태로 바뀌면 "실제 업무 시작"으로 보고 출근시각을 자동 인식한다(주52시간제 대응).
 // REMOTE(재택)는 대부분 고객사에 원격 접속해서 작업하는 형태라, 접속 시작~종료를 다른 근무
 // 유형과 동일하게(고객사작업과 같은 방식으로) 추적하기 위해 포함시켰다.
-const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP', 'REMOTE']);
+const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK', 'BUSINESS_TRIP', 'REMOTE']);
 // 이 상태는 프로젝트별 공수(工數) 기록 대상이다. REMOTE도 고객사작업과 동일하게 추적한다.
-const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE']);
+// 2026-09-06: WEEKEND_WORK도 실제 작업시간(시작~종료)을 EffortLog로 구조화해서 남겨야 나중에
+// 리포트에서 집계할 수 있어 포함시켰다 — 다만 프론트의 동일한 이름의 상수(index.tsx
+// EFFORT_STATUSES)에는 일부러 WEEKEND_WORK를 넣지 않았다(입력폼을 "프로젝트명" 항목 없이
+// 야간작업과 똑같은 모양으로 유지하기 위함 — 프로젝트명은 항상 빈 값으로 저장됨). 이 두 상수는
+// 이 상태를 빼고는 반드시 같은 값을 유지해야 한다.
+const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'WEEKEND_WORK']);
+// 주말(토=6,일=0, KST) 여부 — "주말엔 주말작업만" 게이트 판단에 쓴다.
+function isWeekendKST(date: Date = new Date()): boolean {
+  const kstDay = new Date(date.getTime() + 9 * 60 * 60 * 1000).getUTCDay();
+  return kstDay === 0 || kstDay === 6;
+}
 
 // 위치이탈 자동감지(/departure-suggest, 2026-09-04)가 만든 제안임을 구분하는 표시 — 이 문자열로
 // 시작하는 reason만 본인이 직접 확정/취소할 수 있다. 직원이 직접 신청한 지난 근무일 정정 요청은
@@ -281,7 +291,10 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   const lateClockOutWarnHour = await getPolicyNumber('LATE_CLOCKOUT_WARN_HOUR', 19);
   const regularCutoffTime = combineDateTime(workDate, `${String(regularWorkEndHour).padStart(2, '0')}:00`);
   const lateWarnTime = combineDateTime(workDate, `${String(lateClockOutWarnHour).padStart(2, '0')}:00`);
-  const isNightWorkDay = latestStatusToday?.status === 'NIGHT_WORK';
+  // 2026-09-06: 주말작업(WEEKEND_WORK)도 애초에 "평일 09~18시 정규근무"라는 전제가 없는 별도
+  // 근무형태라 야간작업과 동일하게 이 마감시각 계산에서 제외한다 — 안 그러면 토요일에 오래
+  // 일하고 늦게 퇴근했을 때 "정규 근무시간 초과"로 잘못 계산되어 버린다.
+  const isNightWorkDay = latestStatusToday?.status === 'NIGHT_WORK' || latestStatusToday?.status === 'WEEKEND_WORK';
   let lateClockOutOverMinutes = 0;
   let regularWorkEndAt = clockOutAt;
   if (!isNightWorkDay && clockOutAt > lateWarnTime) {
@@ -361,7 +374,7 @@ const businessTripSchema = z.object({
 
 const statusSchema = z.object({
   status: z.enum([
-    'HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'MEETING', 'MOVING', 'REMOTE', 'NIGHT_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'CLIENT_MEETING', 'CLIENT_WORK', 'BUSINESS_TRIP',
+    'HQ_WORKING', 'RESIDENT_ONSITE', 'OFFSITE', 'MEETING', 'MOVING', 'REMOTE', 'NIGHT_WORK', 'WEEKEND_WORK', 'ALT_DAY_OFF', 'ON_LEAVE', 'CLIENT_MEETING', 'CLIENT_WORK', 'BUSINESS_TRIP',
   ]),
   note: z.string().optional(),
   effort: effortSchema.optional(),
@@ -384,7 +397,7 @@ const statusSchema = z.object({
 const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 // 이 상태들은 "원격/현장"을 반드시 골라야 한다 — 야간작업 보고서에도 현장 여부가 필요하고
 // (VERITAS 등 상주 백업팀의 야간 현장작업 사례), 고객사미팅/작업은 아래 직출퇴 판단에도 쓰인다.
-const REQUIRE_SITE_TYPE_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+const REQUIRE_SITE_TYPE_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
 // 이 상태 + 현장(ONSITE)이면 "직출/직퇴"로 보고, 최종 퇴근 시 위치 등록을 필수로 한다.
 // 이동중/야간작업/본사근무/출장(회사 지휘감독 하 이동)은 제외한다.
 const REQUIRE_LOCATION_ON_CLOCKOUT_IF_ONSITE = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
@@ -403,6 +416,25 @@ attendanceRouter.post('/status', async (req, res) => {
   }
   const userId = req.authUser!.userId;
   const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus, locationAddress } = parsed.data;
+
+  // 주말(토/일, KST) 게이트(2026-09-06 요청): 주말엔 "주말작업"만 등록할 수 있고 나머지 상태는
+  // 막는다 — 반대로 평일엔 "주말작업"을 등록할 수 없다. 관리자 계정도 예외 없이 적용한다(프론트
+  // 아이콘 잠금은 관리자 계정에는 안 걸어두지만, 실제 등록은 여기서 최종적으로 검증되므로 관리자가
+  // 테스트 삼아 눌러도 이 규칙은 그대로 지켜진다).
+  const isWeekendNow = isWeekendKST();
+  if (isWeekendNow && status !== 'WEEKEND_WORK') {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'WEEKEND_ONLY_WEEKEND_WORK', message: '주말에는 "주말작업" 상태만 등록할 수 있습니다.' },
+    });
+  }
+  if (!isWeekendNow && status === 'WEEKEND_WORK') {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'WEEKEND_WORK_ONLY_ON_WEEKEND', message: '주말작업은 토요일/일요일에만 등록할 수 있습니다.' },
+    });
+  }
+
   // 아래 let 재할당(사내망 확인 시 'OK'로 덮어쓰기) 때문에 const로 두면 안 되는데, let은 리터럴 타입을
   // string으로 넓혀버려서(literal widening) 이 값을 그대로 Prisma의 LocationCaptureStatus enum
   // 필드에 넣을 때 타입이 안 맞게 된다 — 명시적으로 타입을 지정해서 넓혀지지 않게 고정한다.
@@ -429,7 +461,7 @@ attendanceRouter.post('/status', async (req, res) => {
 
   // 고객사미팅/고객사작업/야간작업/재택은 작업시작 시간만 있으면 등록 가능하다(막 시작한 시점엔 완료시간을
   // 알 수 없는 게 당연하므로). 완료시간은 나중에 다시 등록해서 채우면 된다("진행중" 허용).
-  const REQUIRE_TIME_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'REMOTE']);
+  const REQUIRE_TIME_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'REMOTE', 'WEEKEND_WORK']);
   if (REQUIRE_TIME_STATUSES.has(status) && !effort?.startTime) {
     return res.status(400).json({ success: false, error: { code: 'TIME_REQUIRED', message: '작업시작 시간을 입력해야 합니다.' } });
   }
@@ -539,9 +571,13 @@ attendanceRouter.post('/status', async (req, res) => {
 
   // 위치대조: 입력한 고객사명과 등록된 고객사를 이름으로 매칭해서 좌표를 비교한다.
   // 매칭되는 고객사가 없거나 좌표 미등록이면 대조할 대상이 없으니 그냥 null(확인 안 함)로 둔다.
+  // 2026-09-06: "원격"으로 진행하는 고객사작업/미팅(예: 이동중에 급히 원격지원하는 경우)까지
+  // 고객사 현장 좌표와 비교하면, 실제로 현장에 없는 게 정상인데도 "위치 불일치"로 막혀버린다
+  // (사용자 지적 — 이동중 긴급 원격작업 검토 중 발견). siteType이 원격이면 애초에 현장에 있을
+  // 필요가 없으므로, 이 경우엔 위치대조 자체를 하지 않는다(현장/ONSITE만 기존처럼 대조).
   let locationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
   let matchedClientForLocation: { latitude: number | null; longitude: number | null } | null = null;
-  if (LOCATION_CHECK_STATUSES.has(status) && effort?.clientName) {
+  if (LOCATION_CHECK_STATUSES.has(status) && effort?.clientName && siteType !== 'REMOTE') {
     matchedClientForLocation = await prisma.client.findFirst({
       where: { name: { contains: effort.clientName.trim(), mode: 'insensitive' } },
     });
@@ -868,9 +904,13 @@ attendanceRouter.get('/me', async (req, res) => {
   const latestEffort = (latestStatus && EFFORT_STATUSES.has(latestStatus.status))
     ? await prisma.effortLog.findFirst({ where: { userId, workDate }, orderBy: { startTime: 'desc' } })
     : null;
+  // 2026-09-06: 프론트가 "정규 근무시간이 지났는데 아직 퇴근 전이면 퇴근 후 야간작업으로
+  // 이어가시겠어요?" 배너를 관리자 정책값과 맞춰 띄울 수 있도록, 값을 그대로 내려준다
+  // (하드코딩하면 관리자가 정책값을 바꿨을 때 프론트만 안 맞게 되는 문제가 있어서).
+  const regularWorkEndHour = await getPolicyNumber('REGULAR_WORK_END_HOUR', 18);
   return res.json({
     success: true,
-    data: { record, latestStatus, latestEffort: latestEffort ? { clientName: latestEffort.clientName } : null },
+    data: { record, latestStatus, latestEffort: latestEffort ? { clientName: latestEffort.clientName } : null, regularWorkEndHour },
   });
 });
 

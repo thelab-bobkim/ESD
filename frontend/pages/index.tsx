@@ -18,15 +18,17 @@ const STATUS_META: Record<string, { label: string; icon: string }> = {
   CLIENT_MEETING: { label: '고객사미팅', icon: '🤝' },
   CLIENT_WORK: { label: '고객사작업', icon: '🛠️' },
   NIGHT_WORK: { label: '야간작업', icon: '🌙' },
+  // 2026-09-06: 주말(토/일) 전용 상태 — 주말엔 이 아이콘만 누를 수 있고 나머지는 잠긴다.
+  WEEKEND_WORK: { label: '주말작업', icon: '🗓️' },
   BUSINESS_TRIP: { label: '출장', icon: '✈️' },
   ALT_DAY_OFF: { label: '대체휴무', icon: '🏖️' },
   ON_LEAVE: { label: '휴가', icon: '🌴' },
 };
-const STATUS_ORDER = ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP', 'ALT_DAY_OFF', 'ON_LEAVE'];
+const STATUS_ORDER = ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK', 'BUSINESS_TRIP', 'ALT_DAY_OFF', 'ON_LEAVE'];
 
 // 이 상태들은 클릭 시 오른쪽에 상세입력 폼을 띄운다.
 const DETAIL_FORM_STATUSES = new Set([
-  'REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'BUSINESS_TRIP', 'ON_LEAVE', 'ALT_DAY_OFF',
+  'REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK', 'BUSINESS_TRIP', 'ON_LEAVE', 'ALT_DAY_OFF',
 ]);
 // 9개 아이콘 전부 동일한 규칙: 처음 누르면 상세폼 없이 즉시 등록되어 체크(✓) 표시가 바로 뜬다
 // (상황판에도 즉시 반영). 이미 그 상태인데 같은 아이콘을 다시 누르면, 그때 상세폼이 열려서
@@ -41,7 +43,9 @@ const QUICK_REGISTER_STATUSES = new Set(
 );
 // 이 상태들은 프로젝트별 공수(工數) 집계 대상이라 프로젝트명 필드가 필요하다.
 // REMOTE(재택)는 대부분 고객사에 원격 접속해서 작업하므로, 고객사작업과 동일하게 접속시작~종료를
-// 추적한다(백엔드 EFFORT_STATUSES와 반드시 같은 값을 유지해야 한다).
+// 추적한다. 백엔드 EFFORT_STATUSES와 원칙적으로 같은 값을 유지해야 하지만, WEEKEND_WORK만 예외다
+// (2026-09-06) — 백엔드에서는 EffortLog로 시간을 구조화해서 남기지만, 화면은 "프로젝트명" 입력칸
+// 없이 야간작업과 똑같은 모양을 유지하기로 해서 여기(프론트)에는 일부러 넣지 않았다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE']);
 // 이 상태들은 "고객사명 + 업무내용"만 간단히 입력하는 단순폼이다(프로젝트/작업유형/시간 불필요).
 // REMOTE는 접속시작~종료를 추적해야 해서 여기서 뺐다(2026-08-30, 엔지니어 공수 리포트 누락 문제 해결).
@@ -49,7 +53,7 @@ const SIMPLE_CLIENT_STATUSES = new Set(['RESIDENT_ONSITE']);
 // 이 상태들은 "작업위치(원격/현장)"를 필수로, "작업인원/진행률·차수"를 선택으로 받는다 —
 // 백업팀 등의 야간/고객사 작업 보고서 형식(예: VERITAS 야간작업 보고 메일)을 참고해 추가한 필드.
 // 백엔드 attendance.routes.ts의 REQUIRE_SITE_TYPE_STATUSES와 반드시 같은 값을 유지해야 한다.
-const SITE_DETAIL_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK']);
+const SITE_DETAIL_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
 // 백엔드 LOCATION_CHECK_STATUSES와 동일 — 이 상태들만 등록 순간 좌표를 등록된 고객사와 대조한다.
 const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 // 2026-09-01: 직원들이 등록을 귀찮아해서(항목이 너무 많음) 본사근무/고객사미팅/고객사작업 세 가지는
@@ -57,7 +61,7 @@ const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 // 항목(고객사·관련프로젝트, 수행업무)만 채우면 바로 등록되게 했다. 야간작업/재택은 기존 그대로 유지.
 // 2026-09-01: 재택/야간작업도 같은 이유로 고객사작업과 같은 간소화된 형식으로 맞췄다 —
 // 목적/사유 항목을 없애고, 진행률/차수(야간작업에만 있던 항목)도 없애서 형식을 통일했다.
-const SIMPLIFIED_EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'NIGHT_WORK']);
+const SIMPLIFIED_EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'NIGHT_WORK', 'WEEKEND_WORK']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 // 고객사미팅은 "작업"이 아니라 "미팅"이라 유형 대신 목적으로 구분한다.
@@ -83,13 +87,17 @@ type StatusOverride = { visibleStatuses: string[]; noFormStatuses: string[] };
 // 고객사미팅·야간작업·출장·휴가만 있으면 된다(고객사작업/대체휴무는 안 보임 — 이 팀들은 고객사
 // 방문 시 "고객사상주"로 등록하고 별도 "고객사작업"은 안 쓴다는 전제).
 const FIELD_ENGINEERING_OVERRIDE: StatusOverride = {
-  visibleStatuses: ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'NIGHT_WORK', 'BUSINESS_TRIP', 'ON_LEAVE'],
+  // 2026-09-06: WEEKEND_WORK를 추가하지 않으면 이 override가 적용되는 부서는 주말에 누를 수
+  // 있는 아이콘이 하나도 없어진다(나머지는 전부 주말 잠금 대상이므로) — 모든 override에 반드시
+  // 포함시킨다.
+  visibleStatuses: ['REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'NIGHT_WORK', 'WEEKEND_WORK', 'BUSINESS_TRIP', 'ON_LEAVE'],
   noFormStatuses: ['REMOTE', 'HQ_WORKING'],
 };
 
 const DEPARTMENT_STATUS_OVERRIDES: Record<string, StatusOverride> = {
   경영관리부: {
-    visibleStatuses: ['REMOTE', 'HQ_WORKING', 'MOVING', 'BUSINESS_TRIP', 'ON_LEAVE'],
+    // WEEKEND_WORK 포함 이유는 FIELD_ENGINEERING_OVERRIDE 주석 참고.
+    visibleStatuses: ['REMOTE', 'HQ_WORKING', 'MOVING', 'WEEKEND_WORK', 'BUSINESS_TRIP', 'ON_LEAVE'],
     noFormStatuses: ['HQ_WORKING'],
   },
   보안사업부: FIELD_ENGINEERING_OVERRIDE,
@@ -120,6 +128,8 @@ interface MeAttendance {
   latestStatus: StatusLog | null;
   // 고객사작업/미팅 중일 때만 채워진다 — 위치이탈 자동감지가 "지금 근무중인 고객사"를 알아내는 데 쓴다.
   latestEffort: { clientName: string } | null;
+  // 정규 근무 마감 정책시각(기본 18) — "정규 근무시간이 지났는데 아직 퇴근 전" 배너 판단에 쓴다.
+  regularWorkEndHour: number;
 }
 interface WeeklySummary { from: string; to: string; totalMinutes: number; days: number; }
 
@@ -188,6 +198,21 @@ export default function EmployeeHome() {
   const [showHqReturnPrompt, setShowHqReturnPrompt] = useState(false);
   const [showAltDayOffPrompt, setShowAltDayOffPrompt] = useState(false);
   const [lateClockOutSuggestion, setLateClockOutSuggestion] = useState<{ overMinutes: number; suggestedStart: string; suggestedEnd: string } | null>(null);
+  // 2026-09-06: 정규 근무시간(정책값, 기본 18시)이 지났는데 아직 퇴근 전이면 "퇴근하고 야간작업으로
+  // 이어가기"를 안내하는 배너 — 저녁 6시부터 5분마다 오는 퇴근 푸시알림을 계속 미루게 되는 문제를
+  // 보완한다(직접 퇴근을 눌러야 그 알림이 멈추므로, 야간작업으로 이어갈 계획이어도 일단 퇴근부터
+  // 눌러 정규 근무를 마감하도록 유도). 오늘 하루만 닫아두는 스누즈.
+  const [nightWorkPromptDismissed, setNightWorkPromptDismissed] = useState(false);
+  // 이 배너의 버튼으로 퇴근 모달을 열었는지 — 그 경우에만 퇴근 확정 직후 야간작업 상세폼으로
+  // 곧장 이어준다. 평범한 "퇴근" 버튼으로 연 경우는 기존 방식대로, 18시 이후 초과분이 있을 때만
+  // 서버가 계산해준 lateClockOutSuggestion 배너를 보여준다.
+  const [clockOutThenNightWork, setClockOutThenNightWork] = useState(false);
+  // 위 배너가 "지금이 정규 근무 마감시각을 지났는지"를 최신 상태로 판단할 수 있도록 1분마다 갱신한다.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
   const [clientLocations, setClientLocations] = useState<{ name: string; latitude: number; longitude: number }[]>([]);
   const [arrivedClient, setArrivedClient] = useState<string | null>(null);
   // 고객사미팅/고객사작업 등록 시 검색·선택하는 전체 고객사 목록(좌표 유무 무관) — 2026-09-02 추가.
@@ -210,6 +235,23 @@ export default function EmployeeHome() {
   const [myStatus, setMyStatus] = useState<MeAttendance | null>(null);
   const currentStatus = myStatus?.latestStatus;
   const clockedOut = Boolean(myStatus?.record?.clockOutAt);
+  // 정규 근무 마감시각(정책값, 기본 18시)이 지났는데 아직 퇴근 전인지 — 자정을 넘겨 계속
+  // 일하는 경우까지 고려해 새벽 3시 전까지는 "저녁 시간대"로 본다(서버의 야간작업 허용시간
+  // 판단과 동일한 기준, attendance.routes.ts DAY_BOUNDARY_HOUR 참고).
+  const kstHourNow = (new Date(nowTick).getUTCHours() + 9) % 24;
+  const regularWorkEndHour = myStatus?.regularWorkEndHour ?? 18;
+  const isPastRegularWorkEnd = kstHourNow >= regularWorkEndHour || kstHourNow < 3;
+  // 주말(토/일, KST) 여부 — 서버(attendance.routes.ts isWeekendKST)와 동일한 기준. 주말엔
+  // "주말작업"만 등록 가능하므로 이 배너도, 아래 아이콘 잠금도 이 값을 함께 참고한다.
+  const isWeekendToday = (() => {
+    const kstDay = new Date(nowTick + 9 * 60 * 60 * 1000).getUTCDay();
+    return kstDay === 0 || kstDay === 6;
+  })();
+  // 주말엔 "퇴근하고 야간작업으로" 배너가 의미가 없다(주말작업은 애초에 정규 근무시간 개념이
+  // 없고, 버튼을 눌러도 서버가 평일 전용인 야간작업 등록을 막아버린다) — 평일에만 띄운다.
+  const showNightWorkTransitionPrompt = Boolean(
+    myStatus?.record?.clockInAt && !clockedOut && isPastRegularWorkEnd && !nightWorkPromptDismissed && !isWeekendToday
+  );
   // 관리자 권한 계정은 퇴근 후에도 테스트할 수 있게 상태변경 잠금에서 예외로 둔다.
   const isAdminAccount = Boolean(me?.roles?.some((r) => ['SYSTEM_ADMIN', 'HR_ADMIN'].includes(r)));
   // 부서별/개인별 상태 아이콘·입력폼 커스터마이징(DEPARTMENT_STATUS_OVERRIDES, USER_STATUS_OVERRIDES
@@ -612,7 +654,7 @@ export default function EmployeeHome() {
     // ("세부내용은 나중에 작성" — 시작하는 시점엔 아직 쓸 내용이 없는 게 당연하므로.)
     if (QUICK_REGISTER_STATUSES.has(code) && !alreadyInThisStatus) {
       const body: Record<string, unknown> = { status: code };
-      if (['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'REMOTE'].includes(code)) {
+      if (['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK', 'REMOTE'].includes(code)) {
         body.effort = { clientName: prefilledClientName || undefined, startTime: nowHHMM() };
       }
       // 고객사미팅/고객사작업/야간작업은 작업위치(원격/현장)가 필수라, 우선 등록되는 이 시점에는
@@ -1068,6 +1110,27 @@ export default function EmployeeHome() {
         </div>
       )}
 
+      {showNightWorkTransitionPrompt && (
+        <div className="card col-full notice-tint-orange">
+          🌙 정규 근무시간({regularWorkEndHour}시)이 지났어요. 계속 근무하실 계획이면, 지금 퇴근으로
+          오늘 정규 근무를 마감한 뒤 야간작업으로 이어서 등록해주세요 — 그래야 5분마다 오는 퇴근 알림도 멈춰요.
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button
+              style={{ width: 'auto', margin: 0 }}
+              onClick={() => {
+                setClockOutThenNightWork(true);
+                setShowClockOutConfirm(true);
+              }}
+            >
+              🏁 퇴근하고 야간작업 등록하기
+            </button>
+            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={() => setNightWorkPromptDismissed(true)}>
+              나중에요
+            </button>
+          </div>
+        </div>
+      )}
+
       {lateClockOutSuggestion && (
         <div className="card col-full notice-tint-orange">
           🌙 오늘 저녁 근무는 정규 근무시간(18시)까지만 인정되고, 그 이후 <strong>{hoursLabel(lateClockOutSuggestion.overMinutes)}</strong>은 근무시간에 반영되지 않았어요.
@@ -1193,12 +1256,13 @@ export default function EmployeeHome() {
               <ClockOutConfirmModal
                 clockInAt={myStatus.record.clockInAt}
                 locationConsentGiven={Boolean(me?.locationConsentGiven)}
-                onCancel={() => setShowClockOutConfirm(false)}
+                onCancel={() => { setShowClockOutConfirm(false); setClockOutThenNightWork(false); }}
                 onConfirm={async ({ locationAddress, locationStatus, earlyLeaveReason }) => {
                   // 18시 이후 정규근무분 초과(야간작업 등록 제안) 여부를 응답에서 바로 확인해야 해서
                   // run()을 안 거치고 직접 호출한다(NIGHT_WORK 등록과 같은 이유).
                   setMessage(null);
                   setMessageIsError(false);
+                  const viaNightWorkBanner = clockOutThenNightWork;
                   try {
                     const res = await apiFetch<{ lateClockOutSuggestion: { overMinutes: number; suggestedStart: string; suggestedEnd: string } | null }>(
                       '/attendance/clock-out',
@@ -1213,12 +1277,22 @@ export default function EmployeeHome() {
                     );
                     setMessage(`퇴근 처리되었습니다. ${clockOutGreeting(weather)}`);
                     refreshMyStatus();
-                    if (res.lateClockOutSuggestion) setLateClockOutSuggestion(res.lateClockOutSuggestion);
+                    setNightWorkPromptDismissed(true);
+                    if (viaNightWorkBanner) {
+                      // "퇴근하고 야간작업 등록하기" 배너로 들어온 경우 — 서버가 계산해준 초과분
+                      // 제안(19시 이후에만 내려옴)을 기다리지 않고, 지금 바로 야간작업 상세폼을
+                      // 열어 시작시각을 지금으로 채워준다(본인이 명시적으로 이어가겠다고 한 것이므로).
+                      openDetailForm('NIGHT_WORK');
+                      setWorkStart(nowHHMM());
+                    } else if (res.lateClockOutSuggestion) {
+                      setLateClockOutSuggestion(res.lateClockOutSuggestion);
+                    }
                   } catch (err) {
                     setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
                     setMessageIsError(true);
                   }
                   setShowClockOutConfirm(false);
+                  setClockOutThenNightWork(false);
                 }}
               />
             )}
@@ -1253,14 +1327,26 @@ export default function EmployeeHome() {
                 🔓 관리자 계정이라 퇴근 후에도 계속 상태를 테스트하실 수 있어요.
               </div>
             )}
+            {isWeekendToday && !isAdminAccount && (
+              <div className="board-empty" style={{ marginBottom: 8, color: '#1c7ed6' }}>
+                🗓️ 주말이에요 — 오늘은 &quot;주말작업&quot;만 등록할 수 있어요. 평일 상태 아이콘은 월요일에 다시 열려요.
+              </div>
+            )}
             <div className="status-icon-grid">
               {visibleStatusOrder.map((code) => {
                 // 퇴근(낮근무 종료) 후에도 야간작업자는 계속 상태를 등록해야 하니 예외로 둔다.
                 // 지난 근무일 퇴근 미해결 건이 있으면(정정 신청 전까지) 야간작업 예외 없이 전부 잠근다 —
                 // 오늘 상태를 계속 쌓아가기 전에 어제 문제부터 정리하게 하기 위함.
+                // 2026-09-06: 주말(토/일)엔 "주말작업" 하나만 남기고 나머지 상태 아이콘을 전부
+                // 잠근다(요청사항) — 서버도 동일한 요일 기준으로 최종 검증하므로(attendance.routes.ts
+                // isWeekendKST), 화면 잠금과 실제 등록 가능 여부가 항상 일치한다.
                 const isLocked = mustResolvePastCorrection
                   ? !isAdminAccount
-                  : clockedOut && code !== 'NIGHT_WORK' && !isAdminAccount;
+                  : isWeekendToday
+                    ? code !== 'WEEKEND_WORK' && !isAdminAccount
+                    // 평일엔 반대로 "주말작업" 아이콘 자체를 잠가서, 눌러도 어차피 서버가 거절할
+                    // 상황을 애초에 만들지 않는다.
+                    : (code === 'WEEKEND_WORK' && !isAdminAccount) || (clockedOut && code !== 'NIGHT_WORK' && !isAdminAccount);
                 return (
                   <div
                     key={code}
@@ -1440,7 +1526,7 @@ export default function EmployeeHome() {
               )}
               <label className="field-label">
                 {detailStatus === 'HQ_WORKING' ? '고객사/관련 프로젝트 (필수)' : detailStatus === 'REMOTE' ? '지원 고객사' : LOCATION_CHECK_STATUSES.has(detailStatus) ? '고객사명 (필수 — 목록에서 선택)' : '고객사명'}
-                {detailStatus === 'NIGHT_WORK' ? '(내부 작업이면 비워두세요)' : ''}
+                {['NIGHT_WORK', 'WEEKEND_WORK'].includes(detailStatus ?? '') ? '(내부 작업이면 비워두세요)' : ''}
               </label>
               {LOCATION_CHECK_STATUSES.has(detailStatus) ? (
                 <div className="client-combobox">

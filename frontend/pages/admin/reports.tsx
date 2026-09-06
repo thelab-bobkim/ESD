@@ -17,6 +17,7 @@ const TIMELINE_STATUS_META: Record<string, { label: string; icon: string; color:
   CLIENT_MEETING: { label: '고객사미팅', icon: '🤝', color: '#1c7ed6' },
   CLIENT_WORK: { label: '고객사작업', icon: '🛠️', color: '#1c7ed6' },
   NIGHT_WORK: { label: '야간작업', icon: '🌙', color: '#f08c00' },
+  WEEKEND_WORK: { label: '주말작업', icon: '🗓️', color: '#f08c00' },
   BUSINESS_TRIP: { label: '출장', icon: '✈️', color: '#1c7ed6' },
   ALT_DAY_OFF: { label: '대체휴무', icon: '🏖️', color: '#868e96' },
   ON_LEAVE: { label: '휴가', icon: '🌴', color: '#868e96' },
@@ -167,10 +168,10 @@ function AttendanceRowTr({
           <span style={{ color: 'var(--dsti-text-faint)' }}>-</span>
         )}
       </td>
-      <td>
+      <td className="num">
         {r.clockOutAt ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
               <span className="num">{fmtTime(r.clockOutAt)}</span>
               {r.isCorrected && r.correctionReason && (
                 // 강제확정(관리자)/위치이탈 자동감지 확정 등으로 정정된 기록임을 배지로 표시 —
@@ -509,7 +510,7 @@ export default function AdminReportsPage() {
                     {!groupByDept && <th>부서</th>}
                     <th className="num">출근</th>
                     <th className="num">🚙 이동</th>
-                    <th>퇴근</th>
+                    <th className="num">퇴근</th>
                     <th className="num">근무시간</th>
                   </tr>
                 </thead>

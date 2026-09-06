@@ -51,6 +51,10 @@ enum AttendanceStatus {
   MOVING
   REMOTE
   NIGHT_WORK
+  // 2026-09-06: 주말(토/일) 근무 전용 상태 — 주말에는 이 상태만 등록 가능하고 나머지는 막는다
+  // (attendance.routes.ts의 요일 기준 게이트 참고). DB에 이 값을 먼저 추가해야 하므로 배포 시
+  // "ALTER TYPE "AttendanceStatus" ADD VALUE IF NOT EXISTS 'WEEKEND_WORK';"를 먼저 실행할 것.
+  WEEKEND_WORK
   ALT_DAY_OFF
   ON_LEAVE
   CLIENT_MEETING

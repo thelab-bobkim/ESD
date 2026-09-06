@@ -452,6 +452,11 @@ body.tsb-dark-body { background: #090d18; }
 .att-table td { vertical-align: middle; }
 .att-table .num { font-variant-numeric: tabular-nums; }
 .att-table th.num, .att-table td.num { text-align: right; }
+/* 일자별 상세표(출근/이동/퇴근/근무시간)는 열마다 정렬 기준이 달라(우측/좌측 혼재) 인접한 열의
+   내용이 서로 붙어 보이거나 한쪽으로 치우쳐 보였다 — 네 열 모두 가운데 정렬로 통일해서 열 사이
+   여백이 고르게 보이도록 했다(2026-09-06, 정렬/간격 개선 요청). 누계표(.att-table 단독)의 숫자
+   열은 기존처럼 우측 정렬을 유지한다. */
+.att-table.att-table--daily th.num, .att-table.att-table--daily td.num { text-align: center; }
 /* 일자별 출퇴근 상세표 전용(누계 근무시간표와 열 구성이 달라 이 표에만 적용) — 열 너비를
    colgroup으로 직접 지정하므로 fixed로 고정해 브라우저가 "이름" 열만 과하게 늘리지 않게 한다. */
 .att-table--daily { table-layout: fixed; }

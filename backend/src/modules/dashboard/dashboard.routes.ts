@@ -9,7 +9,8 @@ import { realDayWindow } from '../../common/attendance-helpers';
 // 실제로는 클라이언트명이 effort_logs에 남아있는 경우가 있어(예: GPS 도착팝업으로 고객사명은
 // 정해졌지만 세부폼은 아직 제출 전), 상황판에서 "고객사 정보가 아예 없다"고 오해하지 않도록
 // 그 값을 별도 필드(effortClientName)로 함께 내려준다(2026-09-04, 관리자 문의 대응).
-const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE']);
+// WEEKEND_WORK도 attendance.routes.ts에서 EffortLog를 생성하므로 여기에도 포함시킨다(2026-09-06).
+const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'WEEKEND_WORK']);
 
 export const dashboardRouter = Router();
 dashboardRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'));
