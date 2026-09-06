@@ -76,3 +76,15 @@ export async function setPolicyString(key: string, value: string, departmentId: 
   }
   invalidatePolicyCache();
 }
+
+/** 배열/객체 형태의 정책값을 JSON 문자열로 직렬화해서 저장한다(예: 사내망 허용 공인IP 목록). */
+export async function setPolicyJSON<T = unknown>(key: string, value: T, departmentId: string | null = null): Promise<void> {
+  const stringified = JSON.stringify(value);
+  const existing = await prisma.policySetting.findFirst({ where: { key, scopeDepartmentId: departmentId } });
+  if (existing) {
+    await prisma.policySetting.update({ where: { id: existing.id }, data: { value: stringified, valueType: 'JSON' } });
+  } else {
+    await prisma.policySetting.create({ data: { key, value: stringified, valueType: 'JSON', scopeDepartmentId: departmentId } });
+  }
+  invalidatePolicyCache();
+}

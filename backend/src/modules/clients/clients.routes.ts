@@ -2,7 +2,12 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
-import { getPolicyString, setPolicyString } from '../../common/policy-engine/policy-engine';
+import { getPolicyString, setPolicyString, getPolicyJSON, setPolicyJSON } from '../../common/policy-engine/policy-engine';
+
+// 공인IP 한 줄 또는 "x.x.x.x/nn" CIDR 대역 표기 — 인터넷 회선이 여러 개라 공인IP가 수십 개인
+// 사무실도 대역으로 묶어 몇 줄로 등록할 수 있게 CIDR도 허용한다(attendance.routes.ts의
+// isRequestFromOfficeNetwork가 실제 판정에 사용, 2026-09-06).
+const ipOrCidrPattern = /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/;
 
 export const clientsRouter = Router();
 clientsRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN'));
@@ -31,6 +36,36 @@ clientsRouter.put('/hq-location', async (req, res) => {
   await setPolicyString('HQ_LATITUDE', String(parsed.data.latitude));
   await setPolicyString('HQ_LONGITUDE', String(parsed.data.longitude));
   return res.json({ success: true, data: parsed.data });
+});
+
+/**
+ * 사내망(공인IP) 허용 목록 조회/등록 — GPS가 실내에서 부정확하거나(신한이노플렉스 사무실 최대
+ * 835m 오차 사례) 아예 확보가 안 되는 데스크탑 환경에서도, 등록된 사무실 공인IP로 접속했으면
+ * GPS와 무관하게 "본사근무 위치확인 완료"로 처리해주는 보조수단이다(attendance.routes.ts의
+ * isRequestFromOfficeNetwork 참고). 인터넷 회선이 여러 개라 공인IP가 수십 개인 사무실을 고려해
+ * 개별 IP와 "x.x.x.x/nn" CIDR 대역 표기를 섞어서 등록할 수 있다(2026-09-06).
+ */
+clientsRouter.get('/hq-office-network', async (_req, res) => {
+  const allowedIps = await getPolicyJSON<string[]>('HQ_ALLOWED_PUBLIC_IPS', []);
+  return res.json({ success: true, data: { allowedIps } });
+});
+
+const hqOfficeNetworkSchema = z.object({
+  allowedIps: z.array(z.string().trim().regex(ipOrCidrPattern, '"1.2.3.4" 또는 "1.2.3.0/24" 형식이어야 합니다.')).max(200),
+});
+
+clientsRouter.put('/hq-office-network', async (req, res) => {
+  const parsed = hqOfficeNetworkSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'INVALID_INPUT', message: parsed.error.issues[0]?.message ?? 'IP 목록 형식을 확인하세요.' },
+    });
+  }
+  // 중복/빈 줄 정리.
+  const cleaned = Array.from(new Set(parsed.data.allowedIps.map((s) => s.trim()).filter(Boolean)));
+  await setPolicyJSON('HQ_ALLOWED_PUBLIC_IPS', cleaned);
+  return res.json({ success: true, data: { allowedIps: cleaned } });
 });
 
 /** 고객사 목록 + 좌표 등록 여부 (위치대조 기능용 관리 화면). SAMPLE_ 테스트 고객사는 제외한다. */

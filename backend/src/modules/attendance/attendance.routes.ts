@@ -9,13 +9,39 @@ import { recordNightWork } from '../../common/night-work-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
 
+/** "123.45.67.0/24" 형태의 CIDR 표기를 IPv4 대역으로 해석해 clientIp가 그 안에 속하는지 본다. */
+function ipInCidr(clientIp: string, cidr: string): boolean {
+  const [rangeIp, prefixStr] = cidr.split('/');
+  const prefix = Number(prefixStr);
+  if (!rangeIp || Number.isNaN(prefix) || prefix < 0 || prefix > 32) return false;
+  const toInt = (ip: string): number | null => {
+    const parts = ip.split('.').map(Number);
+    if (parts.length !== 4 || parts.some((p) => Number.isNaN(p) || p < 0 || p > 255)) return null;
+    return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+  };
+  const clientInt = toInt(clientIp);
+  const rangeInt = toInt(rangeIp);
+  if (clientInt == null || rangeInt == null) return false;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return (clientInt & mask) === (rangeInt & mask);
+}
+
+/** 허용 목록의 한 항목(정확한 IP 또는 "x.x.x.x/nn" CIDR 대역)과 클라이언트IP를 비교한다. */
+function ipMatchesAllowedEntry(clientIp: string, entry: string): boolean {
+  const trimmed = entry.trim();
+  if (!trimmed || !clientIp) return false;
+  return trimmed.includes('/') ? ipInCidr(clientIp, trimmed) : trimmed === clientIp;
+}
+
 /**
  * 사내망(공인IP) 기반 출근확인: 관리자가 정책값 HQ_ALLOWED_PUBLIC_IPS(JSON 문자열 배열, 예:
- * ["123.45.67.89"])에 등록해둔 사무실 공인IP와 이 요청의 실제 클라이언트 공인IP가 일치하면
- * "사내 와이파이에 연결되어 있다"고 보고, GPS 오차·실패와 무관하게 본사근무 위치확인을 통과시킨다.
- * req.ip는 nginx가 전달하는 X-Real-IP/X-Forwarded-For를 app.ts의 trust proxy 설정으로 이미
- * 정확히 해석한 값이다. 브라우저에서 실제 WiFi AP/MAC 주소를 스캔하는 것은 불가능하므로(2026-09
- * GPS 정확도 개선 검토 시 결론), 그 대신 공인IP를 "사내망에 연결되어 있음"의 대리 지표로 쓴다.
+ * ["123.45.67.89", "210.115.22.0/24"] — 개별 IP와 CIDR 대역을 섞어서 등록 가능, 인터넷 회선이
+ * 여러 개라 공인IP가 수십 개 쓰이는 사무실을 고려해 대역 표기를 지원한다, 2026-09-06)에 등록해둔
+ * 사무실 공인IP와 이 요청의 실제 클라이언트 공인IP가 일치하면 "사내 와이파이에 연결되어 있다"고
+ * 보고, GPS 오차·실패와 무관하게 본사근무 위치확인을 통과시킨다. req.ip는 nginx가 전달하는
+ * X-Real-IP/X-Forwarded-For를 app.ts의 trust proxy 설정으로 이미 정확히 해석한 값이다. 브라우저에서
+ * 실제 WiFi AP/MAC 주소를 스캔하는 것은 불가능하므로(2026-09 GPS 정확도 개선 검토 시 결론), 그
+ * 대신 공인IP를 "사내망에 연결되어 있음"의 대리 지표로 쓴다.
  * 주의: 직원 휴대폰이 사내 와이파이가 아니라 셀룰러 데이터를 쓰는 중이면 이 방법은 통하지 않고
  * GPS 확인이 별도로 필요하다. 정책값이 비어있으면(관리자가 아직 설정 안 함) 항상 false를 반환해
  * 기존 GPS 기반 확인 동작을 그대로 유지한다.
@@ -24,10 +50,11 @@ async function isRequestFromOfficeNetwork(req: Request): Promise<boolean> {
   const allowedIps = await getPolicyJSON<string[]>('HQ_ALLOWED_PUBLIC_IPS', []);
   if (!allowedIps.length) return false;
   const clientIp = (req.ip ?? '').replace(/^::ffff:/, ''); // IPv4-mapped IPv6 표기("::ffff:1.2.3.4") 정리
-  const matched = allowedIps.includes(clientIp);
+  const matched = allowedIps.some((entry) => ipMatchesAllowedEntry(clientIp, entry));
   // 기능이 실제로 의도대로 작동하는지(또는 IP가 예상과 다르게 잡히는지) 배포 후 바로 확인할 수 있도록
-  // 남기는 진단 로그. `docker compose logs backend | grep OfficeNetworkCheck`로 확인 가능.
-  console.log(`[OfficeNetworkCheck] clientIp=${clientIp} allowed=[${allowedIps.join(',')}] matched=${matched}`);
+  // 남기는 진단 로그(등록된 IP 목록이 수십 개일 수 있어 개수만 남긴다).
+  // `docker compose logs backend | grep OfficeNetworkCheck`로 확인 가능.
+  console.log(`[OfficeNetworkCheck] clientIp=${clientIp} allowedEntries=${allowedIps.length} matched=${matched}`);
   return matched;
 }
 

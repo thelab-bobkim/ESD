@@ -11,6 +11,8 @@ interface NewClientDraft { name: string; address: string; lat: number; lng: numb
 
 interface HqLocation { latitude: number | null; longitude: number | null; }
 
+const ipOrCidrPattern = /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/;
+
 export default function AdminClientsPage() {
   const router = useRouter();
   const [clients, setClients] = useState<ClientRow[] | null>(null);
@@ -25,6 +27,9 @@ export default function AdminClientsPage() {
   const [hqLocation, setHqLocation] = useState<HqLocation | null>(null);
   const [showHqMap, setShowHqMap] = useState(false);
   const [savingHq, setSavingHq] = useState(false);
+  const [officeIpText, setOfficeIpText] = useState('');
+  const [savedOfficeIps, setSavedOfficeIps] = useState<string[] | null>(null);
+  const [savingOfficeIps, setSavingOfficeIps] = useState(false);
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<'name' | 'address'>('name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -56,6 +61,39 @@ export default function AdminClientsPage() {
   }
 
   useEffect(loadHq, []);
+
+  // 사내망 공인IP 허용 목록 — 회선이 여러 개라 IP가 수십 개인 사무실도 고려해, 한 줄에 하나씩
+  // (개별 IP 또는 "1.2.3.0/24" 대역) 붙여넣을 수 있는 텍스트영역으로 관리한다(2026-09-06 추가).
+  function loadOfficeIps() {
+    apiFetch<{ allowedIps: string[] }>('/clients/hq-office-network')
+      .then((data) => {
+        setSavedOfficeIps(data.allowedIps);
+        setOfficeIpText(data.allowedIps.join('\n'));
+      })
+      .catch(() => {});
+  }
+
+  useEffect(loadOfficeIps, []);
+
+  const officeIpLines = officeIpText.split('\n').map((s) => s.trim()).filter(Boolean);
+  const invalidOfficeIpLines = officeIpLines.filter((line) => !ipOrCidrPattern.test(line));
+
+  async function saveOfficeIps() {
+    if (invalidOfficeIpLines.length > 0) {
+      setError(`형식이 올바르지 않은 줄이 있습니다: ${invalidOfficeIpLines.join(', ')} (예: 123.45.67.89 또는 123.45.67.0/24)`);
+      return;
+    }
+    setError(null);
+    setSavingOfficeIps(true);
+    try {
+      await apiFetch('/clients/hq-office-network', { method: 'PUT', body: JSON.stringify({ allowedIps: officeIpLines }) });
+      loadOfficeIps();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '사내망 IP 저장에 실패했습니다.');
+    } finally {
+      setSavingOfficeIps(false);
+    }
+  }
 
   function load() {
     apiFetch<ClientRow[]>('/clients')
@@ -177,6 +215,40 @@ export default function AdminClientsPage() {
             </span>
           )}
         </p>
+      </div>
+
+      <div className="card">
+        <h2>🌐 사내망 공인IP로도 확인 (보조수단)</h2>
+        <p style={{ fontSize: 13, color: '#495057', lineHeight: 1.6 }}>
+          사무실 안에서는 GPS가 부정확하거나 아예 안 잡힐 수 있어서(특히 데스크탑), 여기에 사무실
+          인터넷 회선의 공인IP를 등록해두면 <strong>GPS 성공 여부와 무관하게</strong> 그 IP로 접속한
+          본사근무 등록은 자동으로 "위치 확인됨"으로 처리됩니다. 회선이 여러 개라 IP가 많으면 한 줄에
+          하나씩 붙여넣으면 되고, IP가 대역으로 묶여 있으면 <code>123.45.67.0/24</code> 같은 CIDR
+          표기로 한 줄에 여러 개를 등록할 수도 있습니다.
+        </p>
+        <textarea
+          className="detail-textarea"
+          rows={6}
+          style={{ minHeight: 120, maxHeight: 240, fontFamily: 'monospace' }}
+          placeholder={'123.45.67.89\n123.45.67.90\n210.115.22.0/24'}
+          value={officeIpText}
+          onChange={(e) => setOfficeIpText(e.target.value)}
+        />
+        {invalidOfficeIpLines.length > 0 && (
+          <p style={{ fontSize: 12.5, color: '#e03131', marginTop: 4 }}>
+            ⚠ 형식이 올바르지 않은 줄: {invalidOfficeIpLines.join(', ')} (예: 123.45.67.89 또는 123.45.67.0/24)
+          </p>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+          <button style={{ width: 'auto', margin: 0 }} disabled={savingOfficeIps} onClick={saveOfficeIps}>
+            {savingOfficeIps ? '저장중...' : '💾 저장'}
+          </button>
+          {savedOfficeIps && (
+            <span style={{ fontSize: 12.5, color: savedOfficeIps.length ? '#2f9e44' : '#868e96', fontWeight: 600 }}>
+              {savedOfficeIps.length ? `✓ 현재 ${savedOfficeIps.length}개 등록됨` : '아직 등록된 IP가 없습니다'}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="card">
