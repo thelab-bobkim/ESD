@@ -125,6 +125,68 @@ export function accuracyWarningLabel(accuracyMeters: number): string {
   return `GPS 정확도가 낮아요(오차범위 약 ${Math.round(accuracyMeters)}m). 실외로 나가거나 창가 쪽으로 이동한 뒤 다시 시도하면 정확도가 개선될 수 있어요.`;
 }
 
+// 2026-09 이상치(순간이동) 필터링: 스마트폰이 갑자기 엉뚱한 기지국 위치를 잡아 좌표가 튀는 경우를
+// 걸러내기 위해, 직전에 정상 확인된 위치·시각을 기억해뒀다가 다음 위치와 비교한다. 서버에는 좌표를
+// 저장하지 않는다는 이 앱의 원칙을 지키기 위해, 이 값은 오직 이 브라우저(localStorage)에만 남기고
+// 서버로는 전송하지 않는다.
+const LAST_POSITION_STORAGE_KEY = 'dsti_last_known_position_v1';
+// 시속 200km 기준(국내 고속도로 최고속도를 넉넉히 웃도는 값) — 이보다 빠르면 실제 이동이 아니라
+// GPS/기지국이 순간적으로 엉뚱한 좌표를 잡은 것으로 본다("이동 속도 검증", 2026-09 요청).
+const JUMP_SPEED_MPS = 200 / 3.6;
+// 직전 위치가 이보다 오래됐으면(오랜만에 앱을 다시 여는 경우 등) 비교 자체가 의미 없으므로
+// 이상치 판정 없이 그냥 새 위치로 갱신만 한다 — 장시간에 걸친 정상적인 이동까지 막지 않기 위함.
+const LAST_POSITION_MAX_AGE_MS = 20 * 60 * 1000;
+
+interface StoredPosition { lat: number; lng: number; at: number; }
+
+function readLastPosition(): StoredPosition | null {
+  try {
+    const raw = localStorage.getItem(LAST_POSITION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.lat === 'number' && typeof parsed?.lng === 'number' && typeof parsed?.at === 'number') return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastPosition(pos: StoredPosition) {
+  try {
+    localStorage.setItem(LAST_POSITION_STORAGE_KEY, JSON.stringify(pos));
+  } catch {
+    // 저장 실패(프라이빗 모드 등)해도 기능에 지장은 없다 — 이번 한 번만 이상치 검증을 건너뛴다.
+  }
+}
+
+/**
+ * 방금 받은 좌표가 직전에 저장해둔 좌표 대비 "사람이 이동할 수 없는 속도"로 튀었는지 확인한다.
+ * 이상치가 아니면(또는 비교할 이전 값이 없거나 너무 오래됐으면) 이번 좌표를 새 기준으로 저장하고
+ * false를 반환한다. 이상치로 판단되면 기준값은 그대로 두고(오염된 값으로 덮어쓰지 않음) true를
+ * 반환한다 — 호출하는 쪽에서 등록을 막고 재측정을 유도한다.
+ */
+function checkAndUpdateJumpDetection(lat: number, lng: number): boolean {
+  const now = Date.now();
+  const last = readLastPosition();
+  let jumpDetected = false;
+  if (last) {
+    const elapsedMs = now - last.at;
+    if (elapsedMs > 0 && elapsedMs <= LAST_POSITION_MAX_AGE_MS) {
+      const distance = distanceMeters(last.lat, last.lng, lat, lng);
+      const speedMps = distance / (elapsedMs / 1000);
+      if (speedMps > JUMP_SPEED_MPS) jumpDetected = true;
+    }
+  }
+  if (!jumpDetected) {
+    writeLastPosition({ lat, lng, at: now });
+  }
+  return jumpDetected;
+}
+
+/** 이상치(순간이동) 감지 시 사용자에게 보여줄 안내 문구. */
+export const LOCATION_JUMP_WARNING =
+  '⚠️ 위치가 순간적으로 비정상적인 거리만큼 이동한 것으로 감지됐어요(GPS/기지국 오류 가능성). 제자리에서 잠시 후 다시 시도해주세요.';
+
 /**
  * 현재 위치를 가져온다. 실패하거나 권한이 없으면 null을 반환한다(위치확인은 선택적 기능이라
  * 실패해도 상태등록 자체는 막지 않는다).
@@ -150,6 +212,7 @@ export interface LocationCaptureResult {
   status: LocationCaptureStatus;
   address: string | null;
   accuracyMeters: number | null;
+  jumpDetected: boolean;
 }
 
 const LOCATION_FAILURE_LABEL: Record<Exclude<LocationCaptureStatus, 'OK'>, string> = {
@@ -171,23 +234,28 @@ export function locationFailureLabel(status: Exclude<LocationCaptureStatus, 'OK'
  */
 export async function getCurrentLocationWithStatus(
   locationConsentGiven: boolean
-): Promise<{ status: LocationCaptureStatus; coords: { lat: number; lng: number } | null; accuracyMeters: number | null }> {
-  if (!locationConsentGiven) return { status: 'NO_CONSENT', coords: null, accuracyMeters: null };
-  if (typeof navigator === 'undefined' || !navigator.geolocation) return { status: 'UNSUPPORTED', coords: null, accuracyMeters: null };
+): Promise<{ status: LocationCaptureStatus; coords: { lat: number; lng: number } | null; accuracyMeters: number | null; jumpDetected: boolean }> {
+  if (!locationConsentGiven) return { status: 'NO_CONSENT', coords: null, accuracyMeters: null, jumpDetected: false };
+  if (typeof navigator === 'undefined' || !navigator.geolocation) return { status: 'UNSUPPORTED', coords: null, accuracyMeters: null, jumpDetected: false };
 
   const { pos, errorCode } = await getPositionWithAccuracyRetry();
   if (!pos) {
-    if (errorCode === null) return { status: 'UNSUPPORTED', coords: null, accuracyMeters: null };
+    if (errorCode === null) return { status: 'UNSUPPORTED', coords: null, accuracyMeters: null, jumpDetected: false };
     return {
       status: errorCode === 3 ? 'TIMEOUT' : errorCode === 1 ? 'PERMISSION_DENIED' : 'UNSUPPORTED',
       coords: null,
       accuracyMeters: null,
+      jumpDetected: false,
     };
   }
+  const jumpDetected = checkAndUpdateJumpDetection(pos.coords.latitude, pos.coords.longitude);
   return {
     status: 'OK',
-    coords: { lat: pos.coords.latitude, lng: pos.coords.longitude },
+    // 이상치로 판단된 좌표는 대조에 쓰지 말라는 신호로 coords를 비워서 돌려준다 — 호출하는 쪽은
+    // jumpDetected를 보고 등록을 막고 재측정을 유도한다.
+    coords: jumpDetected ? null : { lat: pos.coords.latitude, lng: pos.coords.longitude },
     accuracyMeters: pos.coords.accuracy,
+    jumpDetected,
   };
 }
 
@@ -197,22 +265,29 @@ export async function getCurrentLocationWithStatus(
  * (동의 안 한 사용자에게 갑자기 권한 팝업을 띄우지 않기 위함 — 동의 흐름은 LocationConsentModal에서만).
  */
 export async function getCurrentLocationDetailed(locationConsentGiven: boolean): Promise<LocationCaptureResult> {
-  if (!locationConsentGiven) return { status: 'NO_CONSENT', address: null, accuracyMeters: null };
-  if (typeof navigator === 'undefined' || !navigator.geolocation) return { status: 'UNSUPPORTED', address: null, accuracyMeters: null };
+  if (!locationConsentGiven) return { status: 'NO_CONSENT', address: null, accuracyMeters: null, jumpDetected: false };
+  if (typeof navigator === 'undefined' || !navigator.geolocation) return { status: 'UNSUPPORTED', address: null, accuracyMeters: null, jumpDetected: false };
 
   const { pos, errorCode } = await getPositionWithAccuracyRetry();
   if (!pos) {
-    if (errorCode === null) return { status: 'UNSUPPORTED', address: null, accuracyMeters: null };
+    if (errorCode === null) return { status: 'UNSUPPORTED', address: null, accuracyMeters: null, jumpDetected: false };
     // GeolocationPositionError: 1=PERMISSION_DENIED, 2=POSITION_UNAVAILABLE, 3=TIMEOUT
     return {
       status: errorCode === 3 ? 'TIMEOUT' : errorCode === 1 ? 'PERMISSION_DENIED' : 'UNSUPPORTED',
       address: null,
       accuracyMeters: null,
+      jumpDetected: false,
     };
   }
 
+  const jumpDetected = checkAndUpdateJumpDetection(pos.coords.latitude, pos.coords.longitude);
   const accuracyMeters = pos.coords.accuracy;
+  if (jumpDetected) {
+    // 이상치로 판단되면 주소 변환(추가 API 호출)까지 갈 필요 없이 바로 알린다 — 호출하는 쪽이
+    // 퇴근 확정을 막고 재측정 버튼을 보여준다.
+    return { status: 'OK', address: null, accuracyMeters, jumpDetected: true };
+  }
   const address = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
-  if (!address) return { status: 'GEOCODE_FAILED', address: null, accuracyMeters };
-  return { status: 'OK', address, accuracyMeters };
+  if (!address) return { status: 'GEOCODE_FAILED', address: null, accuracyMeters, jumpDetected: false };
+  return { status: 'OK', address, accuracyMeters, jumpDetected: false };
 }

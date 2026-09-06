@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush, isIOSDevice, isStandalonePWA } from '@/lib/push';
-import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, reverseGeocode, isLowAccuracy, accuracyWarningLabel } from '@/lib/geolocation';
+import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, reverseGeocode, isLowAccuracy, accuracyWarningLabel, LOCATION_JUMP_WARNING } from '@/lib/geolocation';
 import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greetings';
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
@@ -630,11 +630,12 @@ export default function EmployeeHome() {
       // 2026-09 GPS 정확도 개선: 위치 캡처 시 오차범위(accuracy)를 같이 기록해뒀다가, 성공
       // 메시지에 "정확도가 낮았다"는 안내를 덧붙인다(geolocation.ts가 내부적으로 이미 한 번
       // 재시도했지만, 그래도 여전히 부정확할 수 있어 본인이 인지하고 있는 게 좋다).
-      const hqQuickLocationMeta: { accuracy: number | null } = { accuracy: null };
+      const hqQuickLocationMeta: { accuracy: number | null; jumpDetected: boolean } = { accuracy: null, jumpDetected: false };
       const refreshHqQuickLocation = async () => {
-        const { status: locStatus, coords, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+        const { status: locStatus, coords, accuracyMeters, jumpDetected } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
         body.locationStatus = locStatus;
         hqQuickLocationMeta.accuracy = accuracyMeters;
+        hqQuickLocationMeta.jumpDetected = jumpDetected;
         if (coords) {
           body.location = coords;
           // 카카오맵 역지오코딩 — GPS 오차가 커도(예: 신한이노플렉스 사무실 835m 오차 사례) 주소가
@@ -647,6 +648,12 @@ export default function EmployeeHome() {
       };
       if (code === 'HQ_WORKING') {
         await refreshHqQuickLocation();
+        // 이상치(순간이동) 감지 시 등록 자체를 막고 재측정을 유도한다(2026-09 요청 — 등록 차단).
+        if (hqQuickLocationMeta.jumpDetected) {
+          setMessage(LOCATION_JUMP_WARNING);
+          setMessageIsError(true);
+          return;
+        }
       }
       // 부서 설정(DEPARTMENT_STATUS_OVERRIDES)에서 이 상태를 "세부폼 없이 등록만"으로 지정했으면,
       // 등록 즉시 끝난다 — 아래 세부입력폼을 아예 열지 않고, 안내 문구도 "입력해주세요"를 뺀다.
@@ -796,11 +803,12 @@ export default function EmployeeHome() {
     // 위치 확보 실패 사유(locationStatus)까지 같이 보내야 서버가 "오늘 첫 실패는 봐준다" 판단을 할 수 있다.
     const needsLocationCheck = LOCATION_CHECK_STATUSES.has(code) || code === 'HQ_WORKING';
     // 본사근무도 고객사작업/미팅과 동일하게 위치 확보 실패 사유까지 같이 보낸다("오늘 첫 실패는 봐준다" 판단용).
-    const detailFormLocationMeta: { accuracy: number | null } = { accuracy: null };
+    const detailFormLocationMeta: { accuracy: number | null; jumpDetected: boolean } = { accuracy: null, jumpDetected: false };
     const refreshDetailFormLocation = async () => {
-      const { status: locStatus, coords, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+      const { status: locStatus, coords, accuracyMeters, jumpDetected } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
       body.locationStatus = locStatus;
       detailFormLocationMeta.accuracy = accuracyMeters;
+      detailFormLocationMeta.jumpDetected = jumpDetected;
       if (coords) {
         body.location = coords;
         // 본사근무만 역지오코딩 주소를 같이 보낸다 — 고객사미팅/작업은 등록된 고객사 좌표와
@@ -813,6 +821,12 @@ export default function EmployeeHome() {
     };
     if (needsLocationCheck) {
       await refreshDetailFormLocation();
+      // 이상치(순간이동) 감지 시 등록 자체를 막고 재측정을 유도한다(2026-09 요청 — 등록 차단).
+      if (detailFormLocationMeta.jumpDetected) {
+        setMessage(LOCATION_JUMP_WARNING);
+        setMessageIsError(true);
+        return;
+      }
     }
 
     if (code === 'NIGHT_WORK') {
@@ -1129,11 +1143,12 @@ export default function EmployeeHome() {
                 setMessageIsError(false);
                 try {
                   const clockInBody: Record<string, unknown> = {};
-                  const clockInLocationMeta: { accuracy: number | null } = { accuracy: null };
+                  const clockInLocationMeta: { accuracy: number | null; jumpDetected: boolean } = { accuracy: null, jumpDetected: false };
                   const refreshClockInLocation = async () => {
-                    const { status: locStatus, coords, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+                    const { status: locStatus, coords, accuracyMeters, jumpDetected } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
                     clockInBody.locationStatus = locStatus;
                     clockInLocationMeta.accuracy = accuracyMeters;
+                    clockInLocationMeta.jumpDetected = jumpDetected;
                     if (coords) {
                       clockInBody.location = coords;
                       clockInBody.locationAddress = (await reverseGeocode(coords.lat, coords.lng)) ?? undefined;
@@ -1143,6 +1158,12 @@ export default function EmployeeHome() {
                     }
                   };
                   await refreshClockInLocation();
+                  // 이상치(순간이동) 감지 시 등록 자체를 막고 재측정을 유도한다(2026-09 요청 — 등록 차단).
+                  if (clockInLocationMeta.jumpDetected) {
+                    setMessage(LOCATION_JUMP_WARNING);
+                    setMessageIsError(true);
+                    return;
+                  }
                   const result = await attemptWithLocationRetry(
                     () => apiFetch<{ locationConfirmed?: boolean }>('/attendance/clock-in', {
                       method: 'POST',

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { getCurrentLocationDetailed, locationFailureLabel, isLowAccuracy, accuracyWarningLabel, type LocationCaptureResult } from '@/lib/geolocation';
+import { useCallback, useEffect, useState } from 'react';
+import { getCurrentLocationDetailed, locationFailureLabel, isLowAccuracy, accuracyWarningLabel, LOCATION_JUMP_WARNING, type LocationCaptureResult } from '@/lib/geolocation';
 
 interface Props {
   clockInAt: string;
@@ -30,6 +30,14 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
   const [earlyLeaveReason, setEarlyLeaveReason] = useState('');
   const [showEarlyLeaveError, setShowEarlyLeaveError] = useState(false);
 
+  const refreshLocation = useCallback(() => {
+    setLocationResult('checking');
+    return getCurrentLocationDetailed(locationConsentGiven).then((result) => {
+      setLocationResult(result);
+      return result;
+    });
+  }, [locationConsentGiven]);
+
   useEffect(() => {
     let cancelled = false;
     getCurrentLocationDetailed(locationConsentGiven).then((result) => {
@@ -42,8 +50,11 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
 
   const elapsedMinutes = Math.max(0, Math.round((Date.now() - new Date(clockInAt).getTime()) / 60000));
   const isEarlyLeave = elapsedMinutes < MIN_HOURS_DEFAULT_MINUTES;
+  // 이상치(순간이동) 감지 시 퇴근 확정을 막고 재측정을 유도한다(2026-09 요청 — 등록 차단).
+  const jumpDetected = locationResult !== 'checking' && locationResult.jumpDetected;
 
   async function handleConfirm() {
+    if (jumpDetected) return;
     if (isEarlyLeave && !earlyLeaveReason.trim()) {
       setShowEarlyLeaveError(true);
       return;
@@ -77,19 +88,32 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
         </p>
         <div
           style={{
-            background: locationResult === 'checking' ? '#151c34' : locationResult.status === 'OK' ? 'rgba(34,197,94,0.14)' : 'rgba(245,158,11,0.14)',
-            border: `1px solid ${locationResult === 'checking' ? '#232b45' : locationResult.status === 'OK' ? '#1f4a2e' : '#4a3a12'}`,
+            background: locationResult === 'checking' ? '#151c34' : jumpDetected ? 'rgba(239,68,68,0.14)' : locationResult.status === 'OK' ? 'rgba(34,197,94,0.14)' : 'rgba(245,158,11,0.14)',
+            border: `1px solid ${locationResult === 'checking' ? '#232b45' : jumpDetected ? '#7f1d1d' : locationResult.status === 'OK' ? '#1f4a2e' : '#4a3a12'}`,
             borderRadius: 8, padding: '10px 12px', marginBottom: 16, fontSize: 13, lineHeight: 1.5,
           }}
         >
           {locationResult === 'checking' && '📍 위치 확인 중...'}
-          {locationResult !== 'checking' && locationResult.status === 'OK' && `📍 ${locationResult.address}`}
-          {locationResult !== 'checking' && locationResult.status !== 'OK' && (
+          {locationResult !== 'checking' && jumpDetected && (
+            <>
+              {LOCATION_JUMP_WARNING}
+              <button
+                type="button"
+                className="secondary"
+                style={{ width: 'auto', margin: '8px 0 0', padding: '6px 12px', fontSize: 12 }}
+                onClick={() => refreshLocation()}
+              >
+                📍 위치 다시 확인
+              </button>
+            </>
+          )}
+          {locationResult !== 'checking' && !jumpDetected && locationResult.status === 'OK' && `📍 ${locationResult.address}`}
+          {locationResult !== 'checking' && !jumpDetected && locationResult.status !== 'OK' && (
             <>
               📍 위치 없이 퇴근 기록됩니다 — {locationFailureLabel(locationResult.status)}.
             </>
           )}
-          {locationResult !== 'checking' && isLowAccuracy(locationResult.accuracyMeters) && (
+          {locationResult !== 'checking' && !jumpDetected && isLowAccuracy(locationResult.accuracyMeters) && (
             <div style={{ marginTop: 6, color: '#fbbf24' }}>
               ⚠️ {accuracyWarningLabel(locationResult.accuracyMeters as number)}
             </div>
@@ -113,8 +137,8 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
             <div style={{ fontSize: 11, color: '#6b7594', marginTop: 4 }}>부족한 시간은 이번 주 누계에 그대로 반영되어, 다른 날 초과근무와 자연스럽게 합산됩니다.</div>
           </div>
         )}
-        <button disabled={submitting} onClick={handleConfirm}>
-          {submitting ? '처리 중...' : '퇴근 확정'}
+        <button disabled={submitting || jumpDetected} onClick={handleConfirm}>
+          {submitting ? '처리 중...' : jumpDetected ? '위치 재확인 필요' : '퇴근 확정'}
         </button>
         <button className="secondary" disabled={submitting} onClick={onCancel}>
           취소
