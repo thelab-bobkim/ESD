@@ -559,6 +559,14 @@ attendanceRouter.post('/status', async (req, res) => {
   // 자체가 실패(권한거부/타임아웃/미동의 등)했으면 오늘 첫 실패는 봐주되 그 다음부터는 실제
   // 위치 일치를 요구한다. 이게 없으면 위치를 안 주는 것만으로 검증이 통째로 무력화된다.
   let hqLocationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
+  // 사내망 공인IP·주소 키워드로 이미 본사임이 확인된 경우: 아래 좌표 대조 블록 자체를 건너뛰기만
+  // 하고 끝내면(과거 버그), 이 기록의 locationMatch가 계속 null로 남아 상황판에서 "위치 미확인"으로
+  // 잘못 표시된다(2026-09-08, 관리자가 "본사에 다 있는데 왜 위치확인이 안 되냐" 문의 — 서버 로그로
+  // location_capture_status='OK'인데 location_match가 null인 기록이 실제로 다수 확인되어 원인 특정).
+  // 좌표 대조를 아예 안 해도 이미 확인된 것이므로, 여기서 명시적으로 "확인됨"을 남겨야 한다.
+  if (status === 'HQ_WORKING' && hqVerifiedByAlternateMeans) {
+    hqLocationResult = { locationMatch: true, locationDistanceMeters: 0 };
+  }
   if (status === 'HQ_WORKING' && !hqVerifiedByAlternateMeans) {
     const hqLat = await getPolicyString('HQ_LATITUDE', '');
     const hqLng = await getPolicyString('HQ_LONGITUDE', '');
