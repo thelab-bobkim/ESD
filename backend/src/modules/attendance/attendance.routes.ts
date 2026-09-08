@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection } from '../../common/attendance-helpers';
+import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, WORK_START_STATUSES } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
@@ -81,7 +81,9 @@ attendanceRouter.use(requireAuth);
 // 이 상태로 바뀌면 "실제 업무 시작"으로 보고 출근시각을 자동 인식한다(주52시간제 대응).
 // REMOTE(재택)는 대부분 고객사에 원격 접속해서 작업하는 형태라, 접속 시작~종료를 다른 근무
 // 유형과 동일하게(고객사작업과 같은 방식으로) 추적하기 위해 포함시켰다.
-const WORK_START_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK', 'BUSINESS_TRIP', 'REMOTE']);
+// 2026-09-08: reports.routes.ts의 출근시각 불일치 경고(computeClockInMismatch)도 똑같은 기준을
+// 써야 해서 attendance-helpers.ts로 옮기고 여기서는 그걸 그대로 가져다 쓴다(두 곳에 따로 두면
+// 나중에 한쪽만 고치는 사고가 나기 쉬움).
 // 이 상태는 프로젝트별 공수(工數) 기록 대상이다. REMOTE도 고객사작업과 동일하게 추적한다.
 // 2026-09-06: WEEKEND_WORK도 실제 작업시간(시작~종료)을 EffortLog로 구조화해서 남겨야 나중에
 // 리포트에서 집계할 수 있어 포함시켰다 — 다만 프론트의 동일한 이름의 상수(index.tsx
@@ -887,15 +889,24 @@ attendanceRouter.post('/departure-suggest', async (req, res) => {
 });
 
 const departureRequestIdSchema = z.object({ correctionRequestId: z.string().min(1) });
+const departureConfirmSchema = z.object({
+  correctionRequestId: z.string().min(1),
+  // 확정하면 최소근무시간(정책값) 미만이 되는 경우 본인이 입력하는 조기퇴근 사유(하드블록 대신 사용) — /clock-out과 동일한 패턴.
+  earlyLeaveReason: z.string().optional(),
+});
 
 /** 자동감지 제안을 본인이 그 자리에서 확인하고 즉시 확정한다(관리자 승인 없이도 가능 — 본인 확인이므로). */
 attendanceRouter.post('/departure-suggest/confirm', async (req, res) => {
-  const parsed = departureRequestIdSchema.safeParse(req.body);
+  const parsed = departureConfirmSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '요청 형식을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
-  const correction = await prisma.attendanceCorrectionRequest.findUnique({ where: { id: parsed.data.correctionRequestId } });
+  const earlyLeaveReason = parsed.data.earlyLeaveReason?.trim() ? parsed.data.earlyLeaveReason.trim().slice(0, 300) : undefined;
+  const correction = await prisma.attendanceCorrectionRequest.findUnique({
+    where: { id: parsed.data.correctionRequestId },
+    include: { attendanceRecord: { select: { clockInAt: true } } },
+  });
   if (!correction || correction.userId !== userId || !correction.reason.startsWith(AUTO_DEPARTURE_REASON_PREFIX)) {
     return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '요청을 찾을 수 없습니다.' } });
   }
@@ -903,7 +914,25 @@ attendanceRouter.post('/departure-suggest/confirm', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: '이미 처리된 요청입니다.' } });
   }
 
-  const applied = await applyAttendanceCorrection(correction.id);
+  // 2026-09-08: 위치이탈 자동감지로 확정되는 퇴근도 수동 "퇴근" 버튼과 동일하게 최소근무시간
+  // (정책값, 기본 8시간) 규칙을 적용한다 — 김진호 사례(출근 1분/2시간 뒤 자동감지 시각으로
+  // 사유 확인 없이 그대로 확정됨)로 발견된 사고를 막기 위함.
+  if (correction.attendanceRecord.clockInAt) {
+    const { ok, remainMinutes } = await checkMinWorkedMinutes(correction.attendanceRecord.clockInAt, correction.proposedClockOutAt);
+    if (!ok && !earlyLeaveReason) {
+      const remainH = Math.floor(remainMinutes / 60);
+      const remainM = remainMinutes % 60;
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'EARLY_LEAVE_REASON_REQUIRED',
+          message: `아직 최소 근무시간을 채우지 않았습니다(${remainH}시간 ${remainM}분 부족). 조기퇴근 사유를 입력하시면 바로 확정됩니다.`,
+        },
+      });
+    }
+  }
+
+  const applied = await applyAttendanceCorrection(correction.id, earlyLeaveReason);
   if (!applied) {
     return res.status(400).json({ success: false, error: { code: 'APPLY_FAILED', message: '처리할 수 없습니다.' } });
   }

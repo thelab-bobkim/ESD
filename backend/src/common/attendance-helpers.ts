@@ -1,4 +1,5 @@
 import { prisma } from './prisma';
+import { getPolicyNumber } from './policy-engine/policy-engine';
 
 /**
  * "오늘"의 workDate를 계산한다. 자정이 아니라 새벽 3시(KST)를 하루의 경계로 삼는다 —
@@ -63,12 +64,30 @@ export function resolveEndTime(startTime: Date, endTime: Date): Date {
 }
 
 /**
+ * 최소근무시간(정책값 MIN_HOURS_BEFORE_CLOCKOUT, 기본 8시간) 미충족 여부를 확인한다.
+ * 원래 /clock-out(수동 퇴근)에만 있던 규칙인데, "위치이탈 자동감지"로 확정되는 퇴근(본인 확인
+ * 또는 관리자 승인)도 결국 같은 attendance_records.clock_out_at을 채우는 것이므로 이 규칙을
+ * 피해갈 수 없어야 한다 — 2026-09-08, 김진호의 출근 1분 뒤/2시간 뒤 퇴근이 사유 확인 없이 그대로
+ * 확정돼버린 사고로 발견됨(자동감지 → 관리자 승인 경로가 이 검사를 완전히 건너뛰고 있었음).
+ */
+export async function checkMinWorkedMinutes(
+  clockInAt: Date,
+  proposedClockOutAt: Date
+): Promise<{ ok: boolean; remainMinutes: number }> {
+  const minMinutes = (await getPolicyNumber('MIN_HOURS_BEFORE_CLOCKOUT', 8)) * 60;
+  const elapsedMinutes = Math.round((proposedClockOutAt.getTime() - clockInAt.getTime()) / 60000);
+  return { ok: elapsedMinutes >= minMinutes, remainMinutes: Math.max(0, minMinutes - elapsedMinutes) };
+}
+
+/**
  * 퇴근 정정 신청(AttendanceCorrectionRequest)을 실제 근태 기록에 반영한다 — approval.routes.ts의
  * 관리자 승인 처리와 attendance.routes.ts의 "위치이탈 자동감지 → 본인 확인" 자기확정 처리가 완전히
  * 같은 계산식을 쓰도록 여기 하나로 모았다(둘이 따로 구현되면 나중에 한쪽만 고치는 사고가 나기 쉬움).
  * 신청이 없거나 이미 출근기록 자체가 없으면 null을 반환하고 아무것도 바꾸지 않는다.
+ * earlyLeaveReason: 최소근무시간 미충족 상태로 확정하는 경우의 사유(본인이 입력했거나, 관리자
+ * 승인 시 남긴 코멘트) — /clock-out과 동일하게 근태기록에 남겨서 왜 짧게 확정됐는지 추적 가능하게 한다.
  */
-export async function applyAttendanceCorrection(correctionRequestId: string) {
+export async function applyAttendanceCorrection(correctionRequestId: string, earlyLeaveReason?: string) {
   const correction = await prisma.attendanceCorrectionRequest.findUnique({
     where: { id: correctionRequestId },
     include: { attendanceRecord: { include: { breakSessions: true } } },
@@ -91,6 +110,7 @@ export async function applyAttendanceCorrection(correctionRequestId: string) {
       totalWorkedMinutes,
       isCorrected: true,
       correctionReason: correction.reason,
+      ...(earlyLeaveReason ? { earlyLeaveReason } : {}),
     },
   });
   await prisma.attendanceCorrectionRequest.update({ where: { id: correction.id }, data: { status: 'APPROVED' } });
@@ -103,11 +123,39 @@ export async function applyAttendanceCorrection(correctionRequestId: string) {
 // 대체휴무 등은 물리적 이동 대상이 아니라 제외한다(2026-09-06).
 const LOCATION_TIED_STATUSES = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_WORK', 'CLIENT_MEETING']);
 
+// 이 상태들로 처음 바뀌면 "실제 업무 시작"으로 보고 ensureClockIn()이 출근시각을 자동으로 찍는다
+// (attendance.routes.ts의 /status 핸들러가 이 Set을 그대로 가져다 쓴다 — 두 곳에 따로 유지하면
+// 나중에 한쪽만 고치는 사고가 나기 쉬워서 여기 하나로 모았다).
+export const WORK_START_STATUSES = new Set([
+  'HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK', 'BUSINESS_TRIP', 'REMOTE',
+]);
+
 export interface RawStatusLog { status: string; changedAt: Date; note: string | null; }
 export interface TimelineSegment {
   status: string; changedAt: Date; note: string | null; durationMinutes: number; ongoing: boolean;
   // 본인이 실제로 찍은 기록이 아니라, 이동시간 미기록 구간에서 시스템이 자동으로 떼어낸 추정치인지 여부.
   estimated?: boolean;
+}
+
+export interface ClockInMismatch { firstWorkStatus: string; firstWorkAt: Date; diffMinutes: number | null; }
+
+/**
+ * 출근시각(attendance_records.clock_in_at)은 WORK_START_STATUSES로 처음 바뀌는 순간
+ * ensureClockIn()이 자동으로 찍는다 — 정상적이라면 그날 첫 근무기록 시각과 항상 거의 일치해야
+ * 한다. 그런데 그 둘이 눈에 띄게 어긋나 있거나(정책값 변경 이력, 수동 DB 정정 등), 근무기록은
+ * 있는데 출근시각 자체가 비어 있으면 관리자가 "분명 새벽에 일한 기록이 있는데 출근은 왜 없지?"
+ * 처럼 혼란스러워한다(2026-09-08, 손주용의 새벽 근무기록 사례로 발견) — 원인을 코드로 완전히
+ * 재현하지는 못했지만, 최소한 관리자 화면에서 이 불일치 자체는 바로 눈에 띄게 만들어서 개별
+ * 확인·정정이 필요한 케이스를 놓치지 않게 한다. 오차 허용범위(5분) 이내는 정상으로 보고 null.
+ */
+export function computeClockInMismatch(logs: RawStatusLog[], clockInAt: Date | null): ClockInMismatch | null {
+  const firstWorkLog = logs.find((l) => WORK_START_STATUSES.has(l.status));
+  if (!firstWorkLog) return null;
+  if (!clockInAt) {
+    return { firstWorkStatus: firstWorkLog.status, firstWorkAt: firstWorkLog.changedAt, diffMinutes: null };
+  }
+  const diffMinutes = Math.round(Math.abs(firstWorkLog.changedAt.getTime() - clockInAt.getTime()) / 60000);
+  return diffMinutes > 5 ? { firstWorkStatus: firstWorkLog.status, firstWorkAt: firstWorkLog.changedAt, diffMinutes } : null;
 }
 
 /**

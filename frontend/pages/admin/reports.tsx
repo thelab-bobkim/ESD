@@ -41,8 +41,12 @@ interface AttendanceDetailRow {
   // 그날의 가장 최근 상태변경을 같이 받는다 — "출근을 안 찍은 직원이 지금 뭘 하고 있는지"를
   // 이 화면에서 바로 보여주기 위함(admin/board-scope의 로그인 이력과는 별개).
   latestStatus: { status: string; changedAt: string; note: string | null } | null;
+  // 2026-09-08: 근무기록은 있는데 출근시각이 없거나 크게 어긋난 경우의 경고(손주용 사례) — null이면 정상.
+  clockInMismatch: ClockInMismatch | null;
 }
 interface AttendanceDetail { date: string; rows: AttendanceDetailRow[]; }
+
+interface ClockInMismatch { firstWorkStatus: string; firstWorkAt: string; diffMinutes: number | null; }
 
 interface TimelineEntry {
   status: string; changedAt: string; note: string | null; durationMinutes: number; ongoing: boolean;
@@ -54,6 +58,7 @@ interface DailyTimeline {
   clockInAt: string | null; clockOutAt: string | null; clockOutLocation: string | null; totalWorkedMinutes: number | null;
   totalTravelMinutes: number;
   timeline: TimelineEntry[];
+  clockInMismatch: ClockInMismatch | null;
 }
 
 function fmt(d: Date): string {
@@ -154,7 +159,18 @@ function AttendanceRowTr({
         </div>
       </td>
       {!hideDept && <td>{r.department}</td>}
-      <td className="num">{fmtTime(r.clockInAt)}</td>
+      <td className="num">
+        {fmtTime(r.clockInAt)}
+        {r.clockInMismatch && (
+          <span
+            className="att-pill att-pill-danger"
+            style={{ marginLeft: 6 }}
+            title={`${TIMELINE_STATUS_META[r.clockInMismatch.firstWorkStatus]?.label ?? r.clockInMismatch.firstWorkStatus} 최초 근무기록은 ${fmtTime(r.clockInMismatch.firstWorkAt)}인데 출근시각과 ${r.clockInMismatch.diffMinutes != null ? `${r.clockInMismatch.diffMinutes}분 차이가 나요` : '출근기록 자체가 없어요'} — 클릭해서 상세 타임라인을 확인해주세요.`}
+          >
+            ⚠ 불일치
+          </span>
+        )}
+      </td>
       <td className="num">
         {/* 2026-09-06: 이동시간은 실제 근무시간과 이동시간을 구분해서 보려는 목적이 커서(예:
             상주/출장이 잦은 직원의 실근무 대비 이동 비중 파악), 다른 숫자 열처럼 맨 텍스트로
@@ -592,6 +608,12 @@ export default function AdminReportsPage() {
                   {timeline.totalTravelMinutes > 0 && ` · 🚙 이동시간 ${hoursLabel(timeline.totalTravelMinutes)}`}
                   {timeline.clockOutLocation && ` · 📍 ${timeline.clockOutLocation}`}
                 </p>
+                {timeline.clockInMismatch && (
+                  <div className="att-pill att-pill-danger" style={{ marginBottom: 12, display: 'inline-block' }}>
+                    ⚠ 출근시각 불일치 — {TIMELINE_STATUS_META[timeline.clockInMismatch.firstWorkStatus]?.label ?? timeline.clockInMismatch.firstWorkStatus} 최초기록 {fmtTime(timeline.clockInMismatch.firstWorkAt)}
+                    {timeline.clockInMismatch.diffMinutes != null ? ` (출근시각과 ${timeline.clockInMismatch.diffMinutes}분 차이)` : ' · 출근기록 자체가 없어요'}
+                  </div>
+                )}
                 {timeline.timeline.length === 0 && <div className="board-empty">이 날짜에 등록된 상태 변경이 없습니다.</div>}
                 {timeline.timeline.map((t, i) => {
                   const meta = TIMELINE_STATUS_META[t.status] ?? { label: t.status, icon: '❔', color: '#868e96' };

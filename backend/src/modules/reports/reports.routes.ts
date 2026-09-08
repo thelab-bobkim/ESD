@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
-import { realDayWindow, computeTimelineSegments } from '../../common/attendance-helpers';
+import { realDayWindow, computeTimelineSegments, computeClockInMismatch } from '../../common/attendance-helpers';
 import { recordAuditLog } from '../../common/audit';
 import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 
@@ -317,6 +317,9 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
       travelMinutes: totalTravelMinutes,
       travelHasEstimate: hasEstimatedTravel,
       latestStatus: lastLog ? { status: lastLog.status, changedAt: lastLog.changedAt, note: lastLog.note } : null,
+      // 2026-09-08: 근무기록은 있는데 출근시각이 없거나(또는 크게 어긋나) 있으면 목록에서 바로
+      // 배지로 보이게 한다(computeClockInMismatch 참고, 손주용 사례로 추가).
+      clockInMismatch: computeClockInMismatch(userLogs, r?.clockInAt ?? null),
     };
   });
   return res.json({ success: true, data: { date: parsed.data.date, rows } });
@@ -366,6 +369,9 @@ reportsRouter.get('/daily-timeline', async (req, res) => {
       totalWorkedMinutes: record?.totalWorkedMinutes ?? null,
       totalTravelMinutes,
       timeline,
+      // 2026-09-08: 이 날짜의 근무기록과 출근시각이 어긋나 있으면(또는 출근시각 자체가 없으면)
+      // 상세 타임라인 화면에서도 바로 경고로 보이게 한다(computeClockInMismatch 참고).
+      clockInMismatch: computeClockInMismatch(logs, record?.clockInAt ?? null),
     },
   });
 });

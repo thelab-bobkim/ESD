@@ -80,7 +80,25 @@ export default function ApprovalsPage() {
       setMessage('승인 처리되었습니다.');
       load();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : '승인 처리에 실패했습니다.');
+      const code = err instanceof Error ? (err as Error & { code?: string }).code : undefined;
+      // 2026-09-08: 지난 근무일 퇴근 정정을 승인했을 때 확정될 근무시간이 최소근무시간(정책값)
+      // 미만이면 서버가 승인 사유(코멘트)를 요구한다 — 여기서 그 자리에서 입력받아 같이 실어 다시 보낸다.
+      if (code === 'EARLY_LEAVE_REASON_REQUIRED') {
+        const comment = window.prompt(
+          `${err instanceof Error ? err.message : '최소 근무시간 미만입니다.'}\n\n승인 사유를 입력하면 그대로 승인됩니다.`
+        );
+        if (comment && comment.trim()) {
+          try {
+            await apiFetch(`/approval/requests/${id}/approve`, { method: 'POST', body: JSON.stringify({ comment: comment.trim() }) });
+            setMessage('승인 처리되었습니다.');
+            load();
+          } catch (err2) {
+            setMessage(err2 instanceof Error ? err2.message : '승인 처리에 실패했습니다.');
+          }
+        }
+      } else {
+        setMessage(err instanceof Error ? err.message : '승인 처리에 실패했습니다.');
+      }
     } finally {
       setBusyId(null);
     }

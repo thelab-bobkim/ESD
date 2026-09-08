@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole, type AuthUser } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { applyAttendanceCorrection } from '../../common/attendance-helpers';
+import { applyAttendanceCorrection, checkMinWorkedMinutes } from '../../common/attendance-helpers';
 
 export const approvalRouter = Router();
 approvalRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN'));
@@ -58,6 +58,36 @@ approvalRouter.post('/requests/:id/approve', async (req, res) => {
     return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '다른 부서의 요청은 처리할 권한이 없습니다.' } });
   }
 
+  // 2026-09-08: 지난 근무일 퇴근 정정(주로 "위치이탈 자동감지"가 만든 제안)을 승인하면 결과적으로
+  // 최소근무시간(정책값, 기본 8시간) 미만 근무로 확정되는 경우, /clock-out(수동 퇴근)과 똑같이
+  // 사유 없이는 그냥 넘어가지 못하게 막는다 — 승인권자가 코멘트(사유)를 입력해야만 승인할 수 있다.
+  // 김진호의 출근 1분/2시간 뒤 퇴근 확정 사고가, 자동감지 → 관리자 승인 경로에서 이 검사가 아예
+  // 없어서 발생했던 것을 막기 위함(반려 시 이미 코멘트 필수 패턴이 있어 그 방식을 그대로 따름).
+  let earlyLeaveReasonForCorrection: string | undefined;
+  if (request.type === 'ATTENDANCE_CORRECTION' && request.attendanceCorrectionRequestId) {
+    const correctionForCheck = await prisma.attendanceCorrectionRequest.findUnique({
+      where: { id: request.attendanceCorrectionRequestId },
+      include: { attendanceRecord: { select: { clockInAt: true } } },
+    });
+    if (correctionForCheck?.attendanceRecord.clockInAt) {
+      const { ok, remainMinutes } = await checkMinWorkedMinutes(correctionForCheck.attendanceRecord.clockInAt, correctionForCheck.proposedClockOutAt);
+      if (!ok) {
+        if (!parsed.success || !parsed.data.comment) {
+          const remainH = Math.floor(remainMinutes / 60);
+          const remainM = remainMinutes % 60;
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'EARLY_LEAVE_REASON_REQUIRED',
+              message: `이 정정을 승인하면 최소 근무시간을 채우지 못합니다(${remainH}시간 ${remainM}분 부족). 승인 사유(코멘트)를 입력해야 승인할 수 있습니다.`,
+            },
+          });
+        }
+        earlyLeaveReasonForCorrection = parsed.data.comment;
+      }
+    }
+  }
+
   const updated = await prisma.approvalRequest.update({
     where: { id },
     data: { status: 'APPROVED', approverId, decidedAt: new Date(), comment: parsed.success ? parsed.data.comment : undefined },
@@ -80,7 +110,7 @@ approvalRouter.post('/requests/:id/approve', async (req, res) => {
   // 지난 근무일 퇴근 정정 승인인 경우, 이때 비로소(=승인권자 확인 후) 근태 기록에 실제 반영한다.
   // 신청만으로는 절대 반영되지 않는다(직원 자기신고 + 승인권자 확인, 2단계를 모두 거쳐야 함).
   if (request.type === 'ATTENDANCE_CORRECTION' && request.attendanceCorrectionRequestId) {
-    const applied = await applyAttendanceCorrection(request.attendanceCorrectionRequestId);
+    const applied = await applyAttendanceCorrection(request.attendanceCorrectionRequestId, earlyLeaveReasonForCorrection);
     if (applied) {
       await recordAuditLog({
         actorUserId: approverId,

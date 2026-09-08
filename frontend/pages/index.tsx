@@ -197,6 +197,12 @@ export default function EmployeeHome() {
   const [hqLocation, setHqLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [showHqReturnPrompt, setShowHqReturnPrompt] = useState(false);
   const [showAltDayOffPrompt, setShowAltDayOffPrompt] = useState(false);
+  // 2026-09-08: 아이콘이 화면에서 자꾸 잘못 눌리고(가방/주머니 속 터치 등) 10분 내에 되돌리지 않으면
+  // 그대로 확정돼버리는 사고가 반복돼서(예: 야간에 상태가 계속 바뀌어 타임라인이 지저분해짐), 즉시등록
+  // 상태(QUICK_REGISTER_STATUSES)는 아이콘을 눌러도 바로 등록하지 않고 "정말 이 상태로 확정할까요?"
+  // 라는 가벼운 확인 질문을 한 번 거치게 한다 — 세부내용을 입력하는 폼이 아니라 예/아니오만 누르면
+  // 되는 팝업이라 기존의 "즉시등록 후 나중에 세부내용 입력" 흐름 자체는 그대로 유지된다.
+  const [pendingQuickConfirm, setPendingQuickConfirm] = useState<{ code: string; prefilledClientName?: string } | null>(null);
   const [lateClockOutSuggestion, setLateClockOutSuggestion] = useState<{ overMinutes: number; suggestedStart: string; suggestedEnd: string } | null>(null);
   // 2026-09-06: 정규 근무시간(정책값, 기본 18시)이 지났는데 아직 퇴근 전이면 "퇴근하고 야간작업으로
   // 이어가기"를 안내하는 배너 — 저녁 6시부터 5분마다 오는 퇴근 푸시알림을 계속 미루게 되는 문제를
@@ -230,6 +236,10 @@ export default function EmployeeHome() {
   const departureAwaySinceRef = useRef<{ anchorKey: string; since: number } | null>(null);
   const departureSnoozedUntilRef = useRef(0);
   const [departureSuggestion, setDepartureSuggestion] = useState<{ correctionRequestId: string; estimatedAt: string } | null>(null);
+  // 2026-09-08: 위치이탈 자동감지 확정도 수동 퇴근과 동일하게 최소근무시간 규칙이 적용돼서, 서버가
+  // EARLY_LEAVE_REASON_REQUIRED로 거절하면 그 자리에서 사유를 입력받아 다시 시도할 수 있게 한다.
+  const [departureNeedsReason, setDepartureNeedsReason] = useState(false);
+  const [departureEarlyLeaveReason, setDepartureEarlyLeaveReason] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [messageIsError, setMessageIsError] = useState(false);
   const [myStatus, setMyStatus] = useState<MeAttendance | null>(null);
@@ -556,16 +566,37 @@ export default function EmployeeHome() {
     );
   }
 
-  /** 마지막 근무위치를 벗어난 지 30분이 지났을 때, 본인이 직접 확인하고 그 시각으로 퇴근을 확정한다. */
+  /**
+   * 마지막 근무위치를 벗어난 지 30분이 지났을 때, 본인이 직접 확인하고 그 시각으로 퇴근을 확정한다.
+   * 2026-09-08: 이렇게 확정되는 근무시간도 최소근무시간(정책값) 규칙 대상이라, 서버가
+   * EARLY_LEAVE_REASON_REQUIRED로 거절하면 배너에 사유 입력창을 띄우고 여기서는 그대로 둔다 —
+   * 사유를 입력하고 다시 누르면 그때 같이 실어 보낸다.
+   */
   async function confirmDepartureSuggestion() {
     if (!departureSuggestion) return;
     const info = departureSuggestion;
-    setDepartureSuggestion(null);
-    departureAwaySinceRef.current = null;
-    run(
-      () => apiFetch('/attendance/departure-suggest/confirm', { method: 'POST', body: JSON.stringify({ correctionRequestId: info.correctionRequestId }) }),
-      `${fmtClock(info.estimatedAt)}에 퇴근하신 걸로 확정했어요. ${clockOutGreeting(weather)}`
-    );
+    const reason = departureEarlyLeaveReason.trim();
+    setMessage(null);
+    setMessageIsError(false);
+    try {
+      await apiFetch('/attendance/departure-suggest/confirm', {
+        method: 'POST',
+        body: JSON.stringify({ correctionRequestId: info.correctionRequestId, ...(reason ? { earlyLeaveReason: reason } : {}) }),
+      });
+      setDepartureSuggestion(null);
+      departureAwaySinceRef.current = null;
+      setDepartureNeedsReason(false);
+      setDepartureEarlyLeaveReason('');
+      setMessage(`${fmtClock(info.estimatedAt)}에 퇴근하신 걸로 확정했어요. ${clockOutGreeting(weather)}`);
+      refreshMyStatus();
+    } catch (err) {
+      const code = err instanceof Error ? (err as Error & { code?: string }).code : undefined;
+      if (code === 'EARLY_LEAVE_REASON_REQUIRED') {
+        setDepartureNeedsReason(true);
+      }
+      setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+      setMessageIsError(true);
+    }
   }
 
   /** "아직 근무중이에요" — 오탐이었다고 알려주면 대기중이던 제안을 취소한다. */
@@ -575,6 +606,8 @@ export default function EmployeeHome() {
     setDepartureSuggestion(null);
     departureAwaySinceRef.current = null;
     departureSnoozedUntilRef.current = Date.now() + 30 * 60 * 1000; // 30분 동안 다시 안 물어봄
+    setDepartureNeedsReason(false);
+    setDepartureEarlyLeaveReason('');
     apiFetch('/attendance/departure-suggest/dismiss', { method: 'POST', body: JSON.stringify({ correctionRequestId: info.correctionRequestId }) }).catch(() => {});
   }
 
@@ -647,8 +680,17 @@ export default function EmployeeHome() {
     setLateClockOutSuggestion(null);
   }
 
-  async function changeStatus(code: string, prefilledClientName?: string) {
+  async function changeStatus(code: string, prefilledClientName?: string, skipConfirm = false) {
     const alreadyInThisStatus = currentStatus?.status === code;
+
+    // 즉시등록 상태(QUICK_REGISTER_STATUSES)를 처음 누르는 경우, 실수로 눌렸을 가능성을 막기 위해
+    // 먼저 가벼운 확인 질문을 띄우고 여기서 멈춘다 — 사용자가 "예"를 누르면 그때 skipConfirm=true로
+    // 이 함수를 다시 호출해 실제 등록을 진행한다. 이미 확인을 거쳤거나(skipConfirm) 이미 같은
+    // 상태이거나, 애초에 즉시등록 대상이 아닌 상태(세부폼이 먼저 필요한 상태)는 그대로 통과시킨다.
+    if (QUICK_REGISTER_STATUSES.has(code) && !alreadyInThisStatus && !skipConfirm) {
+      setPendingQuickConfirm({ code, prefilledClientName });
+      return;
+    }
     // 새 상태를 등록한다는 건 본인이 여전히 활동중이라는 뜻이므로, 혹시 떠 있던 "퇴근 이탈감지"
     // 제안이 있다면 더 이상 맞지 않는 추정이니 같이 정리한다(오탐으로 조용히 취소).
     if (!alreadyInThisStatus && departureSuggestion) dismissDepartureSuggestion();
@@ -760,6 +802,19 @@ export default function EmployeeHome() {
       () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify({ status: code }) }),
       `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`
     );
+  }
+
+  /** 즉시등록 확인 팝업에서 "네, 확정합니다"를 눌렀을 때 — 실제 등록을 진행한다. */
+  function confirmPendingQuickStatus() {
+    if (!pendingQuickConfirm) return;
+    const { code, prefilledClientName } = pendingQuickConfirm;
+    setPendingQuickConfirm(null);
+    changeStatus(code, prefilledClientName, true);
+  }
+
+  /** 즉시등록 확인 팝업에서 "아니요"를 누르거나 잘못 눌렀을 때 — 아무것도 등록하지 않고 닫는다. */
+  function cancelPendingQuickStatus() {
+    setPendingQuickConfirm(null);
   }
 
   async function submitDetailForm() {
@@ -1091,6 +1146,20 @@ export default function EmployeeHome() {
         </div>
       )}
 
+      {pendingQuickConfirm && (
+        <div className="card col-full notice-tint-blue">
+          {STATUS_META[pendingQuickConfirm.code].icon} '{STATUS_META[pendingQuickConfirm.code].label}'(으)로 확정합니까?
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button style={{ width: 'auto', margin: 0 }} onClick={confirmPendingQuickStatus}>
+              네, 확정합니다
+            </button>
+            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={cancelPendingQuickStatus}>
+              아니요
+            </button>
+          </div>
+        </div>
+      )}
+
       {arrivedClient && (
         <div className="card col-full notice-tint-blue">
           🚗 <strong>{arrivedClient}</strong>에 도착하신 것 같아요! 어떤 걸로 등록할까요?
@@ -1120,7 +1189,7 @@ export default function EmployeeHome() {
               style={{ width: 'auto', margin: 0 }}
               onClick={() => {
                 setShowAltDayOffPrompt(false);
-                changeStatus('ALT_DAY_OFF');
+                changeStatus('ALT_DAY_OFF', undefined, true);
               }}
             >
               네, 대체휴무 등록할게요
@@ -1176,7 +1245,7 @@ export default function EmployeeHome() {
               style={{ width: 'auto', margin: 0 }}
               onClick={() => {
                 setShowHqReturnPrompt(false);
-                changeStatus('HQ_WORKING');
+                changeStatus('HQ_WORKING', undefined, true);
               }}
             >
               네, 본사근무로 바꿀게요
@@ -1198,6 +1267,20 @@ export default function EmployeeHome() {
       {departureSuggestion && (
         <div className="card col-full notice-tint-orange">
           🚪 마지막 근무위치를 벗어난 지 30분이 지났어요. <strong>{fmtClock(departureSuggestion.estimatedAt)}</strong>에 퇴근하신 걸로 확정할까요?
+          {departureNeedsReason && (
+            <div style={{ marginTop: 8 }}>
+              <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                ⏱️ 아직 최소 근무시간 전이에요 — 조기퇴근 사유를 입력해주세요
+              </label>
+              <input
+                type="text"
+                value={departureEarlyLeaveReason}
+                onChange={(e) => setDepartureEarlyLeaveReason(e.target.value)}
+                placeholder="예: 병원 진료로 조기퇴근"
+                style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8 }}
+              />
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <button style={{ width: 'auto', margin: 0 }} onClick={confirmDepartureSuggestion}>
               네, 확정할게요
