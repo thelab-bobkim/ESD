@@ -286,6 +286,11 @@ export default function EmployeeHome() {
   // 고객사미팅/고객사작업/야간작업 공용 상세입력 폼 상태
   const [detailStatus, setDetailStatus] = useState<string | null>(null);
   const [clientName, setClientName] = useState('');
+  // 목록에서 정확히 고른 고객사의 id — 같은 이름을 포함하는 지점이 여러 곳(예: "김앤장법률사무소"
+  // 본점/세양센터/국원센터)이어도 서버가 이름 부분일치 대신 이 id로 정확히 그 지점만 조회하도록
+  // 같이 보낸다(2026-09-08). 직접 타이핑했거나 새로 등록한 직후처럼 목록에서 고르지 않은 경우엔
+  // 빈 값으로 두고, 서버가 기존처럼 이름 부분일치로 대체 조회한다.
+  const [clientId, setClientId] = useState('');
   const [projectName, setProjectName] = useState('');
   const [workStart, setWorkStart] = useState(nowHHMM());
   const [workEnd, setWorkEnd] = useState('');
@@ -600,6 +605,10 @@ export default function EmployeeHome() {
     setDetailStatus(code);
     const initialClientName = prefilledClientName ?? (code === 'RESIDENT_ONSITE' ? (me?.assignedClient ?? '') : '');
     setClientName(initialClientName);
+    // 여기서 채워지는 이름은 목록에서 고른 게 아니라 이전 값을 그대로 복원한 것이라 어느 지점인지
+    // 확정할 수 없다 — id는 비워두고, 제출 시 서버가 기존처럼 이름 부분일치로 대체 조회하게 한다.
+    // 목록에서 다시 정확히 고르면 아래 콤보박스 선택 핸들러가 id를 채워준다.
+    setClientId('');
     // 고객사미팅/고객사작업의 검색창 콤보박스도 같은 초기값으로 맞춰준다(예: GPS 도착감지로
     // 이미 고객사명이 채워진 경우, 검색창에도 바로 그 이름이 보이게).
     setClientQuery(initialClientName);
@@ -833,6 +842,9 @@ export default function EmployeeHome() {
     if (DETAIL_FORM_STATUSES.has(code)) {
       body.effort = {
         clientName,
+        // 목록에서 정확히 고른 고객사면 id도 같이 보낸다 — 같은 문자열을 포함하는 지점이 여러
+        // 곳(본점/세양센터 등)이어도 서버가 정확히 이 지점만 대조하도록(2026-09-08).
+        clientId: clientId || undefined,
         projectName,
         workType,
         startTime: workStart,
@@ -893,12 +905,21 @@ export default function EmployeeHome() {
     run(
       () =>
         attemptWithLocationRetry(
-          () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+          () => apiFetch<{ locationMismatchException?: boolean }>('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
           needsLocationCheck ? refreshDetailFormLocation : undefined
         ),
       `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊${
         isLowAccuracy(detailFormLocationMeta.accuracy) ? ` (${accuracyWarningLabel(detailFormLocationMeta.accuracy)})` : ''
-      }`
+      }`,
+      // 2026-09-08: 위치가 등록된 고객사와 달라도(예: 실내 GPS 오차) 등록 자체는 막지 않고 예외로
+      // 통과시키되, 직원이 상황을 알 수 있도록 안내 문구로 성공 메시지를 덮어쓴다 — 관리자 화면
+      // "위치 불일치" 배지로도 남아 사후 확인이 가능하다.
+      (data) => {
+        if ((data as { locationMismatchException?: boolean } | undefined)?.locationMismatchException) {
+          setMessage('⚠ 위치가 등록된 고객사와 달라 예외로 등록됐어요 — 관리자 확인이 필요할 수 있어요.');
+          setMessageIsError(false);
+        }
+      }
     );
     setDetailStatus(null);
   }
@@ -936,6 +957,7 @@ export default function EmployeeHome() {
       });
       setClientOptions((prev) => (prev.some((c) => c.id === created.id) ? prev : [...prev, created].sort((a, b) => a.name.localeCompare(b.name))));
       setClientName(created.name);
+      setClientId(created.id);
       setClientQuery(created.name);
       setClientPickerOpen(false);
     } catch {
@@ -1535,6 +1557,7 @@ export default function EmployeeHome() {
                     onChange={(e) => {
                       setClientQuery(e.target.value);
                       setClientName(''); // 목록에서 다시 고르거나 새로 등록하기 전까지는 미확정 상태로 둔다.
+                      setClientId('');
                       setClientPickerOpen(true);
                     }}
                     onFocus={() => setClientPickerOpen(true)}
@@ -1560,6 +1583,7 @@ export default function EmployeeHome() {
                           onMouseDown={(e) => {
                             e.preventDefault(); // onBlur보다 먼저 선택이 처리되게(안 그러면 목록이 먼저 닫혀버림).
                             setClientName(c.name);
+                            setClientId(c.id);
                             setClientQuery(c.name);
                             setClientPickerOpen(false);
                           }}

@@ -646,18 +646,16 @@ attendanceRouter.post('/status', async (req, res) => {
   }
 
   // 등록된 고객사 좌표가 있는 경우에만 강제한다(현장 사칭 방지).
-  // - 위치는 잡혔는데 실제 거리가 멀면: 몇 번을 시도해도 항상 차단.
   // - 위치 확보 자체가 실패(권한거부/타임아웃 등)했으면: 오늘 첫 실패는 봐주고 통과시키되,
   //   이미 한 번 봐준 뒤부터는 실제로 위치가 일치해야만 통과시킨다.
+  // - 위치는 잡혔는데 실제 거리가 멀면: 2026-09-08 이전에는 몇 번을 시도해도 항상 차단했는데,
+  //   등록된 고객사 좌표는 맞는데도 실내 GPS 오차·근사위치 설정 등으로 정상적으로 그 자리에
+  //   있으면서도 계속 막히는 사례가 실제로 발생해(관리자 확인 요청) 막지는 않되, locationMatch=false·
+  //   거리값을 그대로 기록해 상황판에 "위치 불일치"로 표시되게 한다 — 관리자가 필요시 사후 확인.
+  let locationMismatchException = false;
   if (LOCATION_CHECK_STATUSES.has(status) && matchedClientForLocation?.latitude != null && matchedClientForLocation?.longitude != null) {
     if (locationResult && !locationResult.locationMatch) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'LOCATION_MISMATCH',
-          message: `현재 위치가 등록된 고객사에서 약 ${locationResult.locationDistanceMeters}m 떨어져 있어요. 고객사 현장에서 다시 시도해주세요.`,
-        },
-      });
+      locationMismatchException = true;
     }
     if (!locationResult) {
       const { start: dayStartForLocation, end: dayEndForLocation } = realDayWindow(todayDateOnly());
@@ -741,7 +739,7 @@ attendanceRouter.post('/status', async (req, res) => {
   }
 
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'status_change_log', targetId: log.id, afterValue: { log, effortLog, nightWork, businessTripLog } });
-  return res.json({ success: true, data: { statusLog: log, effortLog, nightWork, businessTripLog } });
+  return res.json({ success: true, data: { statusLog: log, effortLog, nightWork, businessTripLog, locationMismatchException } });
 });
 
 // 9개 상태 아이콘은 확인창 없이 눌리는 즉시 등록된다(2026-08 설계, "우선 등록 후 세부내용은
