@@ -372,6 +372,12 @@ attendanceRouter.post('/clock-out', async (req, res) => {
 
 const effortSchema = z.object({
   clientName: z.string().optional(),
+  // 프론트 콤보박스에서 목록의 특정 고객사를 골랐을 때 그 id를 함께 보낸다. 같은 이름을 포함하는
+  // 지점이 여러 곳(예: "김앤장법률사무소" 본점/세양센터/국원센터)이면 이름만으로는 어느 지점인지
+  // 특정할 수 없어 findFirst가 아무 지점이나 골라버릴 수 있었다 — id가 오면 그걸로 정확히 그
+  // 지점만 조회한다(2026-09-08, 관리자 문의로 발견). 목록에 없는 새 이름을 직접 입력한 경우 등
+  // id가 없을 때는 기존처럼 이름 부분일치로 대체 조회한다.
+  clientId: z.string().optional(),
   projectName: z.string().optional(),
   workType: z.string().optional(),
   startTime: z.string().optional(), // "HH:MM" (KST)
@@ -604,8 +610,26 @@ attendanceRouter.post('/status', async (req, res) => {
     }
   }
 
-  // 위치대조: 입력한 고객사명과 등록된 고객사를 이름으로 매칭해서 좌표를 비교한다.
-  // 매칭되는 고객사가 없거나 좌표 미등록이면 대조할 대상이 없으니 그냥 null(확인 안 함)로 둔다.
+  if (status === 'HQ_WORKING') {
+    // 2026-09-08: 사내망 확인이 실패했는데도 캡처상태는 'OK'로 남고 locationMatch는 계속 비어(null)
+    // 있는 사례가 관리자 문의로 발견됐다. 코드 흐름상 재현되지 않아야 하는 조합이라, 다음 발생 시
+    // 바로 원인을 특정할 수 있도록 판정에 쓰인 입력값과 결과를 함께 남긴다.
+    // `docker compose logs backend | grep HqLocationDebug`로 확인.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[HqLocationDebug] userId=${userId} officeNetworkConfirmed=${officeNetworkConfirmed} hqAddressMatched=${hqAddressMatched} hasLocation=${Boolean(location)} rawLocationStatus=${rawLocationStatus ?? '(none)'} locationCaptureStatus=${locationCaptureStatus ?? '(none)'} hqLocationResult=${JSON.stringify(hqLocationResult)}`
+    );
+  }
+
+  // 위치대조: 등록된 고객사 좌표와 비교한다. 목록에서 정확히 고른 고객사면 effort.clientId로
+  // 그 지점만 정확히 조회하고, id가 없으면(자유입력·구버전 클라이언트 등) 기존처럼 이름
+  // 부분일치로 대체 조회한다. 매칭되는 고객사가 없거나 좌표 미등록이면 대조할 대상이 없으니
+  // 그냥 null(확인 안 함)로 둔다.
+  // 2026-09-08: 이름 부분일치만 쓰던 예전 방식은, "김앤장법률사무소"처럼 본점 외에 "김앤장법률사무소
+  // 세양센터/국원센터"같이 같은 문자열을 포함하는 지점이 여러 곳 등록돼 있으면 findFirst가 그중
+  // 아무 지점이나(등록 순서상 먼저 걸리는 곳) 골라버려서, 실제로는 다른 지점에 있는데도 엉뚱한
+  // 지점 좌표와 비교돼 위치가 어긋나 보일 수 있었다(관리자 문의로 발견). id 기반 조회를 우선해서
+  // 이 모호함을 없앤다.
   // 2026-09-06: "원격"으로 진행하는 고객사작업/미팅(예: 이동중에 급히 원격지원하는 경우)까지
   // 고객사 현장 좌표와 비교하면, 실제로 현장에 없는 게 정상인데도 "위치 불일치"로 막혀버린다
   // (사용자 지적 — 이동중 긴급 원격작업 검토 중 발견). siteType이 원격이면 애초에 현장에 있을
@@ -613,9 +637,11 @@ attendanceRouter.post('/status', async (req, res) => {
   let locationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
   let matchedClientForLocation: { latitude: number | null; longitude: number | null } | null = null;
   if (LOCATION_CHECK_STATUSES.has(status) && effort?.clientName && siteType !== 'REMOTE') {
-    matchedClientForLocation = await prisma.client.findFirst({
-      where: { name: { contains: effort.clientName.trim(), mode: 'insensitive' } },
-    });
+    matchedClientForLocation = effort.clientId
+      ? await prisma.client.findUnique({ where: { id: effort.clientId } })
+      : await prisma.client.findFirst({
+          where: { name: { contains: effort.clientName.trim(), mode: 'insensitive' } },
+        });
     locationResult = checkLocationMatch(location, matchedClientForLocation);
   }
 
