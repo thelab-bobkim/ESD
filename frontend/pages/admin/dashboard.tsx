@@ -79,6 +79,28 @@ function locationBadge(e: EmployeeRow): { text: string; color: string } | null {
   return { text: '⚠ 위치 미확인', color: '#f08c00' };
 }
 
+// 본사근무(HQ_WORKING)는 애초에 "세부내용"이라는 개념 자체가 없어서(고객사작업/미팅만 effort로
+// 세부내용을 입력함), 위치 미확인 카드에 "세부내용 미입력" 문구를 그대로 붙이면 실제로는 GPS
+// 권한거부/타임아웃 등 다른 이유인데도 마치 직원이 뭔가 덜 입력한 것처럼 보여 혼선을 준다
+// (2026-09 관리자 문의 — "다들 사무실에 있는데 세부내용 미입력이라고 나온다"). 본사근무는 이 대신
+// 실제 위치확보 실패 사유를 그대로 보여준다.
+function hqLocationNote(captureStatus: string | null): string {
+  switch (captureStatus) {
+    case 'PERMISSION_DENIED':
+      return '위치 접근 권한이 거부돼서 확인이 안 됐어요 — 휴대폰 위치 권한을 허용한 뒤 다시 등록해주세요';
+    case 'TIMEOUT':
+      return 'GPS 응답이 시간 초과돼서 확인이 안 됐어요 — 신호가 약한 곳일 수 있어요';
+    case 'NO_CONSENT':
+      return '위치정보 이용에 동의하지 않아 확인이 안 됐어요';
+    case 'UNSUPPORTED':
+      return '이 기기/브라우저에서는 위치 확인을 지원하지 않아요';
+    case 'GEOCODE_FAILED':
+      return '주소 변환에 실패해서 확인이 안 됐어요';
+    default:
+      return '위치 확인 결과가 아직 없어요 — 잠시 후에도 그대로면 관리자에게 알려주세요';
+  }
+}
+
 function timeAgo(iso: string | null): string {
   if (!iso) return '-';
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -450,10 +472,14 @@ export default function AdminDashboard() {
                     <div className="cc-alert-note" style={{ color: '#94a3b8', fontStyle: 'italic' }}>
                       고객사: {e.effortClientName} (세부내용 아직 미입력 — 본인이 앱에서 마저 입력해야 위치확인도 완료돼요)
                     </div>
+                  ) : e.status === 'CLIENT_MEETING' || e.status === 'CLIENT_WORK' ? (
+                    <div className="cc-alert-note" style={{ color: '#94a3b8', fontStyle: 'italic' }}>
+                      등록만 되고 세부내용 미입력 상태예요 — 본인이 앱에서 마저 입력해야 위치확인도 완료돼요
+                    </div>
                   ) : (
-                    e.status && LOCATION_CHECK_STATUSES.has(e.status) && (
+                    e.status === 'HQ_WORKING' && (
                       <div className="cc-alert-note" style={{ color: '#94a3b8', fontStyle: 'italic' }}>
-                        등록만 되고 세부내용 미입력 상태예요 — 본인이 앱에서 마저 입력해야 위치확인도 완료돼요
+                        {hqLocationNote(e.locationCaptureStatus)}
                       </div>
                     )
                   )}
