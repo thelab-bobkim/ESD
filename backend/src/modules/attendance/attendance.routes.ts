@@ -184,6 +184,16 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   const hqLng = await getPolicyString('HQ_LONGITUDE', '');
   const hqConfigured = Boolean(hqLat && hqLng);
   let hqLocationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
+  // 2026-09-09: 아래 GPS 좌표대조 블록은 hqVerifiedByAlternateMeans가 false일 때만 실행되는데,
+  // true인 경우(사내망/주소로 이미 확인됨) hqLocationResult를 아무도 채워주지 않아서 계속 null로
+  // 남아 있었다 — locationConfirmed(213번째 줄)는 맞게 true로 계산되는데 실제 기록되는
+  // locationMatch는 null이라, "출근" 버튼으로 출근한 사람들이 사내망/주소로는 확인됐음에도 상황판엔
+  // "위치 미확인"으로 표시되는 원인이었다(하단 hqLocationDebug 상태변경 핸들러엔 2026-09-08에 이미
+  // 동일한 방식으로 고쳐져 있었는데, 이 "출근" 버튼 핸들러만 그 수정이 빠져 있었음 — 관리자 문의
+  // "위치 미확인 다수" 재조사로 발견).
+  if (hqConfigured && hqVerifiedByAlternateMeans) {
+    hqLocationResult = { locationMatch: true, locationDistanceMeters: 0 };
+  }
   // 사내망(공인IP) 또는 주소 매칭으로 이미 확인됐으면 GPS 위치확인 요구 자체를 건너뛴다.
   if (hqConfigured && !hqVerifiedByAlternateMeans) {
     if (!location) {
