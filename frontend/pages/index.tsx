@@ -1147,15 +1147,19 @@ export default function EmployeeHome() {
       )}
 
       {pendingQuickConfirm && (
-        <div className="card col-full notice-tint-blue">
-          {STATUS_META[pendingQuickConfirm.code].icon} '{STATUS_META[pendingQuickConfirm.code].label}'(으)로 확정합니까?
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button style={{ width: 'auto', margin: 0 }} onClick={confirmPendingQuickStatus}>
-              네, 확정합니다
-            </button>
-            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={cancelPendingQuickStatus}>
-              아니요
-            </button>
+        // 2026-09-09: 화면 아래쪽 아이콘을 눌러도 확인 팝업은 배너 목록 맨 위쪽에 렌더링돼서
+        // 스크롤을 안 올리면 안 보이던 문제 — 화면 하단에 고정된 시트로 띄워 항상 바로 보이게 한다.
+        <div className="quick-confirm-backdrop" onClick={cancelPendingQuickStatus}>
+          <div className="card notice-tint-blue quick-confirm-sheet" onClick={(e) => e.stopPropagation()}>
+            {STATUS_META[pendingQuickConfirm.code].icon} '{STATUS_META[pendingQuickConfirm.code].label}'(으)로 확정합니까?
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <button style={{ width: 'auto', margin: 0 }} onClick={confirmPendingQuickStatus}>
+                네, 확정합니다
+              </button>
+              <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={cancelPendingQuickStatus}>
+                아니요
+              </button>
+            </div>
           </div>
         </div>
       )}

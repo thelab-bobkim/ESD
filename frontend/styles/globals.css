@@ -415,6 +415,27 @@ body.tsb-dark-body { background: #090d18; }
 .msg-warn { background: #fff4e6; color: #e8590c; font-weight: 600; }
 .tsb-dark .msg-warn { background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid #4a3a12; }
 
+/* 2026-09-09: 즉시등록 확인 팝업(pendingQuickConfirm)이 페이지 배너 목록 사이에 인라인으로
+   끼어들어서, 아이콘이 화면 아래쪽(스크롤된 위치)에 있으면 팝업이 화면 밖(위쪽)에 떠서 사용자
+   눈에 안 띄는 문제가 있었다(관리자 문의 — 아이콘을 눌러도 반응이 없는 것처럼 보임). 화면 하단에
+   고정된 시트로 띄워서 어디에 스크롤돼 있든 항상 바로 보이게 한다. */
+.quick-confirm-backdrop {
+  position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
+  display: flex; align-items: flex-end; justify-content: center;
+  z-index: 200;
+}
+.quick-confirm-sheet {
+  width: 100%; max-width: 480px; margin-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  padding: 20px 20px calc(20px + env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 -6px 24px rgba(0,0,0,0.25);
+  animation: quickConfirmSlideUp 0.18s ease-out;
+}
+@keyframes quickConfirmSlideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
 /* ===== 관리자 상황판(전사 상황판) 다크 전용: 상단 핵심지표 카드 + "확인 필요한 직원" 강조 카드 ===== */
 .cc-stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 16px; }
 .cc-stat-card { background: var(--dsti-surface); border: 1px solid var(--dsti-border); border-radius: 16px; padding: 16px 18px; }
