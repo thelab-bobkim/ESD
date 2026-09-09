@@ -46,15 +46,22 @@ function ipMatchesAllowedEntry(clientIp: string, entry: string): boolean {
  * GPS 확인이 별도로 필요하다. 정책값이 비어있으면(관리자가 아직 설정 안 함) 항상 false를 반환해
  * 기존 GPS 기반 확인 동작을 그대로 유지한다.
  */
-async function isRequestFromOfficeNetwork(req: Request): Promise<boolean> {
+async function isRequestFromOfficeNetwork(req: Request, userId?: string): Promise<boolean> {
   const allowedIps = await getPolicyJSON<string[]>('HQ_ALLOWED_PUBLIC_IPS', []);
-  if (!allowedIps.length) return false;
   const clientIp = (req.ip ?? '').replace(/^::ffff:/, ''); // IPv4-mapped IPv6 표기("::ffff:1.2.3.4") 정리
-  const matched = allowedIps.some((entry) => ipMatchesAllowedEntry(clientIp, entry));
+  const matched = allowedIps.length > 0 && allowedIps.some((entry) => ipMatchesAllowedEntry(clientIp, entry));
   // 기능이 실제로 의도대로 작동하는지(또는 IP가 예상과 다르게 잡히는지) 배포 후 바로 확인할 수 있도록
   // 남기는 진단 로그(등록된 IP 목록이 수십 개일 수 있어 개수만 남긴다).
+  // 2026-09-09: 회사가 인터넷 회선을 여러 개 써서 공인IP가 30여 개나 되는데 정책엔 일부만
+  // 등록돼 있어, 실제로 어떤 IP가 사무실 회선인지 관리자가 눈으로 구분하기 어려웠다(직원 개개인의
+  // IP인지 사무실 공용 회선인지 알 수 없음). userId를 같이 남기면 나중에
+  // `... | grep OfficeNetworkCheck | grep -oE "clientIp=[0-9.]+"`로 집계했을 때, 같은 IP에
+  // 서로 다른 userId가 여러 명 몰려 있으면 "사무실 공용 회선"이고 한 사람만 계속 찍히면 "그
+  // 개인의 자택/모바일 회선"이라고 구분할 수 있다.
   // `docker compose logs backend | grep OfficeNetworkCheck`로 확인 가능.
-  console.log(`[OfficeNetworkCheck] clientIp=${clientIp} allowedEntries=${allowedIps.length} matched=${matched}`);
+  console.log(
+    `[OfficeNetworkCheck] userId=${userId ?? '(unknown)'} clientIp=${clientIp} allowedEntries=${allowedIps.length} matched=${matched}`
+  );
   return matched;
 }
 
@@ -128,7 +135,7 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   // 카카오맵 역지오코딩 주소(frontend에서 이미 변환해서 보내줌) — 좌표와 마찬가지로 대조 후 폐기.
   const locationAddress = req.body?.locationAddress as string | undefined;
   // 사내망(공인IP) 확인 — 회사 와이파이에 연결되어 있으면 아래 GPS 기반 위치확인들을 모두 통과시킨다.
-  const officeNetworkConfirmed = await isRequestFromOfficeNetwork(req);
+  const officeNetworkConfirmed = await isRequestFromOfficeNetwork(req, userId);
   // 주소 매칭 확인 — 건물명/도로명 키워드가 맞으면 GPS 거리와 무관하게 통과시킨다.
   const hqAddressMatched = await isHqAddressMatch(locationAddress);
   const hqVerifiedByAlternateMeans = officeNetworkConfirmed || hqAddressMatched;
@@ -489,7 +496,7 @@ attendanceRouter.post('/status', async (req, res) => {
       ? (rawLocationStatus as 'NO_CONSENT' | 'PERMISSION_DENIED' | 'TIMEOUT' | 'UNSUPPORTED' | 'GEOCODE_FAILED')
       : undefined;
   // 사내망(공인IP) 확인 — 본사근무 등록 시 GPS 없이도(또는 GPS가 빗나가도) 위치확인을 통과시킨다.
-  const officeNetworkConfirmed = status === 'HQ_WORKING' ? await isRequestFromOfficeNetwork(req) : false;
+  const officeNetworkConfirmed = status === 'HQ_WORKING' ? await isRequestFromOfficeNetwork(req, userId) : false;
   // 주소 매칭 확인 — 건물명/도로명 키워드가 맞으면 GPS 거리와 무관하게 통과시킨다.
   const hqAddressMatched = status === 'HQ_WORKING' ? await isHqAddressMatch(locationAddress) : false;
   const hqVerifiedByAlternateMeans = officeNetworkConfirmed || hqAddressMatched;
