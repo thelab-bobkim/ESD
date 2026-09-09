@@ -12,6 +12,9 @@ import { realDayWindow } from '../../common/attendance-helpers';
 // WEEKEND_WORK도 attendance.routes.ts에서 EffortLog를 생성하므로 여기에도 포함시킨다(2026-09-06).
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'WEEKEND_WORK']);
 
+// 위치대조를 실제로 시도하는 상태 — 프론트 admin/dashboard.tsx의 동명 상수와 동일하게 유지.
+const LOCATION_CHECK_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
+
 export const dashboardRouter = Router();
 dashboardRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'));
 
@@ -70,6 +73,33 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
       const fallbackEffort = needsEffortFallback
         ? await prisma.effortLog.findFirst({ where: { userId: u.id, workDate: workDateLabel }, orderBy: { startTime: 'desc' } })
         : null;
+      // 2026-09-09: 상황판 위치 배지가 "그날 마지막 상태변경 로그" 1건의 locationMatch만 보고
+      // 판단하던 문제를 개선 — 위치대조 대상 상태(본사근무/고객사미팅/고객사작업)를 하루에 여러 번
+      // 등록하는 직원은, 예를 들어 오전 본사근무 등록 때 위치가 정상 확인됐어도 오후에 좌표 등록이
+      // 안 된 고객사로 재등록하면 마지막 로그만 보고 하루 종일 "위치 미확인"으로 표시됐다(관리자
+      // 문의 "위치 미확인 다수" 원인). 그날 같은 종류의 상태 등록 중 단 한 번이라도 위치 확인에
+      // 성공(locationMatch=true)한 이력이 있으면, 그 이력을 기준으로 확인됨 처리한다.
+      const statusIsLocationChecked = Boolean(statusOnDay?.status && LOCATION_CHECK_STATUSES.has(statusOnDay.status));
+      const bestLocationLogToday = statusIsLocationChecked && statusOnDay?.locationMatch !== true
+        ? await prisma.statusChangeLog.findFirst({
+            where: {
+              userId: u.id,
+              changedAt: { gte: dayStart, lt: dayEnd },
+              status: { in: ['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK'] },
+              locationMatch: true,
+            },
+            orderBy: { changedAt: 'desc' },
+          })
+        : null;
+      const effectiveLocationMatch = bestLocationLogToday
+        ? true
+        : (statusOnDay?.locationMatch ?? checkinOnDay?.locationMatch ?? null);
+      const effectiveLocationDistanceMeters = bestLocationLogToday
+        ? bestLocationLogToday.locationDistanceMeters
+        : (statusOnDay?.locationDistanceMeters ?? checkinOnDay?.locationDistanceMeters ?? null);
+      const effectiveLocationCaptureStatus = bestLocationLogToday
+        ? (bestLocationLogToday.locationCaptureStatus ?? 'OK')
+        : (statusOnDay?.locationCaptureStatus ?? null);
       return {
         userId: u.id,
         name: u.name,
@@ -81,14 +111,17 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
         statusSource: statusOnDay?.source ?? null,
         statusNote: statusOnDay?.note ?? null,
         effortClientName: fallbackEffort?.clientName || null,
-        locationMatch: statusOnDay?.locationMatch ?? checkinOnDay?.locationMatch ?? null,
-        locationDistanceMeters: statusOnDay?.locationDistanceMeters ?? checkinOnDay?.locationDistanceMeters ?? null,
+        locationMatch: effectiveLocationMatch,
+        locationDistanceMeters: effectiveLocationDistanceMeters,
         // 2026-09-02: locationMatch가 null인 이유를 상황판에서 구분해서 보여주기 위해 추가.
         // (1) 위치확인 자체를 안 하는 상태(재택/출장 등)라 애초에 시도조차 안 한 건지,
         // (2) 동의는 했는데 그 순간 캡처가 실패했는지(권한거부/시간초과 등, ResidentCheckin에는
         //     이 값이 없어 그 경우는 항상 null), (3) 애초에 동의를 안 해서 시도조차 못 한 건지 —
         // 프론트에서 이 값과 아래 동의 여부를 같이 보고 판단한다.
-        locationCaptureStatus: statusOnDay?.locationCaptureStatus ?? null,
+        // (2026-09-09: 위 bestLocationLogToday로 하루 중 확인 성공 이력이 있으면 이 값도 그
+        // 성공 이력 기준(대개 'OK')으로 맞춰 내려간다 — 실제로는 확인됐는데 문구만 미확인으로
+        // 보이는 걸 막기 위함.)
+        locationCaptureStatus: effectiveLocationCaptureStatus,
         locationConsentGiven: u.locationConsentAt != null,
         privacyConsentGiven: u.privacyConsentAt != null,
         lastConfirmedAt: checkinOnDay?.lastConfirmedAt ?? null,

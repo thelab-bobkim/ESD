@@ -86,6 +86,11 @@ function locationBadge(e: EmployeeRow): { text: string; color: string } | null {
 // 실제 위치확보 실패 사유를 그대로 보여준다.
 function hqLocationNote(captureStatus: string | null): string {
   switch (captureStatus) {
+    // 2026-09-09: GPS 캡처 자체는 성공(OK)했는데 locationMatch가 null인 경우(예: 본사 위치대조
+    // 기준 자체에 안 걸림) 기존엔 default 문구("결과가 아직 없어요")로 뜨면서 아직 시도조차
+    // 안 한 것처럼 오해를 줬다 — 캡처는 됐다는 걸 명확히 구분해서 안내한다.
+    case 'OK':
+      return '위치는 정상적으로 확인됐지만 비교 기준과 일치하지 않아 미확인으로 표시됐어요 — 그대로면 관리자에게 알려주세요';
     case 'PERMISSION_DENIED':
       return '위치 접근 권한이 거부돼서 확인이 안 됐어요 — 휴대폰 위치 권한을 허용한 뒤 다시 등록해주세요';
     case 'TIMEOUT':
