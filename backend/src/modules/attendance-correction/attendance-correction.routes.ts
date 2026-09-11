@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, realDayWindow } from '../../common/attendance-helpers';
+import { todayDateOnly, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, combineDateTime } from '../../common/attendance-helpers';
+import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 
 export const attendanceCorrectionRouter = Router();
 attendanceCorrectionRouter.use(requireAuth);
@@ -126,7 +127,48 @@ attendanceCorrectionRouter.post('/requests', async (req, res) => {
     afterValue: { correction, approval },
   });
 
-  return res.json({ success: true, data: { request: correction, approval } });
+  // TSB-Ver3.1: 저위험 정정요청 자동승인 — 2026-09-11 개선 제안서 Quick win 반영.
+  // 제안 퇴근시각이 정규 근무종료 시각(정책값 REGULAR_WORK_END_HOUR) 근처(±30분)이고, 그렇게
+  // 확정해도 최소근무시간(정책값, 기본 8시간)을 채우는 경우에만 자동승인한다. 최소근무시간을
+  // 못 채우는 애매한 건은 기존 사고 방지 규칙(EARLY_LEAVE_REASON_REQUIRED)과 동일하게 반드시
+  // 사람이 확인하도록 그대로 승인대기 상태로 남긴다.
+  let autoApproved = false;
+  const AUTO_APPROVE_WINDOW_MINUTES = 30;
+  const regularWorkEndHour = await getPolicyNumber('REGULAR_WORK_END_HOUR', 18);
+  const regularCutoff = combineDateTime(record.workDate, `${String(regularWorkEndHour).padStart(2, '0')}:00`);
+  const diffFromCutoffMinutes = Math.abs((proposedClockOutAt.getTime() - regularCutoff.getTime()) / 60000);
+
+  if (diffFromCutoffMinutes <= AUTO_APPROVE_WINDOW_MINUTES) {
+    const { ok } = await checkMinWorkedMinutes(record.clockInAt, proposedClockOutAt);
+    if (ok) {
+      await prisma.approvalRequest.update({
+        where: { id: approval.id },
+        data: {
+          status: 'APPROVED',
+          decidedAt: new Date(),
+          comment: `자동승인: 정규 근무종료(${String(regularWorkEndHour).padStart(2, '0')}:00) 시각 인근의 단순 퇴근 누락으로 자동 확정됨`,
+        },
+      });
+      const applied = await applyAttendanceCorrection(correction.id);
+      if (applied) {
+        autoApproved = true;
+        await recordAuditLog({
+          actorUserId: userId,
+          actionType: 'CORRECT',
+          targetType: 'attendance_record',
+          targetId: applied.updatedRecord.id,
+          afterValue: {
+            clockOutAt: applied.updatedRecord.clockOutAt,
+            totalWorkedMinutes: applied.totalWorkedMinutes,
+            correctionReason: applied.correction.reason,
+            autoApproved: true,
+          },
+        });
+      }
+    }
+  }
+
+  return res.json({ success: true, data: { request: correction, approval, autoApproved } });
 });
 
 attendanceCorrectionRouter.get('/requests/me', async (req, res) => {
