@@ -1,6 +1,16 @@
 import { useState } from 'react';
 import { apiFetch } from '@/lib/api';
 
+// TSB-Ver3.1: 자주 나오는 정정 사유를 칩으로 먼저 보여준다 — 실제 DB에 쌓인 사유 표본을 보면
+// "퇴근 버튼 누락" 계열이 압도적으로 많았고, 자유서술만 강제하니 오타/비정형 문구가 많았다
+// (2026-09-11 개선 제안서 Quick win 반영). 칩을 눌러도 바로 제출되지 않고 텍스트로만 채워지므로
+// 상황에 맞게 이어서 수정할 수 있다.
+const REASON_CHIPS = [
+  '퇴근 후 바로 이동하느라 깜빡했습니다.',
+  '사무실에서 퇴근 버튼 누르는 걸 깜빡했습니다.',
+  '외근/이동 중이라 퇴근 버튼을 못 눌렀습니다.',
+];
+
 export interface PendingCorrectionRow {
   attendanceRecordId: string;
   workDate: string;
@@ -85,9 +95,26 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
           />
         </label>
       </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+        {REASON_CHIPS.map((chip) => (
+          <button
+            key={chip}
+            type="button"
+            onClick={() => setReason(chip)}
+            style={{
+              width: 'auto', margin: 0, fontSize: 12, padding: '5px 10px', borderRadius: 999,
+              border: '1px solid #4a3a12',
+              background: reason === chip ? '#fbbf24' : 'transparent',
+              color: reason === chip ? '#1c1f24' : '#fbbf24',
+            }}
+          >
+            {chip}
+          </button>
+        ))}
+      </div>
       <textarea
         style={{ width: '100%', marginTop: 8, minHeight: 50 }}
-        placeholder="왜 퇴근 처리를 못 하셨는지 사유를 10자 이상 입력해주세요 (예: 퇴근 후 바로 이동하느라 깜빡했습니다)"
+        placeholder="위 버튼을 선택하거나, 직접 사유를 10자 이상 입력해주세요"
         value={reason}
         onChange={(e) => setReason(e.target.value)}
       />

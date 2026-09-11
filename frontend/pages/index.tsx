@@ -8,6 +8,7 @@ import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greeting
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
 import PastDayCorrectionCard, { type PendingCorrectionRow } from '@/components/PastDayCorrectionCard';
+import PilotFeedbackButton from '@/components/PilotFeedbackButton';
 
 // 요청하신 배열: 재택/본사근무/고객사상주, 이동중/고객사미팅/고객사작업, 야간작업/대체휴무/휴가 (총 9개)
 const STATUS_META: Record<string, { label: string; icon: string }> = {
@@ -1422,6 +1423,9 @@ export default function EmployeeHome() {
                 {pushLoading ? '처리 중...' : pushSubscribed ? '🔔 출퇴근 알림 끄기' : '🔕 출퇴근 알림 켜기(출근 오전 9시·퇴근 저녁)'}
               </button>
             )}
+            <div style={{ marginTop: 10 }}>
+              <PilotFeedbackButton />
+            </div>
           </div>
 
           <div className="card">
