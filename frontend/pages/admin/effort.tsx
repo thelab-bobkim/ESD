@@ -6,8 +6,11 @@ import AdminHeader from '@/components/AdminHeader';
 // 2026-09-01: 기존 "출퇴근·근로시간·공수" 페이지에서 고객사별 공수 부분만 분리해서 만든 페이지.
 // 출퇴근/근로시간은 하루~1년 단위(일/주/월/년)로 보지만, 공수는 계약·재계약 판단에 쓰는 자료라
 // 월별/분기별/반기별/년간 네 단위로 보는 게 더 자연스러워서 이 페이지만 별도 기간 단위를 쓴다.
-type EffortPeriod = 'month' | 'quarter' | 'halfyear' | 'year';
-const EFFORT_PERIOD_LABELS: Record<EffortPeriod, string> = { month: '월별', quarter: '분기별', halfyear: '반기별', year: '년간' };
+// 2026-09-14: "한주 또는 한달 단위로 엔지니어별 고객사 지원시간을 보고싶다"는 요청 반영 —
+// 기존 월/분기/반기/년에 주별(week)을 추가한다. 주 경계는 reports.tsx의 startOfWeek와 동일하게
+// 월요일~일요일로 통일.
+type EffortPeriod = 'week' | 'month' | 'quarter' | 'halfyear' | 'year';
+const EFFORT_PERIOD_LABELS: Record<EffortPeriod, string> = { week: '주별', month: '월별', quarter: '분기별', halfyear: '반기별', year: '년간' };
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
 const WORK_TYPE_ICONS: Record<string, string> = { 정기점검: '🔧', 신규설치: '🆕', 장애대응: '🚨', 미팅: '🤝', 기타: '📌' };
 
@@ -29,10 +32,68 @@ function hoursLabel(minutes: number): string {
   return `${h}시간 ${m}분`;
 }
 
-// 월/분기/반기/년 단위 범위 계산 — reports.tsx의 computeRange(일/주/월/년)와 같은 패턴이되,
+// 2026-09-14: "고객사별 공수관리가 관리자 입장에서 활용 가능한 데이터로 안 보인다"는 의견 반영.
+// 서버는 client → project → byUser(엔지니어별 분(分)) 구조로 이미 내려주고 있어서, 아래 두
+// 집계는 화면(프론트)에서 같은 데이터를 다시 묶어 보여주는 것 — 백엔드 변경 없이 바로 반영 가능.
+
+/** 한 고객사 안에서, 프로젝트가 여러 개여도 같은 엔지니어면 시간을 합쳐서 "이 고객사에 엔지니어가
+ * 총 몇 시간 투입됐는지" 보여준다(기존엔 프로젝트를 펼쳐야만, 그것도 프로젝트별로 나뉘어 보였음). */
+function aggregateClientByEngineer(client: EffortClientRow): EffortByUser[] {
+  const map = new Map<string, EffortByUser>();
+  for (const project of client.projects) {
+    for (const u of project.byUser) {
+      const cur = map.get(u.userId);
+      if (cur) cur.minutes += u.minutes;
+      else map.set(u.userId, { ...u });
+    }
+  }
+  return [...map.values()].sort((a, b) => b.minutes - a.minutes);
+}
+
+interface EngineerClientShare { clientName: string; minutes: number; }
+interface EngineerAggRow { userId: string; name: string; totalMinutes: number; clientCount: number; byClient: EngineerClientShare[]; }
+
+/** "엔지니어가 이 기간에 어떤 고객사를 몇 시간씩 지원했는지" — client 기준 데이터를 엔지니어
+ * 기준으로 뒤집어서 다시 묶는다. 총 투입시간이 많은 엔지니어부터 보여준다. */
+function pivotByEngineer(clients: EffortClientRow[]): EngineerAggRow[] {
+  const map = new Map<string, EngineerAggRow>();
+  for (const client of clients) {
+    for (const u of aggregateClientByEngineer(client)) {
+      let row = map.get(u.userId);
+      if (!row) {
+        row = { userId: u.userId, name: u.name, totalMinutes: 0, clientCount: 0, byClient: [] };
+        map.set(u.userId, row);
+      }
+      row.totalMinutes += u.minutes;
+      row.clientCount += 1;
+      row.byClient.push({ clientName: client.clientName, minutes: u.minutes });
+    }
+  }
+  for (const row of map.values()) {
+    row.byClient.sort((a, b) => b.minutes - a.minutes);
+  }
+  return [...map.values()].sort((a, b) => b.totalMinutes - a.totalMinutes);
+}
+
+// reports.tsx의 startOfWeek와 동일한 규칙(월요일 시작).
+function startOfWeek(d: Date): Date {
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  const monday = new Date(d);
+  monday.setDate(d.getDate() + diff);
+  return monday;
+}
+
+// 주/월/분기/반기/년 단위 범위 계산 — reports.tsx의 computeRange(일/주/월/년)와 같은 패턴이되,
 // 분기(3개월)·반기(6개월) 구간을 새로 추가했다.
 function computeEffortRange(period: EffortPeriod, anchor: Date): { from: Date; to: Date; label: string } {
   const y = anchor.getFullYear();
+  if (period === 'week') {
+    const from = startOfWeek(anchor);
+    const to = new Date(from);
+    to.setDate(from.getDate() + 6);
+    return { from, to, label: `${fmt(from)} ~ ${fmt(to)}` };
+  }
   if (period === 'month') {
     const from = new Date(y, anchor.getMonth(), 1);
     const to = new Date(y, anchor.getMonth() + 1, 0);
@@ -57,7 +118,8 @@ function computeEffortRange(period: EffortPeriod, anchor: Date): { from: Date; t
 
 function shiftEffortAnchor(period: EffortPeriod, anchor: Date, dir: 1 | -1): Date {
   const d = new Date(anchor);
-  if (period === 'month') d.setMonth(d.getMonth() + dir);
+  if (period === 'week') d.setDate(d.getDate() + dir * 7);
+  else if (period === 'month') d.setMonth(d.getMonth() + dir);
   else if (period === 'quarter') d.setMonth(d.getMonth() + dir * 3);
   else if (period === 'halfyear') d.setMonth(d.getMonth() + dir * 6);
   else d.setFullYear(d.getFullYear() + dir);
@@ -71,6 +133,10 @@ export default function AdminEffortPage() {
   const [effort, setEffort] = useState<EffortSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+  const [expandedEngineers, setExpandedEngineers] = useState<Record<string, boolean>>({});
+  // 2026-09-14: "고객별 어떤 엔지니어가 몇시간 지원했는지"는 기존 고객사별 보기(엔지니어별 요약을
+  // 추가), "엔지니어가 한주/한달에 어떤 고객사를 몇시간 지원했는지"는 이 엔지니어별 보기로 각각 대응.
+  const [viewMode, setViewMode] = useState<'client' | 'engineer'>('client');
   const [workTypeFilter, setWorkTypeFilter] = useState('ALL');
   // 년/월/일을 직접 선택하는 기간 — 지정하면 위 탭(월/분기/반기/년)보다 우선한다.
   const [customFrom, setCustomFrom] = useState('');
@@ -97,6 +163,10 @@ export default function AdminEffortPage() {
     setExpandedProjects((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
+  function toggleEngineer(userId: string) {
+    setExpandedEngineers((prev) => ({ ...prev, [userId]: !prev[userId] }));
+  }
+
   function selectTab(p: EffortPeriod) {
     setCustomFrom('');
     setCustomTo('');
@@ -104,6 +174,7 @@ export default function AdminEffortPage() {
   }
 
   const effortTotalMinutes = useMemo(() => (effort ? effort.clients.reduce((s, c) => s + c.totalMinutes, 0) : 0), [effort]);
+  const engineerRows = useMemo(() => (effort ? pivotByEngineer(effort.clients) : []), [effort]);
 
   return (
     <div className="admin-shell">
@@ -140,7 +211,7 @@ export default function AdminEffortPage() {
       {/* 고객사별 공수 현황 — 관리 판단 기준(총 투입시간/편중도/증감/주요유형) 중심으로 구성 */}
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-          <h2>🛠️ 고객사별 공수(工數) 현황 — {rangeLabel}</h2>
+          <h2>🛠️ 공수(工數) 현황 — {rangeLabel}</h2>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <select className="field-select" style={{ margin: 0, width: 'auto' }} value={workTypeFilter} onChange={(e) => setWorkTypeFilter(e.target.value)}>
               <option value="ALL">전체 작업유형</option>
@@ -153,8 +224,22 @@ export default function AdminEffortPage() {
             </button>
           </div>
         </div>
-        <p style={{ fontSize: 12, color: '#868e96', marginTop: -6, marginBottom: 12 }}>
-          직전 동일기간(예: 지난 달/지난 분기) 대비 증감률, 엔지니어 편중도(한 명이 몇 %를 담당하는지)를 같이 보여드려서 재계약·리스크 판단에 참고하실 수 있습니다.
+
+        {/* 2026-09-14: "고객별 어떤 엔지니어가 몇시간 지원했는지" ↔ "엔지니어가 어떤 고객사를
+            몇시간 지원했는지" — 같은 데이터를 보는 관점이 다를 뿐이라 탭으로 전환할 수 있게 했다. */}
+        <div className="toolbar" style={{ marginTop: 4, marginBottom: 4 }}>
+          <span style={{ fontSize: 13, color: '#495057' }}>보기:</span>
+          <button className={viewMode === 'client' ? '' : 'secondary'} style={{ width: 'auto' }} onClick={() => setViewMode('client')}>
+            🏢 고객사별
+          </button>
+          <button className={viewMode === 'engineer' ? '' : 'secondary'} style={{ width: 'auto' }} onClick={() => setViewMode('engineer')}>
+            🧑‍💻 엔지니어별
+          </button>
+        </div>
+        <p style={{ fontSize: 12, color: '#868e96', marginTop: 4, marginBottom: 12 }}>
+          {viewMode === 'client'
+            ? '고객사별 총 투입시간과 엔지니어별 분담 현황입니다. 직전 동일기간 대비 증감률, 엔지니어 편중도(한 명이 몇 %를 담당하는지)도 함께 보여드려서 재계약·리스크 판단에 참고하실 수 있습니다.'
+            : '엔지니어별로 이 기간에 어떤 고객사를 몇 시간씩 지원했는지 보여드립니다. 투입시간이 많은 엔지니어부터 정렬됩니다.'}
         </p>
 
         {effort && effort.clients.length > 0 && (
@@ -169,7 +254,34 @@ export default function AdminEffortPage() {
 
         {!effort && <div className="board-empty">불러오는 중...</div>}
         {effort && effort.clients.length === 0 && <div className="board-empty">이 조건에 등록된(완료된) 공수기록이 없습니다.</div>}
-        {effort && effort.clients.map((client) => {
+
+        {effort && effort.clients.length > 0 && viewMode === 'engineer' && engineerRows.map((eng) => {
+          const isEngExpanded = expandedEngineers[eng.userId] ?? false;
+          return (
+            <div key={eng.userId} className="board-column" style={{ marginBottom: 10, borderTopColor: '#2f6feb' }}>
+              <div className="board-column-header" style={{ cursor: 'pointer' }} onClick={() => toggleEngineer(eng.userId)}>
+                <span>
+                  <span style={{ display: 'inline-block', width: 12, transform: isEngExpanded ? 'rotate(90deg)' : 'none' }}>▸</span>
+                  {' '}🧑‍💻 {eng.name}
+                  <span style={{ color: '#868e96', fontWeight: 400 }}> · 고객사 {eng.clientCount}개</span>
+                </span>
+                <span className="count">{hoursLabel(eng.totalMinutes)}</span>
+              </div>
+              {isEngExpanded && (
+                <div style={{ padding: '4px 14px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {eng.byClient.map((c) => (
+                    <div key={c.clientName} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '4px 0', borderBottom: '1px solid #f1f3f5' }}>
+                      <span>🏢 {c.clientName}</span>
+                      <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{hoursLabel(c.minutes)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {effort && viewMode === 'client' && effort.clients.map((client) => {
           const isClientExpanded = expandedProjects[`client::${client.clientName}`] ?? false;
           return (
             <div key={client.clientName} className="board-column" style={{ marginBottom: 10, borderTopColor: '#2f6feb' }}>
@@ -211,6 +323,17 @@ export default function AdminEffortPage() {
                     {client.trendPct > 0 ? '📈' : client.trendPct < 0 ? '📉' : '➖'} 전기간 대비 {client.trendPct > 0 ? '+' : ''}{client.trendPct}%
                   </span>
                 )}
+              </div>
+
+              {/* 2026-09-14: "고객별로 어떤 엔지니어가 몇시간 지원했는지"를 프로젝트를 펼치지 않아도
+                  바로 볼 수 있게 — 프로젝트가 여러 개여도 엔지니어별로 시간을 합쳐서 보여준다. */}
+              <div style={{ padding: '0 14px 10px', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {aggregateClientByEngineer(client).map((u) => (
+                  <span key={u.userId} className="employee-chip" style={{ margin: 0, padding: '4px 10px', display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5 }}>
+                    <span style={{ fontWeight: 600 }}>{u.name}</span>
+                    <span style={{ color: '#868e96', fontVariantNumeric: 'tabular-nums' }}>{hoursLabel(u.minutes)}</span>
+                  </span>
+                ))}
               </div>
 
               {isClientExpanded && client.projects.map((row) => {

@@ -123,7 +123,10 @@ export default function AdminFeedbackPage() {
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>{CATEGORY_LABEL[r.category] ?? r.category}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>{r.user?.name ?? '-'}</td>
-                    <td style={{ maxWidth: 480 }}>{r.content}</td>
+                    {/* 2026-09-14: 내용이 길면 테이블 전체가 옆으로 계속 늘어나던 문제 — .table-scroll
+                        th/td에 걸린 전역 white-space: nowrap을 이 칸만 인라인 스타일로 덮어써서
+                        정해진 폭 안에서 줄바꿈되게 한다(인라인 스타일이 클래스보다 항상 우선). */}
+                    <td style={{ maxWidth: 480, whiteSpace: 'normal', wordBreak: 'break-word' }}>{r.content}</td>
                     <td style={{ whiteSpace: 'nowrap', fontSize: 12, color: '#868e96' }}>
                       {new Date(r.createdAt).toLocaleString('ko-KR')}
                     </td>
