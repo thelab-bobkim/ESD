@@ -175,6 +175,68 @@ reportsRouter.get('/effort-summary', async (req, res) => {
   return res.json({ success: true, data: { from, to, clients } });
 });
 
+const KST_WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
+function kstWeekday(d: Date): string {
+  return KST_WEEKDAYS[new Date(d.getTime() + 9 * 60 * 60 * 1000).getUTCDay()];
+}
+function kstHHmm(d: Date): string {
+  const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  return `${String(kst.getUTCHours()).padStart(2, '0')}:${String(kst.getUTCMinutes()).padStart(2, '0')}`;
+}
+
+const timelineSchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+  scope: z.enum(['client', 'engineer']),
+  value: z.string().min(1),
+});
+
+/**
+ * 2026-09-14: "고객사별 공수관리가 관리자 입장에서 활용 가능한 데이터로 안 보인다"는 의견 반영 —
+ * 고객사 또는 엔지니어 한 명을 골랐을 때, 그 대상이 이 기간에 실제로 수행한 개별 공수기록을
+ * 날짜/시간 순서대로 그대로 내려준다(effort-summary는 프로젝트·엔지니어 단위로 이미 합산된
+ * 값만 주므로, 시계열 화면에는 이 원본 단위 데이터가 필요하다). effort-summary와 동일하게
+ * 완료된(작업완료 시간이 입력된) 기록만, 고객사명이 있는 기록만 대상으로 한다.
+ */
+reportsRouter.get('/effort-timeline', async (req, res) => {
+  const parsed = timelineSchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'from, to, scope, value가 필요합니다.' } });
+  }
+  const { from, to, scope, value } = parsed.data;
+  const workType = typeof req.query.workType === 'string' && req.query.workType !== 'ALL' ? req.query.workType : undefined;
+
+  const logs = await prisma.effortLog.findMany({
+    where: {
+      workDate: { gte: new Date(from), lte: new Date(to) },
+      minutes: { not: null },
+      ...(workType ? { workType } : {}),
+      ...(scope === 'client' ? { clientName: value } : { userId: value }),
+    },
+    include: { user: { select: { name: true } } },
+    orderBy: [{ workDate: 'asc' }, { startTime: 'asc' }],
+  });
+
+  const entries = logs
+    .filter((l) => l.clientName && l.clientName.trim())
+    .map((l) => ({
+      id: l.id,
+      workDate: l.workDate.toISOString().slice(0, 10),
+      day: kstWeekday(l.workDate),
+      clientName: l.clientName,
+      projectName: l.projectName,
+      workType: l.workType,
+      startLabel: kstHHmm(l.startTime),
+      endLabel: l.endTime ? kstHHmm(l.endTime) : null,
+      minutes: l.minutes ?? 0,
+      description: l.description ?? '',
+      userId: l.userId,
+      userName: l.user.name,
+    }));
+
+  return res.json({ success: true, data: { from, to, scope, value, entries } });
+});
+
 reportsRouter.get('/effort-export', async (req, res) => {
   const logs = await prisma.effortLog.findMany({
     include: { user: { select: { name: true, employeeNo: true } } },

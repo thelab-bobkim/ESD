@@ -12,7 +12,18 @@ import AdminHeader from '@/components/AdminHeader';
 type EffortPeriod = 'week' | 'month' | 'quarter' | 'halfyear' | 'year';
 const EFFORT_PERIOD_LABELS: Record<EffortPeriod, string> = { week: '주별', month: '월별', quarter: '분기별', halfyear: '반기별', year: '년간' };
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
-const WORK_TYPE_ICONS: Record<string, string> = { 정기점검: '🔧', 신규설치: '🆕', 장애대응: '🚨', 미팅: '🤝', 기타: '📌' };
+// 2026-09-14(2차): "고객사별 공수관리가 관리자 입장에서 활용 가능한 데이터로 안 보인다"는 의견을
+// 받아, 프로젝트·엔지니어 단위로 이미 합산된 목록을 쭉 펼치는 대신 관점(고객사별/엔지니어별)과
+// 대상을 드롭다운으로 고르고, 그 대상이 실제로 한 일을 시계열로 보여주는 방식으로 화면을 바꿨다
+// (시안 두 가지 중 로그형 타임라인을 선택받음). 작업유형별 아이콘/색상을 여기서 한 번에 관리한다.
+const TYPE_META: Record<string, { icon: string; color: string; soft: string }> = {
+  정기점검: { icon: '🔧', color: '#0c8599', soft: '#e6fcf5' },
+  신규설치: { icon: '🆕', color: '#3d5afe', soft: '#eef1ff' },
+  장애대응: { icon: '🚨', color: '#e03131', soft: '#fff0f0' },
+  미팅: { icon: '🤝', color: '#6741d9', soft: '#f2effc' },
+  기타: { icon: '📌', color: '#626a7d', soft: '#f1f3f5' },
+};
+const WORK_TYPE_ICONS: Record<string, string> = Object.fromEntries(Object.entries(TYPE_META).map(([k, v]) => [k, v.icon]));
 
 interface EffortByUser { userId: string; name: string; minutes: number; }
 interface EffortProjectRow { projectName: string; clientName: string; totalMinutes: number; workTypes: string[]; byUser: EffortByUser[]; }
@@ -23,6 +34,12 @@ interface EffortClientRow {
 }
 interface EffortSummary { from: string; to: string; clients: EffortClientRow[]; }
 
+interface TimelineEntry {
+  id: string; workDate: string; day: string; clientName: string; projectName: string; workType: string;
+  startLabel: string; endLabel: string | null; minutes: number; description: string; userId: string; userName: string;
+}
+interface TimelineResponse { from: string; to: string; scope: 'client' | 'engineer'; value: string; entries: TimelineEntry[]; }
+
 function fmt(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -32,12 +49,12 @@ function hoursLabel(minutes: number): string {
   return `${h}시간 ${m}분`;
 }
 
-// 2026-09-14: "고객사별 공수관리가 관리자 입장에서 활용 가능한 데이터로 안 보인다"는 의견 반영.
 // 서버는 client → project → byUser(엔지니어별 분(分)) 구조로 이미 내려주고 있어서, 아래 두
-// 집계는 화면(프론트)에서 같은 데이터를 다시 묶어 보여주는 것 — 백엔드 변경 없이 바로 반영 가능.
+// 집계는 화면(프론트)에서 같은 데이터를 다시 묶어 대상(드롭다운) 목록과 시간을 만드는 것 —
+// 백엔드 변경 없이 바로 반영 가능.
 
 /** 한 고객사 안에서, 프로젝트가 여러 개여도 같은 엔지니어면 시간을 합쳐서 "이 고객사에 엔지니어가
- * 총 몇 시간 투입됐는지" 보여준다(기존엔 프로젝트를 펼쳐야만, 그것도 프로젝트별로 나뉘어 보였음). */
+ * 총 몇 시간 투입됐는지" 보여준다. */
 function aggregateClientByEngineer(client: EffortClientRow): EffortByUser[] {
   const map = new Map<string, EffortByUser>();
   for (const project of client.projects) {
@@ -50,29 +67,42 @@ function aggregateClientByEngineer(client: EffortClientRow): EffortByUser[] {
   return [...map.values()].sort((a, b) => b.minutes - a.minutes);
 }
 
-interface EngineerClientShare { clientName: string; minutes: number; }
-interface EngineerAggRow { userId: string; name: string; totalMinutes: number; clientCount: number; byClient: EngineerClientShare[]; }
+interface EngineerAggRow { userId: string; name: string; totalMinutes: number; }
 
-/** "엔지니어가 이 기간에 어떤 고객사를 몇 시간씩 지원했는지" — client 기준 데이터를 엔지니어
- * 기준으로 뒤집어서 다시 묶는다. 총 투입시간이 많은 엔지니어부터 보여준다. */
+/** "엔지니어별 대상 목록" — client 기준 데이터를 엔지니어 기준으로 뒤집어서 총 투입시간을 구한다.
+ * 총 투입시간이 많은 엔지니어부터 드롭다운에 나온다. */
 function pivotByEngineer(clients: EffortClientRow[]): EngineerAggRow[] {
   const map = new Map<string, EngineerAggRow>();
   for (const client of clients) {
     for (const u of aggregateClientByEngineer(client)) {
-      let row = map.get(u.userId);
-      if (!row) {
-        row = { userId: u.userId, name: u.name, totalMinutes: 0, clientCount: 0, byClient: [] };
-        map.set(u.userId, row);
-      }
+      const row = map.get(u.userId) ?? { userId: u.userId, name: u.name, totalMinutes: 0 };
       row.totalMinutes += u.minutes;
-      row.clientCount += 1;
-      row.byClient.push({ clientName: client.clientName, minutes: u.minutes });
+      map.set(u.userId, row);
     }
   }
-  for (const row of map.values()) {
-    row.byClient.sort((a, b) => b.minutes - a.minutes);
-  }
   return [...map.values()].sort((a, b) => b.totalMinutes - a.totalMinutes);
+}
+
+/** 대상(고객사 또는 엔지니어)이 이 기간에 실제로 수행한 개별 공수기록을, 날짜별로 묶는다. */
+function groupTimeline(entries: TimelineEntry[]) {
+  const byDate = new Map<string, TimelineEntry[]>();
+  for (const e of entries) {
+    const arr = byDate.get(e.workDate);
+    if (arr) arr.push(e);
+    else byDate.set(e.workDate, [e]);
+  }
+  return [...byDate.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([workDate, es]) => {
+      const total = es.reduce((s, e) => s + e.minutes, 0);
+      const [, mo, d] = workDate.split('-');
+      return {
+        workDate,
+        dateLabel: `${Number(mo)}월 ${Number(d)}일 (${es[0].day})`,
+        totalLabel: hoursLabel(total),
+        entries: es.map((e) => ({ ...e, durLabel: hoursLabel(e.minutes) })),
+      };
+    });
 }
 
 // reports.tsx의 startOfWeek와 동일한 규칙(월요일 시작).
@@ -132,11 +162,13 @@ export default function AdminEffortPage() {
   const [anchor, setAnchor] = useState(new Date());
   const [effort, setEffort] = useState<EffortSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
-  const [expandedEngineers, setExpandedEngineers] = useState<Record<string, boolean>>({});
-  // 2026-09-14: "고객별 어떤 엔지니어가 몇시간 지원했는지"는 기존 고객사별 보기(엔지니어별 요약을
-  // 추가), "엔지니어가 한주/한달에 어떤 고객사를 몇시간 지원했는지"는 이 엔지니어별 보기로 각각 대응.
-  const [viewMode, setViewMode] = useState<'client' | 'engineer'>('client');
+  // 2026-09-14(2차): 관점(고객사별/엔지니어별)과 대상을 드롭다운으로 고르면, 그 대상 하나의
+  // 시계열 타임라인만 아래에 자세히 보여준다 — 예전처럼 전체 목록을 쭉 펼쳐두지 않는다.
+  const [perspective, setPerspective] = useState<'client' | 'engineer'>('client');
+  const [selectedClientName, setSelectedClientName] = useState('');
+  const [selectedEngineerId, setSelectedEngineerId] = useState('');
+  const [timeline, setTimeline] = useState<TimelineEntry[] | null>(null);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
   const [workTypeFilter, setWorkTypeFilter] = useState('ALL');
   // 년/월/일을 직접 선택하는 기간 — 지정하면 위 탭(월/분기/반기/년)보다 우선한다.
   const [customFrom, setCustomFrom] = useState('');
@@ -159,27 +191,53 @@ export default function AdminEffortPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveFrom, effectiveTo, workTypeFilter]);
 
-  function toggleProject(key: string) {
-    setExpandedProjects((prev) => ({ ...prev, [key]: !prev[key] }));
-  }
-
-  function toggleEngineer(userId: string) {
-    setExpandedEngineers((prev) => ({ ...prev, [userId]: !prev[userId] }));
-  }
-
   function selectTab(p: EffortPeriod) {
     setCustomFrom('');
     setCustomTo('');
     setPeriod(p);
   }
 
-  const effortTotalMinutes = useMemo(() => (effort ? effort.clients.reduce((s, c) => s + c.totalMinutes, 0) : 0), [effort]);
-  const engineerRows = useMemo(() => (effort ? pivotByEngineer(effort.clients) : []), [effort]);
+  const clientTargets = useMemo(
+    () => (effort ? effort.clients.map((c) => ({ key: c.clientName, label: c.clientName, totalMinutes: c.totalMinutes })) : []),
+    [effort]
+  );
+  const engineerTargets = useMemo(
+    () => (effort ? pivotByEngineer(effort.clients).map((e) => ({ key: e.userId, label: e.name, totalMinutes: e.totalMinutes })) : []),
+    [effort]
+  );
+  const currentTargets = perspective === 'client' ? clientTargets : engineerTargets;
+  // 선택된 대상이 이번 기간엔 없으면(예: 기간을 바꿔서 그 고객사/엔지니어의 기록이 없어짐) 목록의
+  // 첫 항목으로 자연스럽게 넘어간다 — 빈 드롭다운이 뜨는 걸 막는다.
+  const selectedKey = perspective === 'client' ? selectedClientName : selectedEngineerId;
+  const resolvedKey = currentTargets.some((t) => t.key === selectedKey) ? selectedKey : (currentTargets[0]?.key ?? '');
+  const currentTarget = currentTargets.find((t) => t.key === resolvedKey) ?? null;
+
+  useEffect(() => {
+    if (!resolvedKey) {
+      setTimeline(null);
+      return;
+    }
+    setTimelineError(null);
+    apiFetch<TimelineResponse>(
+      `/reports/effort-timeline?from=${effectiveFrom}&to=${effectiveTo}&workType=${workTypeFilter}&scope=${perspective}&value=${encodeURIComponent(resolvedKey)}`
+    )
+      .then((res) => setTimeline(res.entries))
+      .catch((err) => setTimelineError(err instanceof Error ? err.message : '타임라인을 불러오지 못했습니다.'));
+  }, [perspective, resolvedKey, effectiveFrom, effectiveTo, workTypeFilter]);
+
+  const timelineGroups = useMemo(() => (timeline ? groupTimeline(timeline) : []), [timeline]);
+  const timelineTotalMinutes = useMemo(() => (timeline ? timeline.reduce((s, e) => s + e.minutes, 0) : 0), [timeline]);
+  const counterpartCount = useMemo(
+    () => (timeline ? new Set(timeline.map((e) => (perspective === 'client' ? e.userId : e.clientName))).size : 0),
+    [timeline, perspective]
+  );
+  const counterpartWord = perspective === 'client' ? '참여 엔지니어' : '지원 고객사';
+  const counterpartUnit = perspective === 'client' ? '명' : '개';
 
   return (
     <div className="admin-shell">
       <AdminHeader title="고객사별 공수관리" />
-      <p className="admin-page-subtitle">고객사별 투입 공수를 월별·분기별·반기별·년간 단위로 확인하고 내려받으세요.</p>
+      <p className="admin-page-subtitle">고객사·엔지니어를 골라 이 기간에 어떤 작업을 했는지 시계열로 확인하고 내려받으세요.</p>
       {error && <div className="error">{error}</div>}
 
       <div className="toolbar">
@@ -208,165 +266,125 @@ export default function AdminEffortPage() {
         )}
       </div>
 
-      {/* 고객사별 공수 현황 — 관리 판단 기준(총 투입시간/편중도/증감/주요유형) 중심으로 구성 */}
-      <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-          <h2>🛠️ 공수(工數) 현황 — {rangeLabel}</h2>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <select className="field-select" style={{ margin: 0, width: 'auto' }} value={workTypeFilter} onChange={(e) => setWorkTypeFilter(e.target.value)}>
-              <option value="ALL">전체 작업유형</option>
-              {WORK_TYPE_OPTIONS.map((t) => (
-                <option key={t} value={t}>{WORK_TYPE_ICONS[t]} {t}</option>
-              ))}
-            </select>
-            <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/effort-export', 'effort-export.csv')}>
-              CSV 내려받기
-            </button>
-          </div>
-        </div>
-
-        {/* 2026-09-14: "고객별 어떤 엔지니어가 몇시간 지원했는지" ↔ "엔지니어가 어떤 고객사를
-            몇시간 지원했는지" — 같은 데이터를 보는 관점이 다를 뿐이라 탭으로 전환할 수 있게 했다. */}
-        <div className="toolbar" style={{ marginTop: 4, marginBottom: 4 }}>
-          <span style={{ fontSize: 13, color: '#495057' }}>보기:</span>
-          <button className={viewMode === 'client' ? '' : 'secondary'} style={{ width: 'auto' }} onClick={() => setViewMode('client')}>
-            🏢 고객사별
-          </button>
-          <button className={viewMode === 'engineer' ? '' : 'secondary'} style={{ width: 'auto' }} onClick={() => setViewMode('engineer')}>
-            🧑‍💻 엔지니어별
-          </button>
-        </div>
-        <p style={{ fontSize: 12, color: '#868e96', marginTop: 4, marginBottom: 12 }}>
-          {viewMode === 'client'
-            ? '고객사별 총 투입시간과 엔지니어별 분담 현황입니다. 직전 동일기간 대비 증감률, 엔지니어 편중도(한 명이 몇 %를 담당하는지)도 함께 보여드려서 재계약·리스크 판단에 참고하실 수 있습니다.'
-            : '엔지니어별로 이 기간에 어떤 고객사를 몇 시간씩 지원했는지 보여드립니다. 투입시간이 많은 엔지니어부터 정렬됩니다.'}
-        </p>
-
-        {effort && effort.clients.length > 0 && (
-          <div className="macro-tile" style={{ borderLeftColor: '#2f6feb', marginBottom: 12, display: 'inline-flex' }}>
-            <div className="macro-tile-icon">⏱️</div>
-            <div>
-              <div className="macro-tile-label">선택된 조건 총 공수</div>
-              <div className="macro-tile-value" style={{ color: '#2f6feb' }}>{hoursLabel(effortTotalMinutes)}</div>
-            </div>
-          </div>
-        )}
-
-        {!effort && <div className="board-empty">불러오는 중...</div>}
-        {effort && effort.clients.length === 0 && <div className="board-empty">이 조건에 등록된(완료된) 공수기록이 없습니다.</div>}
-
-        {effort && effort.clients.length > 0 && viewMode === 'engineer' && engineerRows.map((eng) => {
-          const isEngExpanded = expandedEngineers[eng.userId] ?? false;
-          return (
-            <div key={eng.userId} className="board-column" style={{ marginBottom: 10, borderTopColor: '#2f6feb' }}>
-              <div className="board-column-header" style={{ cursor: 'pointer' }} onClick={() => toggleEngineer(eng.userId)}>
-                <span>
-                  <span style={{ display: 'inline-block', width: 12, transform: isEngExpanded ? 'rotate(90deg)' : 'none' }}>▸</span>
-                  {' '}🧑‍💻 {eng.name}
-                  <span style={{ color: '#868e96', fontWeight: 400 }}> · 고객사 {eng.clientCount}개</span>
-                </span>
-                <span className="count">{hoursLabel(eng.totalMinutes)}</span>
-              </div>
-              {isEngExpanded && (
-                <div style={{ padding: '4px 14px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {eng.byClient.map((c) => (
-                    <div key={c.clientName} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '4px 0', borderBottom: '1px solid #f1f3f5' }}>
-                      <span>🏢 {c.clientName}</span>
-                      <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{hoursLabel(c.minutes)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {effort && viewMode === 'client' && effort.clients.map((client) => {
-          const isClientExpanded = expandedProjects[`client::${client.clientName}`] ?? false;
-          return (
-            <div key={client.clientName} className="board-column" style={{ marginBottom: 10, borderTopColor: '#2f6feb' }}>
-              <div className="board-column-header" style={{ cursor: 'pointer' }} onClick={() => toggleProject(`client::${client.clientName}`)}>
-                <span>
-                  <span style={{ display: 'inline-block', width: 12, transform: isClientExpanded ? 'rotate(90deg)' : 'none' }}>▸</span>
-                  {' '}🏢 {client.clientName}
-                  <span style={{ color: '#868e96', fontWeight: 400 }}> · 프로젝트 {client.projectCount}개 · 엔지니어 {client.engineerCount}명</span>
-                </span>
-                <span className="count">{hoursLabel(client.totalMinutes)}</span>
-              </div>
-
-              {/* 관리 판단용 배지들 */}
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '8px 14px' }}>
-                {client.topWorkType && (
-                  <span style={{ fontSize: 12, background: '#f1f3f5', borderRadius: 999, padding: '3px 10px' }}>
-                    {WORK_TYPE_ICONS[client.topWorkType] ?? '📌'} 주요유형: {client.topWorkType}
-                  </span>
-                )}
-                {client.topEngineerName && (
-                  <span
-                    style={{
-                      fontSize: 12, borderRadius: 999, padding: '3px 10px',
-                      background: client.concentrationPct >= 70 ? '#fff0e6' : '#f1f3f5',
-                      color: client.concentrationPct >= 70 ? '#e8590c' : '#495057',
-                    }}
-                  >
-                    {client.concentrationPct >= 70 ? '⚠ ' : ''}담당 편중: {client.topEngineerName} {client.concentrationPct}%
-                  </span>
-                )}
-                {client.trendPct !== null && (
-                  <span
-                    style={{
-                      fontSize: 12, borderRadius: 999, padding: '3px 10px',
-                      background: client.trendPct > 0 ? '#eaf1ff' : client.trendPct < 0 ? '#f1f3f5' : '#f1f3f5',
-                      color: client.trendPct > 0 ? '#2f6feb' : client.trendPct < 0 ? '#868e96' : '#495057',
-                    }}
-                  >
-                    {client.trendPct > 0 ? '📈' : client.trendPct < 0 ? '📉' : '➖'} 전기간 대비 {client.trendPct > 0 ? '+' : ''}{client.trendPct}%
-                  </span>
-                )}
-              </div>
-
-              {/* 2026-09-14: "고객별로 어떤 엔지니어가 몇시간 지원했는지"를 프로젝트를 펼치지 않아도
-                  바로 볼 수 있게 — 프로젝트가 여러 개여도 엔지니어별로 시간을 합쳐서 보여준다. */}
-              <div style={{ padding: '0 14px 10px', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {aggregateClientByEngineer(client).map((u) => (
-                  <span key={u.userId} className="employee-chip" style={{ margin: 0, padding: '4px 10px', display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5 }}>
-                    <span style={{ fontWeight: 600 }}>{u.name}</span>
-                    <span style={{ color: '#868e96', fontVariantNumeric: 'tabular-nums' }}>{hoursLabel(u.minutes)}</span>
-                  </span>
-                ))}
-              </div>
-
-              {isClientExpanded && client.projects.map((row) => {
-                const key = `${row.clientName}::${row.projectName}`;
-                const isProjectExpanded = expandedProjects[key] ?? false;
-                return (
-                  <div key={key} style={{ margin: '0 14px 8px', border: '1px solid #eee', borderRadius: 8 }}>
-                    <div className="board-column-header" style={{ cursor: 'pointer', padding: '8px 10px' }} onClick={() => toggleProject(key)}>
-                      <span>
-                        <span style={{ display: 'inline-block', width: 12, transform: isProjectExpanded ? 'rotate(90deg)' : 'none' }}>▸</span>
-                        {' '}{row.workTypes.map((t) => WORK_TYPE_ICONS[t] ?? '📌').join('')} {row.projectName}
-                      </span>
-                      <span className="count">{hoursLabel(row.totalMinutes)}</span>
-                    </div>
-                    {/* 2026-09-02: 이름 표시 순서를 다른 화면과 통일 — 가나다순. */}
-                    {isProjectExpanded && [...row.byUser].sort((a, b) => a.name.localeCompare(b.name, 'ko')).map((u) => (
-                      <div className="employee-chip" key={u.userId} style={{ margin: '0 10px 8px' }}>
-                        <div className="chip-row">
-                          <div className="chip-avatar" style={{ background: '#2f6feb' }}>{u.name.slice(-2)}</div>
-                          <div style={{ flex: 1 }}>
-                            <div className="name">{u.name}</div>
-                            <div className="meta">{hoursLabel(u.minutes)}</div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })}
+      {/* 관점(고객사별/엔지니어별) + 대상 드롭다운, 작업유형 필터, CSV 내려받기 */}
+      <div className="toolbar">
+        <span style={{ fontSize: 13, color: '#495057' }}>관점</span>
+        <select
+          className="field-select"
+          style={{ margin: 0, width: 'auto' }}
+          value={perspective}
+          onChange={(e) => setPerspective(e.target.value as 'client' | 'engineer')}
+        >
+          <option value="client">🏢 고객사별</option>
+          <option value="engineer">🧑‍💻 엔지니어별</option>
+        </select>
+        <span style={{ fontSize: 13, color: '#495057' }}>대상</span>
+        <select
+          className="field-select"
+          style={{ margin: 0, width: 'auto', minWidth: 220 }}
+          value={resolvedKey}
+          onChange={(e) => (perspective === 'client' ? setSelectedClientName(e.target.value) : setSelectedEngineerId(e.target.value))}
+        >
+          {currentTargets.length === 0 && <option value="">(이 기간에 등록된 기록 없음)</option>}
+          {currentTargets.map((t) => (
+            <option key={t.key} value={t.key}>{t.label} · {hoursLabel(t.totalMinutes)}</option>
+          ))}
+        </select>
+        <div className="spacer" />
+        <select className="field-select" style={{ margin: 0, width: 'auto' }} value={workTypeFilter} onChange={(e) => setWorkTypeFilter(e.target.value)}>
+          <option value="ALL">전체 작업유형</option>
+          {WORK_TYPE_OPTIONS.map((t) => (
+            <option key={t} value={t}>{WORK_TYPE_ICONS[t]} {t}</option>
+          ))}
+        </select>
+        <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/effort-export', 'effort-export.csv')}>
+          CSV 내려받기
+        </button>
       </div>
+
+      {!effort && <div className="card"><div className="board-empty">불러오는 중...</div></div>}
+      {effort && currentTargets.length === 0 && (
+        <div className="card"><div className="board-empty">이 조건에 등록된(완료된) 공수기록이 없습니다.</div></div>
+      )}
+
+      {effort && currentTarget && (
+        <>
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 20, fontWeight: 800, letterSpacing: '-0.01em' }}>
+                <span>{perspective === 'client' ? '🏢' : '🧑‍💻'}</span>
+                <span>{currentTarget.label}</span>
+              </div>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#868e96', background: '#f1f3f5', borderRadius: 999, padding: '5px 12px' }}>
+                {rangeLabel}
+              </span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 16 }}>
+              <div className="stat-card">
+                <div className="stat-label">총 투입시간</div>
+                <div className="stat-value">{hoursLabel(timelineTotalMinutes)}</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">활동 건수</div>
+                <div className="stat-value">{timeline?.length ?? 0}건</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">{counterpartWord}</div>
+                <div className="stat-value">{counterpartCount}{counterpartUnit}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <h2>🕒 상세 활동 타임라인</h2>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+              {WORK_TYPE_OPTIONS.map((t) => (
+                <span key={t} style={{ fontSize: 12, fontWeight: 600, borderRadius: 999, padding: '4px 10px', background: TYPE_META[t].soft, color: TYPE_META[t].color }}>
+                  {TYPE_META[t].icon} {t}
+                </span>
+              ))}
+            </div>
+
+            {timelineError && <div className="error">{timelineError}</div>}
+            {!timeline && !timelineError && <div className="board-empty">불러오는 중...</div>}
+            {timeline && timeline.length === 0 && <div className="board-empty">이 기간에 등록된 활동이 없습니다.</div>}
+
+            {timelineGroups.map((g) => (
+              <div key={g.workDate} style={{ marginBottom: 4 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f8f9fc', padding: '7px 12px', borderRadius: 8, marginBottom: 4 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: '#495057' }}>{g.dateLabel}</span>
+                  <span style={{ fontSize: 11.5, fontWeight: 700, color: '#868e96' }}>{g.totalLabel}</span>
+                </div>
+                {g.entries.map((e) => {
+                  const meta = TYPE_META[e.workType] ?? TYPE_META['기타'];
+                  return (
+                    <div key={e.id} style={{ display: 'flex', gap: 12, padding: '11px 12px', borderBottom: '1px solid #f1f3f5' }}>
+                      <div style={{ width: 3, borderRadius: 3, background: meta.color, flexShrink: 0 }} />
+                      <div style={{ width: 22, height: 22, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, flexShrink: 0, background: meta.soft, marginTop: 1 }}>
+                        {meta.icon}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', fontSize: 13.5 }}>
+                          <span style={{ fontWeight: 800 }}>{perspective === 'client' ? e.userName : `🏢 ${e.clientName}`}</span>
+                          <span style={{ fontSize: 12, color: '#868e96', fontVariantNumeric: 'tabular-nums' }}>
+                            {e.workType} · {e.startLabel} ~ {e.endLabel ?? '진행중'}
+                          </span>
+                          <span style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 700, borderRadius: 999, padding: '2px 8px', background: meta.soft, color: meta.color }}>
+                            {e.durLabel}
+                          </span>
+                        </div>
+                        {e.description && (
+                          <div style={{ fontSize: 12.5, color: '#868e96', lineHeight: 1.6, marginTop: 4 }}>{e.description}</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
