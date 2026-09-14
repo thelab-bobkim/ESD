@@ -75,7 +75,9 @@ reportsRouter.get('/effort-summary', async (req, res) => {
   const fetchLogs = (fromD: Date, toD: Date) =>
     prisma.effortLog.findMany({
       where: { workDate: { gte: fromD, lte: toD }, minutes: { not: null }, ...(workType ? { workType } : {}) },
-      include: { user: { select: { name: true, employeeNo: true } } },
+      // 2026-09-14: "엔지니어별" 관점 드롭다운을 실제 기술부 소속만으로 좁히려면(프론트의
+      // classifyDeptGroup) 부서명이 필요해서 department도 같이 내려준다.
+      include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
       orderBy: { workDate: 'desc' },
     });
 
@@ -101,7 +103,7 @@ reportsRouter.get('/effort-summary', async (req, res) => {
     clientName: string;
     totalMinutes: number;
     workTypes: Set<string>;
-    byUser: Map<string, { userId: string; name: string; minutes: number }>;
+    byUser: Map<string, { userId: string; name: string; department: string; minutes: number }>;
   }
   const byProject = new Map<string, ProjectGroup>();
   for (const l of logs) {
@@ -109,7 +111,7 @@ reportsRouter.get('/effort-summary', async (req, res) => {
     const group = byProject.get(key) ?? { projectName: l.projectName || '(미지정)', clientName: l.clientName || '(미지정)', totalMinutes: 0, workTypes: new Set<string>(), byUser: new Map() };
     group.totalMinutes += l.minutes ?? 0;
     group.workTypes.add(l.workType);
-    const u = group.byUser.get(l.userId) ?? { userId: l.userId, name: l.user.name, minutes: 0 };
+    const u = group.byUser.get(l.userId) ?? { userId: l.userId, name: l.user.name, department: l.user.department.name, minutes: 0 };
     u.minutes += l.minutes ?? 0;
     group.byUser.set(l.userId, u);
     byProject.set(key, group);
@@ -128,7 +130,7 @@ reportsRouter.get('/effort-summary', async (req, res) => {
     clientName: string;
     totalMinutes: number;
     projects: typeof projectRows;
-    engineerMinutes: Map<string, { userId: string; name: string; minutes: number }>;
+    engineerMinutes: Map<string, { userId: string; name: string; department: string; minutes: number }>;
     workTypeMinutes: Map<string, number>;
   }
   const byClient = new Map<string, ClientGroup>();
@@ -139,7 +141,7 @@ reportsRouter.get('/effort-summary', async (req, res) => {
     group.totalMinutes += p.totalMinutes;
     group.projects.push(p);
     for (const u of p.byUser) {
-      const cur = group.engineerMinutes.get(u.userId) ?? { userId: u.userId, name: u.name, minutes: 0 };
+      const cur = group.engineerMinutes.get(u.userId) ?? { userId: u.userId, name: u.name, department: u.department, minutes: 0 };
       cur.minutes += u.minutes;
       group.engineerMinutes.set(u.userId, cur);
     }

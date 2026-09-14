@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch, apiDownload } from '@/lib/api';
+import { classifyDeptGroup } from '@/lib/deptGroup';
 import AdminHeader from '@/components/AdminHeader';
 
 const WEEKLY_LIMIT_MINUTES = 52 * 60; // 주52시간제 기준
@@ -88,21 +89,8 @@ function startOfWeek(d: Date): Date {
   return monday;
 }
 
-// 2026-09-14: "부서별/전체목록 말고 영업부/기술부로도 보고 싶다"는 요청 — 부서명은 다우오피스
-// 조직도 명칭을 그대로 쓰기 때문에 "영업부"/"기술부"라는 코드값 자체가 없다. 그래서 이름 패턴으로
-// 판별한다: "OO사업부"/"OO사업본부"처럼 "사업"이 붙는 부서(index.tsx의 SALES_OVERRIDE 대상 부서—
-// 공공사업본부/보안사업본부/솔루션사업부/DX사업부/SI사업본부 등 — 와 동일한 기준)는 영업부, 그 외
-// 솔루션·엔지니어·기술지원·클라우드·Back-up·Cluster가 이름에 들어간 부서는 기술부로 묶는다.
-// "사업" 규칙을 먼저 적용해서 "솔루션사업부"처럼 둘 다 걸리는 경우 영업부가 우선한다.
-type DeptGroup = 'sales' | 'tech' | 'other';
-const TECH_DEPT_KEYWORDS = ['솔루션', '엔지니어', '기술지원', '클라우드', 'back-up', 'cluster'];
-function classifyDeptGroup(department: string): DeptGroup {
-  if (department.includes('사업')) return 'sales';
-  const lower = department.toLowerCase();
-  if (TECH_DEPT_KEYWORDS.some((kw) => lower.includes(kw))) return 'tech';
-  return 'other';
-}
-
+// 2026-09-14: "부서별/전체목록 말고 영업부/기술부로도 보고 싶다"는 요청 — 분류 기준(classifyDeptGroup)은
+// 고객사별 공수관리 화면의 "엔지니어별" 대상 필터와 같은 기준을 쓴다(src/lib/deptGroup.ts 참고).
 type AttendanceViewMode = 'dept' | 'all' | 'sales' | 'tech';
 const ATTENDANCE_VIEW_MODES: { key: AttendanceViewMode; label: string; icon: string }[] = [
   { key: 'dept', label: '부서별 보기', icon: '👥' },

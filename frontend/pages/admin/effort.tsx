@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch, apiDownload } from '@/lib/api';
 import { sortByLabelKo } from '@/lib/sortKo';
+import { classifyDeptGroup } from '@/lib/deptGroup';
 import AdminHeader from '@/components/AdminHeader';
 
 // 2026-09-01: 기존 "출퇴근·근로시간·공수" 페이지에서 고객사별 공수 부분만 분리해서 만든 페이지.
@@ -26,7 +27,9 @@ const TYPE_META: Record<string, { icon: string; color: string; soft: string }> =
 };
 const WORK_TYPE_ICONS: Record<string, string> = Object.fromEntries(Object.entries(TYPE_META).map(([k, v]) => [k, v.icon]));
 
-interface EffortByUser { userId: string; name: string; minutes: number; }
+// 2026-09-14: "엔지니어별" 관점은 실제 기술부 소속만 대상으로 한다는 요청 반영 — 어떤 부서
+// 소속인지 판별하려면 department가 필요해서 백엔드가 이제 함께 내려준다(reports.routes.ts 참고).
+interface EffortByUser { userId: string; name: string; department: string; minutes: number; }
 interface EffortProjectRow { projectName: string; clientName: string; totalMinutes: number; workTypes: string[]; byUser: EffortByUser[]; }
 interface EffortClientRow {
   clientName: string; totalMinutes: number; projectCount: number; engineerCount: number;
@@ -68,15 +71,15 @@ function aggregateClientByEngineer(client: EffortClientRow): EffortByUser[] {
   return [...map.values()].sort((a, b) => b.minutes - a.minutes);
 }
 
-interface EngineerAggRow { userId: string; name: string; totalMinutes: number; }
+interface EngineerAggRow { userId: string; name: string; department: string; totalMinutes: number; }
 
 /** "엔지니어별 대상 목록" — client 기준 데이터를 엔지니어 기준으로 뒤집어서 총 투입시간을 구한다.
- * 드롭다운에 보여줄 최종 순서(이름 가나다순)는 clientTargets/engineerTargets에서 정한다. */
+ * 드롭다운에 보여줄 최종 순서(이름 가나다순)와 기술부 필터는 engineerTargets에서 처리한다. */
 function pivotByEngineer(clients: EffortClientRow[]): EngineerAggRow[] {
   const map = new Map<string, EngineerAggRow>();
   for (const client of clients) {
     for (const u of aggregateClientByEngineer(client)) {
-      const row = map.get(u.userId) ?? { userId: u.userId, name: u.name, totalMinutes: 0 };
+      const row = map.get(u.userId) ?? { userId: u.userId, name: u.name, department: u.department, totalMinutes: 0 };
       row.totalMinutes += u.minutes;
       map.set(u.userId, row);
     }
@@ -210,11 +213,16 @@ export default function AdminEffortPage() {
         : [],
     [effort]
   );
+  // 2026-09-14: "엔지니어별" 관점은 출퇴근·근로시간 화면에서 정의한 영업부/기술부 분류 기준과
+  // 동일하게(classifyDeptGroup), 실제 기술부 소속만 "엔지니어"로 취급한다 — 고객사 미팅 등으로
+  // 공수기록이 남은 영업/관리 직원은 이 드롭다운(과 엔지니어별 관점 전체)에서 제외한다.
   const engineerTargets = useMemo(
     () =>
       effort
         ? sortByLabelKo(
-            pivotByEngineer(effort.clients).map((e) => ({ key: e.userId, label: e.name, totalMinutes: e.totalMinutes })),
+            pivotByEngineer(effort.clients)
+              .filter((e) => classifyDeptGroup(e.department) === 'tech')
+              .map((e) => ({ key: e.userId, label: e.name, totalMinutes: e.totalMinutes })),
             (t) => t.label
           )
         : [],
