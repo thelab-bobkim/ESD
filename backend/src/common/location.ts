@@ -14,8 +14,9 @@ function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number)
 }
 
 // 이 거리(미터) 이내면 "해당 고객사 위치와 일치"로 판정한다. 도보로 오차 범위를 감안한 값
-// (기존 300m는 너무 빡빡하다는 현장 피드백을 반영해 500m로 완화).
-const LOCATION_MATCH_RADIUS_METERS = 500;
+// (기존 300m는 너무 빡빡하다는 현장 피드백을 반영해 500m로 완화했으나, 500m 반경에서도
+// 불일치로 뜨는 사례가 있어 2026-09-14 본사와 동일하게 1000m로 재조정).
+const LOCATION_MATCH_RADIUS_METERS = 1000;
 
 // 본사(HQ) 전용 반경 — 실사용 중 신한이노플렉스 사무실(고층 건물)에서 GPS가 최대 835m까지
 // 빗나가는 사례가 실측되어(2026-09), 고객사 위치대조(스푸핑 방지 목적이 더 큰)와 분리해서

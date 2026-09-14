@@ -56,6 +56,10 @@ const SIMPLE_CLIENT_STATUSES = new Set(['RESIDENT_ONSITE']);
 const SITE_DETAIL_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
 // 백엔드 LOCATION_CHECK_STATUSES와 동일 — 이 상태들만 등록 순간 좌표를 등록된 고객사와 대조한다.
 const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
+// 물리적으로 다른 장소인 근무형태들 — 백엔드 attendance-helpers.ts의 LOCATION_TIED_STATUSES와
+// 동일한 기준(REMOTE는 이동이 필요 없는 근무형태라 제외). 이 상태들 사이를 "이동중" 없이 곧장
+// 넘나들면(예: 본사근무에서 바로 고객사작업으로) 잘못 누른 게 아닌지 한 번 되물어본다(2026-09-14).
+const LOCATION_TIED_STATUSES_FRONT = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_WORK', 'CLIENT_MEETING']);
 // 2026-09-01: 직원들이 등록을 귀찮아해서(항목이 너무 많음) 본사근무/고객사미팅/고객사작업 세 가지는
 // 입력폼을 간소화했다 — 프로젝트명/목적·사유/진행률·차수 같은 부가 항목을 없애고, 실제로 꼭 필요한
 // 항목(고객사·관련프로젝트, 수행업무)만 채우면 바로 등록되게 했다. 야간작업/재택은 기존 그대로 유지.
@@ -203,6 +207,10 @@ export default function EmployeeHome() {
   // 라는 가벼운 확인 질문을 한 번 거치게 한다 — 세부내용을 입력하는 폼이 아니라 예/아니오만 누르면
   // 되는 팝업이라 기존의 "즉시등록 후 나중에 세부내용 입력" 흐름 자체는 그대로 유지된다.
   const [pendingQuickConfirm, setPendingQuickConfirm] = useState<{ code: string; prefilledClientName?: string } | null>(null);
+  // 2026-09-14: "본사근무>이동중>고객사작업"처럼 보통 이동중을 거쳐서 다른 근무장소로 넘어가는
+  // 흔한 흐름과 다르게, 이동중 없이 근무장소 상태에서 바로 다른 근무장소 상태로 건너뛰면 혹시
+  // 잘못 누른 게 아닌지 한 번 되물어본다(요청사항 — 정해진 시나리오를 벗어나면 재확인).
+  const [pendingSequenceConfirm, setPendingSequenceConfirm] = useState<{ code: string; prefilledClientName?: string; fromLabel: string; toLabel: string } | null>(null);
   const [lateClockOutSuggestion, setLateClockOutSuggestion] = useState<{ overMinutes: number; suggestedStart: string; suggestedEnd: string } | null>(null);
   // 2026-09-06: 정규 근무시간(정책값, 기본 18시)이 지났는데 아직 퇴근 전이면 "퇴근하고 야간작업으로
   // 이어가기"를 안내하는 배너 — 저녁 6시부터 5분마다 오는 퇴근 푸시알림을 계속 미루게 되는 문제를
@@ -311,6 +319,9 @@ export default function EmployeeHome() {
   const [siteType, setSiteType] = useState<'ONSITE' | 'REMOTE'>('ONSITE');
   const [personnel, setPersonnel] = useState('');
   const [progressStage, setProgressStage] = useState('');
+  // 2026-09-14: 고객사미팅/고객사작업 폼 입력항목이 너무 많다는 의견 — 필수가 아닌 항목
+  // (프로젝트명/완료시간/작업인원)은 기본으로 접어두고, 필요할 때만 펼쳐서 입력하게 한다.
+  const [showMoreFields, setShowMoreFields] = useState(false);
   // 출장 전용 필드 (목적지/기간/목적)
   const [tripDestination, setTripDestination] = useState('');
   const [tripStart, setTripStart] = useState('');
@@ -655,6 +666,7 @@ export default function EmployeeHome() {
     setSiteType('ONSITE');
     setPersonnel('');
     setProgressStage('');
+    setShowMoreFields(false);
     setTripDestination('');
     setTripStart(nowDateTimeLocal());
     setTripEnd('');
@@ -680,8 +692,24 @@ export default function EmployeeHome() {
     setLateClockOutSuggestion(null);
   }
 
-  async function changeStatus(code: string, prefilledClientName?: string, skipConfirm = false) {
+  async function changeStatus(code: string, prefilledClientName?: string, skipConfirm = false, skipSequenceCheck = false) {
     const alreadyInThisStatus = currentStatus?.status === code;
+
+    // 2026-09-14: 본사근무>이동중>고객사작업/미팅처럼 흔한 흐름과 다르게, "이동중"을 거치지 않고
+    // 근무장소 상태에서 곧장 다른 근무장소 상태로 건너뛰면 잘못 누른 건 아닌지 한 번 되물어본다.
+    if (
+      !skipSequenceCheck && !alreadyInThisStatus
+      && currentStatus && LOCATION_TIED_STATUSES_FRONT.has(currentStatus.status)
+      && LOCATION_TIED_STATUSES_FRONT.has(code)
+    ) {
+      setPendingSequenceConfirm({
+        code,
+        prefilledClientName,
+        fromLabel: STATUS_META[currentStatus.status]?.label ?? currentStatus.status,
+        toLabel: STATUS_META[code]?.label ?? code,
+      });
+      return;
+    }
 
     // 즉시등록 상태(QUICK_REGISTER_STATUSES)를 처음 누르는 경우, 실수로 눌렸을 가능성을 막기 위해
     // 먼저 가벼운 확인 질문을 띄우고 여기서 멈춘다 — 사용자가 "예"를 누르면 그때 skipConfirm=true로
@@ -810,6 +838,19 @@ export default function EmployeeHome() {
     const { code, prefilledClientName } = pendingQuickConfirm;
     setPendingQuickConfirm(null);
     changeStatus(code, prefilledClientName, true);
+  }
+
+  /** 흐름 재확인 팝업에서 "네, 맞아요"를 눌렀을 때 — 이동중 없이 건너뛴 게 맞다고 확인했으니 그대로 진행한다. */
+  function confirmPendingSequence() {
+    if (!pendingSequenceConfirm) return;
+    const { code, prefilledClientName } = pendingSequenceConfirm;
+    setPendingSequenceConfirm(null);
+    changeStatus(code, prefilledClientName, false, true);
+  }
+
+  /** 흐름 재확인 팝업에서 "아니요, 다시 볼게요"를 눌렀을 때 — 아무것도 등록하지 않고 닫는다. */
+  function cancelPendingSequence() {
+    setPendingSequenceConfirm(null);
   }
 
   /** 즉시등록 확인 팝업에서 "아니요"를 누르거나 잘못 눌렀을 때 — 아무것도 등록하지 않고 닫는다. */
@@ -1164,14 +1205,33 @@ export default function EmployeeHome() {
         </div>
       )}
 
+      {pendingSequenceConfirm && (
+        // 2026-09-14: 본사근무/고객사상주/고객사작업/고객사미팅처럼 물리적으로 다른 장소인 상태
+        // 사이를 "이동중" 없이 곧장 건너뛰면, 실수로 잘못 누른 건 아닌지 한 번 되물어본다.
+        <div className="quick-confirm-backdrop" onClick={cancelPendingSequence}>
+          <div className="card notice-tint-blue quick-confirm-sheet" onClick={(e) => e.stopPropagation()}>
+            🚦 &apos;{pendingSequenceConfirm.fromLabel}&apos;에서 &apos;이동중&apos; 없이 바로 &apos;{pendingSequenceConfirm.toLabel}&apos;(으)로 등록하시려고 해요. 실제로 이동하신 게 맞나요?
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <button style={{ width: 'auto', margin: 0 }} onClick={confirmPendingSequence}>
+                네, 맞아요
+              </button>
+              <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={cancelPendingSequence}>
+                아니요, 다시 볼게요
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {arrivedClient && (
         <div className="card col-full notice-tint-blue">
           🚗 <strong>{arrivedClient}</strong>에 도착하신 것 같아요! 어떤 걸로 등록할까요?
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button style={{ width: 'auto', margin: 0 }} onClick={() => { const c = arrivedClient; setArrivedClient(null); changeStatus('CLIENT_WORK', c); }}>
+            {/* GPS로 실제 이동이 이미 확인된 도착감지 흐름이라 이동중 재확인 팝업은 건너뛴다. */}
+            <button style={{ width: 'auto', margin: 0 }} onClick={() => { const c = arrivedClient; setArrivedClient(null); changeStatus('CLIENT_WORK', c, false, true); }}>
               🛠️ 고객사작업
             </button>
-            <button style={{ width: 'auto', margin: 0 }} onClick={() => { const c = arrivedClient; setArrivedClient(null); changeStatus('CLIENT_MEETING', c); }}>
+            <button style={{ width: 'auto', margin: 0 }} onClick={() => { const c = arrivedClient; setArrivedClient(null); changeStatus('CLIENT_MEETING', c, false, true); }}>
               🤝 고객사미팅
             </button>
             <button
@@ -1249,7 +1309,8 @@ export default function EmployeeHome() {
               style={{ width: 'auto', margin: 0 }}
               onClick={() => {
                 setShowHqReturnPrompt(false);
-                changeStatus('HQ_WORKING', undefined, true);
+                // GPS로 실제 이동이 이미 확인된 도착감지 흐름이라 이동중 재확인 팝업은 건너뛴다.
+                changeStatus('HQ_WORKING', undefined, true, true);
               }}
             >
               네, 본사근무로 바꿀게요
@@ -1426,17 +1487,12 @@ export default function EmployeeHome() {
 
           <div className="card">
             <h2>지금 상태 콕! 눌러주세요. 근무기록은 여러분들에게 더 큰 혜택을 드릴 수 있어요.</h2>
-            {clockedOut && !isAdminAccount && (
+            {clockedOut && (
               <div className="board-empty" style={{ marginBottom: 8, color: '#f08c00', fontWeight: 600 }}>
                 🔒 퇴근 처리되어 상태를 더 이상 바꿀 수 없습니다 (야간작업은 계속 등록 가능해요). 내일 다시 만나요!
               </div>
             )}
-            {clockedOut && isAdminAccount && (
-              <div className="board-empty" style={{ marginBottom: 8, color: '#868e96' }}>
-                🔓 관리자 계정이라 퇴근 후에도 계속 상태를 테스트하실 수 있어요.
-              </div>
-            )}
-            {isWeekendToday && !isAdminAccount && (
+            {isWeekendToday && (
               <div className="board-empty" style={{ marginBottom: 8, color: '#1c7ed6' }}>
                 🗓️ 주말이에요 — 오늘은 &quot;주말작업&quot;만 등록할 수 있어요. 평일 상태 아이콘은 월요일에 다시 열려요.
               </div>
@@ -1449,13 +1505,15 @@ export default function EmployeeHome() {
                 // 2026-09-06: 주말(토/일)엔 "주말작업" 하나만 남기고 나머지 상태 아이콘을 전부
                 // 잠근다(요청사항) — 서버도 동일한 요일 기준으로 최종 검증하므로(attendance.routes.ts
                 // isWeekendKST), 화면 잠금과 실제 등록 가능 여부가 항상 일치한다.
+                // 2026-09-14: 관리자 계정이라고 이 잠금들을 건너뛰게 해뒀던 예외를 없앴다 — 관리자도
+                // 똑같은 사용자 화면·똑같은 규칙으로 등록하고, 관리 기능이 필요하면 /admin으로 들어간다.
                 const isLocked = mustResolvePastCorrection
-                  ? !isAdminAccount
+                  ? true
                   : isWeekendToday
-                    ? code !== 'WEEKEND_WORK' && !isAdminAccount
+                    ? code !== 'WEEKEND_WORK'
                     // 평일엔 반대로 "주말작업" 아이콘 자체를 잠가서, 눌러도 어차피 서버가 거절할
                     // 상황을 애초에 만들지 않는다.
-                    : (code === 'WEEKEND_WORK' && !isAdminAccount) || (clockedOut && code !== 'NIGHT_WORK' && !isAdminAccount);
+                    : code === 'WEEKEND_WORK' || (clockedOut && code !== 'NIGHT_WORK');
                 return (
                   <div
                     key={code}
@@ -1701,7 +1759,20 @@ export default function EmployeeHome() {
                 <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
               )}
 
-              {EFFORT_STATUSES.has(detailStatus) && detailStatus !== 'HQ_WORKING' && (
+              {/* 2026-09-14: "입력할 게 너무 많다"는 의견 — 고객사미팅/고객사작업은 필수가 아닌
+                  항목(프로젝트명·완료시간·작업인원)을 기본으로 접어두고, 필요할 때만 펼친다. */}
+              {(detailStatus === 'CLIENT_MEETING' || detailStatus === 'CLIENT_WORK') && (
+                <button
+                  type="button"
+                  className="secondary"
+                  style={{ width: 'auto', margin: '0 0 10px', fontSize: 12, padding: '4px 10px' }}
+                  onClick={() => setShowMoreFields((v) => !v)}
+                >
+                  {showMoreFields ? '▲ 선택 항목 접기' : '▾ 프로젝트명 · 완료시간 · 작업인원 입력(선택)'}
+                </button>
+              )}
+
+              {EFFORT_STATUSES.has(detailStatus) && detailStatus !== 'HQ_WORKING' && showMoreFields && (
                 <>
                   <label className="field-label">프로젝트명</label>
                   <input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="예: 백업시스템 구축 2차" />
@@ -1716,16 +1787,23 @@ export default function EmployeeHome() {
               </select>
 
               {detailStatus !== 'HQ_WORKING' && (
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <div style={{ flex: 1 }}>
+                (detailStatus === 'CLIENT_MEETING' || detailStatus === 'CLIENT_WORK') && !showMoreFields ? (
+                  <>
                     <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅시작' : '작업시작'}</label>
                     <input type="time" value={workStart} onChange={(e) => setWorkStart(e.target.value)} />
+                  </>
+                ) : (
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅시작' : '작업시작'}</label>
+                      <input type="time" value={workStart} onChange={(e) => setWorkStart(e.target.value)} />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅완료(선택 — 진행중이면 비워두세요)' : '작업완료(선택 — 진행중이면 비워두세요)'}</label>
+                      <input type="time" value={workEnd} onChange={(e) => setWorkEnd(e.target.value)} />
+                    </div>
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅완료(선택 — 진행중이면 비워두세요)' : '작업완료(선택 — 진행중이면 비워두세요)'}</label>
-                    <input type="time" value={workEnd} onChange={(e) => setWorkEnd(e.target.value)} />
-                  </div>
-                </div>
+                )
               )}
 
               <label className="field-label">
@@ -1769,8 +1847,12 @@ export default function EmployeeHome() {
                       ⚠️ 현장으로 등록하면, 이 작업을 마지막으로 퇴근할 때 위치 등록이 필수가 됩니다.
                     </p>
                   )}
-                  <label className="field-label">작업인원(본인 외 추가 투입 인원, 선택)</label>
-                  <input value={personnel} onChange={(e) => setPersonnel(e.target.value)} placeholder="예: 홍길동, 김철수" />
+                  {(!(detailStatus === 'CLIENT_MEETING' || detailStatus === 'CLIENT_WORK') || showMoreFields) && (
+                    <>
+                      <label className="field-label">작업인원(본인 외 추가 투입 인원, 선택)</label>
+                      <input value={personnel} onChange={(e) => setPersonnel(e.target.value)} placeholder="예: 홍길동, 김철수" />
+                    </>
+                  )}
                 </>
               )}
 

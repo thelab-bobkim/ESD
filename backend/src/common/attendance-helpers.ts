@@ -64,6 +64,16 @@ export function resolveEndTime(startTime: Date, endTime: Date): Date {
 }
 
 /**
+ * 하루 근무시간 계산 시 점심시간(정책값 LUNCH_BREAK_DEDUCTION_MINUTES, 기본 60분)을 고정으로
+ * 공제한다. 직원이 별도로 찍는 휴식(break) 세션과는 별개로, "8시간 근무에는 점심 1시간이
+ * 포함되어 있지 않다"는 요청(2026-09-14)에 따라 총 근무시간에서 항상 빼는 값이다.
+ * /clock-out과 applyAttendanceCorrection() 두 곳이 똑같은 계산식을 쓰도록 여기 하나로 모았다.
+ */
+export async function getLunchBreakMinutes(): Promise<number> {
+  return getPolicyNumber('LUNCH_BREAK_DEDUCTION_MINUTES', 60);
+}
+
+/**
  * 최소근무시간(정책값 MIN_HOURS_BEFORE_CLOCKOUT, 기본 8시간) 미충족 여부를 확인한다.
  * 원래 /clock-out(수동 퇴근)에만 있던 규칙인데, "위치이탈 자동감지"로 확정되는 퇴근(본인 확인
  * 또는 관리자 승인)도 결국 같은 attendance_records.clock_out_at을 채우는 것이므로 이 규칙을
@@ -101,7 +111,8 @@ export async function applyAttendanceCorrection(correctionRequestId: string, ear
     return sum + Math.round((b.endAt.getTime() - b.startAt.getTime()) / 60000);
   }, 0);
   const grossMinutes = Math.round((correction.proposedClockOutAt.getTime() - clockInAt.getTime()) / 60000);
-  const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes);
+  const lunchBreakMinutes = await getLunchBreakMinutes();
+  const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes - lunchBreakMinutes);
 
   const updatedRecord = await prisma.attendanceRecord.update({
     where: { id: targetRecord.id },

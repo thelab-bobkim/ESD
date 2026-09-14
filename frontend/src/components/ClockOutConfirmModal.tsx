@@ -10,7 +10,12 @@ interface Props {
 
 // 서버 기본 정책값(MIN_HOURS_BEFORE_CLOCKOUT)과 맞춘 화면 표시용 기준 — 관리자가 정책을
 // 다르게 설정한 경우 서버가 최종 판단하며, 여기서는 사유 입력창을 보여줄지만 결정한다.
+// (이 최소근무시간 기준은 "실제 근무장소에 있었던 시간" 기준이라 점심시간을 빼지 않은
+// 출근~지금까지의 전체 경과시간으로 판단한다 — 서버 attendance.routes.ts의 /clock-out과 동일.)
 const MIN_HOURS_DEFAULT_MINUTES = 8 * 60;
+// 서버 정책값(LUNCH_BREAK_DEDUCTION_MINUTES) 기본값과 맞춘 화면 표시용 기준 — 실제로 오늘
+// 근무시간으로 "기록되는" 시간은 점심시간 1시간을 뺀 값이므로, 안내 문구에는 이 값을 적용한다.
+const LUNCH_BREAK_DEFAULT_MINUTES = 60;
 
 function hoursLabel(minutes: number): string {
   const h = Math.floor(minutes / 60);
@@ -50,6 +55,9 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
 
   const elapsedMinutes = Math.max(0, Math.round((Date.now() - new Date(clockInAt).getTime()) / 60000));
   const isEarlyLeave = elapsedMinutes < MIN_HOURS_DEFAULT_MINUTES;
+  // 실제로 오늘 근무시간으로 기록되는 값(점심시간 1시간 공제) — 안내 문구 전용, 최소근무시간
+  // 판단(isEarlyLeave)에는 영향을 주지 않는다(서버도 그 판단은 순수 경과시간 기준).
+  const recordedMinutes = Math.max(0, elapsedMinutes - LUNCH_BREAK_DEFAULT_MINUTES);
   // 이상치(순간이동) 감지 시 퇴근 확정을 막고 재측정을 유도한다(2026-09 요청 — 등록 차단).
   const jumpDetected = locationResult !== 'checking' && locationResult.jumpDetected;
 
@@ -83,7 +91,7 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
         <h2 style={{ marginTop: 0 }}>🏁 퇴근 처리</h2>
         <p style={{ fontSize: 14, color: '#9aa5c3', lineHeight: 1.6 }}>
           지금 퇴근 처리하시겠어요? <strong>현재 시각</strong>이 오늘의 퇴근 시각으로 확정되고,
-          출근 이후 <strong>{hoursLabel(elapsedMinutes)}</strong>이 오늘 근무시간으로 기록됩니다.
+          점심시간 1시간을 제외한 <strong>{hoursLabel(recordedMinutes)}</strong>이 오늘 근무시간으로 기록됩니다.
           한 번 확정하면 본인이 직접 되돌릴 수 없어요.
         </p>
         <div

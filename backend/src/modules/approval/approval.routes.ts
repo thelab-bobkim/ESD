@@ -60,9 +60,11 @@ approvalRouter.post('/requests/:id/approve', async (req, res) => {
 
   // 2026-09-08: 지난 근무일 퇴근 정정(주로 "위치이탈 자동감지"가 만든 제안)을 승인하면 결과적으로
   // 최소근무시간(정책값, 기본 8시간) 미만 근무로 확정되는 경우, /clock-out(수동 퇴근)과 똑같이
-  // 사유 없이는 그냥 넘어가지 못하게 막는다 — 승인권자가 코멘트(사유)를 입력해야만 승인할 수 있다.
-  // 김진호의 출근 1분/2시간 뒤 퇴근 확정 사고가, 자동감지 → 관리자 승인 경로에서 이 검사가 아예
-  // 없어서 발생했던 것을 막기 위함(반려 시 이미 코멘트 필수 패턴이 있어 그 방식을 그대로 따름).
+  // 사유 없이는 그냥 넘어가지 못하게 막았었다 — 승인권자가 코멘트(사유)를 입력해야만 승인할 수 있었음.
+  // 2026-09-14: "퇴근 버튼을 못 눌러서" 올리는 정정 신청은 최소근무시간 미충족 자체가 이미 신청
+  // 사유이므로, 승인권자가 매번 별도 승인사유를 또 입력하게 하는 게 불필요한 절차라는 요청으로
+  // 이 강제 입력을 없앴다. 코멘트를 남기면 그 값을, 안 남기면 직원이 신청할 때 적은 사유를 그대로
+  // 조기퇴근 사유로 남겨서 감사기록(audit)에는 계속 흔적이 남게 한다.
   let earlyLeaveReasonForCorrection: string | undefined;
   if (request.type === 'ATTENDANCE_CORRECTION' && request.attendanceCorrectionRequestId) {
     const correctionForCheck = await prisma.attendanceCorrectionRequest.findUnique({
@@ -70,20 +72,9 @@ approvalRouter.post('/requests/:id/approve', async (req, res) => {
       include: { attendanceRecord: { select: { clockInAt: true } } },
     });
     if (correctionForCheck?.attendanceRecord.clockInAt) {
-      const { ok, remainMinutes } = await checkMinWorkedMinutes(correctionForCheck.attendanceRecord.clockInAt, correctionForCheck.proposedClockOutAt);
+      const { ok } = await checkMinWorkedMinutes(correctionForCheck.attendanceRecord.clockInAt, correctionForCheck.proposedClockOutAt);
       if (!ok) {
-        if (!parsed.success || !parsed.data.comment) {
-          const remainH = Math.floor(remainMinutes / 60);
-          const remainM = remainMinutes % 60;
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'EARLY_LEAVE_REASON_REQUIRED',
-              message: `이 정정을 승인하면 최소 근무시간을 채우지 못합니다(${remainH}시간 ${remainM}분 부족). 승인 사유(코멘트)를 입력해야 승인할 수 있습니다.`,
-            },
-          });
-        }
-        earlyLeaveReasonForCorrection = parsed.data.comment;
+        earlyLeaveReasonForCorrection = (parsed.success ? parsed.data.comment : undefined) || correctionForCheck.reason || undefined;
       }
     }
   }

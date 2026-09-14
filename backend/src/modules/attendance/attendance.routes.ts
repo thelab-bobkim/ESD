@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, WORK_START_STATUSES } from '../../common/attendance-helpers';
+import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
@@ -358,7 +358,10 @@ attendanceRouter.post('/clock-out', async (req, res) => {
     return sum + Math.round((b.endAt.getTime() - b.startAt.getTime()) / 60000);
   }, 0);
   const grossMinutes = Math.round((regularWorkEndAt.getTime() - existing.clockInAt.getTime()) / 60000);
-  const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes);
+  // 2026-09-14: 점심시간 1시간은 근무시간이 아니므로 항상 공제한다(applyAttendanceCorrection과
+  // 동일한 정책값 사용 — attendance-helpers.ts의 getLunchBreakMinutes() 참고).
+  const lunchBreakMinutes = await getLunchBreakMinutes();
+  const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes - lunchBreakMinutes);
 
   const record = await prisma.attendanceRecord.update({
     where: { id: existing.id },
