@@ -89,12 +89,16 @@ const DEPARTURE_AWAY_THRESHOLD_MS = 30 * 60 * 1000;
 // 고객사 관련 상태는 애초에 안 보여도 된다"). 부서명은 다우오피스 동기화 부서명과 정확히
 // 일치해야 하며, 여기 없는 부서는 기존과 동일하게 전체 상태 + 세부폼을 그대로 유지한다.
 // 다른 부서도 필요해지면 이 맵에 항목만 추가하면 된다.
-type StatusOverride = { visibleStatuses: string[]; noFormStatuses: string[] };
+// simplifiedClientMeetingForm: true면 고객사미팅 입력폼을 "미팅시작·미팅목적·고객사" 3항목만
+// 남기고(작업내용/작업위치 입력칸 자체를 없앰), 백엔드가 요구하는 값(작업위치·작업내용)은
+// 화면에 묻지 않고 안전한 기본값으로 자동 채워 보낸다 — 2026-09-14 영업조직 요청.
+type StatusOverride = { visibleStatuses: string[]; noFormStatuses: string[]; simplifiedClientMeetingForm?: boolean };
 
-// 2026-09-04: 보안/솔루션/arctera/Cohesity/BlL/DX/Pre-Sales사업부(엔지니어링 계열) 요청 —
-// 재택·본사근무는 버튼은 남기되 입력폼 없이 클릭만으로 등록되고, 그 외엔 고객사상주·이동중·
-// 고객사미팅·야간작업·출장·휴가만 있으면 된다(고객사작업/대체휴무는 안 보임 — 이 팀들은 고객사
-// 방문 시 "고객사상주"로 등록하고 별도 "고객사작업"은 안 쓴다는 전제).
+// 2026-09-04: BlL/Pre-Sales사업부(엔지니어링 계열) 요청 — 재택·본사근무는 버튼은 남기되 입력폼
+// 없이 클릭만으로 등록되고, 그 외엔 고객사상주·이동중·고객사미팅·야간작업·출장·휴가만 있으면
+// 된다(고객사작업/대체휴무는 안 보임 — 이 팀들은 고객사 방문 시 "고객사상주"로 등록하고 별도
+// "고객사작업"은 안 쓴다는 전제). 2026-09-14: 보안/솔루션/arctera/Cohesity/DX사업부는 조직개편으로
+// 영업 성격 사업부/사업본부로 재편되어 아래 SALES_OVERRIDE로 옮겼다(사용자 확인 완료).
 const FIELD_ENGINEERING_OVERRIDE: StatusOverride = {
   // 2026-09-06: WEEKEND_WORK를 추가하지 않으면 이 override가 적용되는 부서는 주말에 누를 수
   // 있는 아이콘이 하나도 없어진다(나머지는 전부 주말 잠금 대상이므로) — 모든 override에 반드시
@@ -103,22 +107,34 @@ const FIELD_ENGINEERING_OVERRIDE: StatusOverride = {
   noFormStatuses: ['REMOTE', 'HQ_WORKING'],
 };
 
+// 2026-09-14: 영업조직(공공사업본부/보안사업본부/솔루션사업부/Arctera사업부/Cohesity사업부/
+// DX사업부/SI사업본부) 요청 — 본사출근·고객사미팅·이동중·출장·휴가 5개만 보이면 되고(고객사
+// 상주·고객사작업·야간작업·주말작업·대체휴무는 안 씀), 고객사미팅도 미팅시작·미팅목적·고객사만
+// 입력하면 되게 최대한 간소화해달라고 함.
+const SALES_OVERRIDE: StatusOverride = {
+  visibleStatuses: ['HQ_WORKING', 'MOVING', 'CLIENT_MEETING', 'BUSINESS_TRIP', 'ON_LEAVE'],
+  noFormStatuses: ['HQ_WORKING'],
+  simplifiedClientMeetingForm: true,
+};
+
 const DEPARTMENT_STATUS_OVERRIDES: Record<string, StatusOverride> = {
   경영관리부: {
     // WEEKEND_WORK 포함 이유는 FIELD_ENGINEERING_OVERRIDE 주석 참고.
     visibleStatuses: ['REMOTE', 'HQ_WORKING', 'MOVING', 'WEEKEND_WORK', 'BUSINESS_TRIP', 'ON_LEAVE'],
     noFormStatuses: ['HQ_WORKING'],
   },
-  보안사업부: FIELD_ENGINEERING_OVERRIDE,
-  솔루션사업부: FIELD_ENGINEERING_OVERRIDE,
-  arctera사업부: FIELD_ENGINEERING_OVERRIDE,
-  Cohesity사업부: FIELD_ENGINEERING_OVERRIDE,
   BlL사업부: FIELD_ENGINEERING_OVERRIDE,
-  DX사업부: FIELD_ENGINEERING_OVERRIDE,
   // 다우오피스 동기화 부서명이 대시보드에 "Pre-Sales사업부"(대문자 S)로 표시되는 걸 확인해서
   // 그 표기를 그대로 맞췄다(요청 메시지의 "Pre-sales"와 대소문자가 다름 — 정확히 일치해야
   // 적용되므로 실제 동기화 표기를 우선했다).
   'Pre-Sales사업부': FIELD_ENGINEERING_OVERRIDE,
+  공공사업본부: SALES_OVERRIDE,
+  보안사업본부: SALES_OVERRIDE,
+  솔루션사업부: SALES_OVERRIDE,
+  Arctera사업부: SALES_OVERRIDE,
+  Cohesity사업부: SALES_OVERRIDE,
+  DX사업부: SALES_OVERRIDE,
+  SI사업본부: SALES_OVERRIDE,
 };
 
 // 부서와 무관하게 특정 개인에게 적용하는 예외(2026-09-04, 이종갑님 요청 — 부서 소속과 별개로
@@ -375,6 +391,10 @@ export default function EmployeeHome() {
   // 2026-09-14: 고객사미팅/고객사작업 폼 입력항목이 너무 많다는 의견 — 필수가 아닌 항목
   // (프로젝트명/완료시간/작업인원)은 기본으로 접어두고, 필요할 때만 펼쳐서 입력하게 한다.
   const [showMoreFields, setShowMoreFields] = useState(false);
+  // 2026-09-14: 영업조직(SALES_OVERRIDE) 요청 — 고객사미팅 폼에서 작업내용(미팅주제)·작업위치
+  // 입력칸 자체를 없애고 미팅시작·미팅목적·고객사 3항목만 남긴다. submitDetailForm이 화면에
+  // 안 보이는 두 값을 기본값으로 채워 보낸다(isSimplifiedMeeting 참고).
+  const isSimplifiedMeetingForm = detailStatus === 'CLIENT_MEETING' && Boolean(deptStatusOverride?.simplifiedClientMeetingForm);
   // 출장 전용 필드 (목적지/기간/목적)
   const [tripDestination, setTripDestination] = useState('');
   const [tripStart, setTripStart] = useState('');
@@ -968,27 +988,32 @@ export default function EmployeeHome() {
     // 간소화된 폼(본사근무/고객사미팅/고객사작업)의 최소 입력 조건 — 버튼 disabled와 동일한 조건을
     // 함수 안에서도 한 번 더 지킨다(다른 경로로 호출되더라도 항상 지켜지도록).
     const minDetailLen = code === 'HQ_WORKING' ? 15 : 10;
-    if (workDetail.trim().length < minDetailLen) return;
+    // 2026-09-14: 영업조직(isSimplifiedMeetingForm)은 고객사미팅 화면에서 작업내용·작업위치
+    // 입력칸을 아예 없앴으므로, 여기서 안전한 기본값을 대신 채워 백엔드 필수값과 기존
+    // 최소글자수 검증을 통과시킨다 — 사용자에게는 보이지 않지만 실제로는 값이 필요하다.
+    const effectiveWorkDetail = isSimplifiedMeetingForm ? (workDetail.trim() || `${workType} 미팅 진행`) : workDetail;
+    const effectiveSiteType = isSimplifiedMeetingForm ? (siteType || 'ONSITE') : siteType;
+    if (effectiveWorkDetail.trim().length < minDetailLen) return;
     // 본사근무는 관련 프로젝트/고객사 자유서술이 필수, 고객사미팅/고객사작업은 등록된 고객사
     // 목록에서 고른 이름이 필수다(빈칸으로 저장되면 리포트에서 통째로 누락됨 — 2026-09-02).
     if ((code === 'HQ_WORKING' || LOCATION_CHECK_STATUSES.has(code)) && !clientName.trim()) return;
     if (!SIMPLIFIED_EFFORT_STATUSES.has(code) && !workReason.trim()) return;
     // 작업위치(원격/현장, 필수) · 작업인원(선택) · 진행률/차수(선택, 야간작업만) — 야간작업/고객사미팅/고객사작업만 해당.
-    if (SITE_DETAIL_STATUSES.has(code) && !siteType) return;
+    if (SITE_DETAIL_STATUSES.has(code) && !effectiveSiteType) return;
     // 고객사작업/야간작업/주말작업은 완료시간까지 필수다(2026-09-14 요청) — 버튼 disabled와 동일.
     if (END_TIME_REQUIRED_STATUSES.has(code) && !workEnd) return;
     const siteDetailSuffix = SITE_DETAIL_STATUSES.has(code)
-      ? ` | 작업위치: ${siteType === 'ONSITE' ? '현장' : '원격'}${personnel ? ` | 작업인원: ${personnel}` : ''}`
+      ? ` | 작업위치: ${effectiveSiteType === 'ONSITE' ? '현장' : '원격'}${personnel ? ` | 작업인원: ${personnel}` : ''}`
       : '';
     const reasonSuffix = workReason.trim() ? ` | 목적: ${workReason}` : '';
     const note = (code === 'HQ_WORKING'
-      ? `유형: ${workType} | 관련 프로젝트/고객사: ${clientName || '-'} | 수행업무: ${workDetail}`
+      ? `유형: ${workType} | 관련 프로젝트/고객사: ${clientName || '-'} | 수행업무: ${effectiveWorkDetail}`
       : code === 'CLIENT_MEETING'
-        ? `미팅목적: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 미팅주제: ${workDetail}${reasonSuffix}`
-        : `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${workDetail}${reasonSuffix}`) + siteDetailSuffix;
+        ? `미팅목적: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 미팅주제: ${effectiveWorkDetail}${reasonSuffix}`
+        : `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${effectiveWorkDetail}${reasonSuffix}`) + siteDetailSuffix;
     const body: Record<string, unknown> = { status: code, note };
     if (SITE_DETAIL_STATUSES.has(code)) {
-      body.siteType = siteType;
+      body.siteType = effectiveSiteType;
     }
     if (DETAIL_FORM_STATUSES.has(code)) {
       body.effort = {
@@ -1822,7 +1847,9 @@ export default function EmployeeHome() {
                   항목(프로젝트명·작업인원, 고객사미팅은 완료시간도 포함)을 기본으로 접어두고,
                   필요할 때만 펼친다. 고객사작업의 완료시간은 이제 필수라 접이 대상에서 뺐다
                   (아래 시작/완료 시간 블록 참고). */}
-              {(detailStatus === 'CLIENT_MEETING' || detailStatus === 'CLIENT_WORK') && (
+              {/* 영업조직(isSimplifiedMeetingForm)은 미팅시작·미팅목적·고객사 3항목만 쓰기로 해서
+                  이 "선택 항목 펼치기" 토글 자체를 안 보여준다 — 펼쳐봐야 쓸 항목이 없다. */}
+              {(detailStatus === 'CLIENT_MEETING' || detailStatus === 'CLIENT_WORK') && !isSimplifiedMeetingForm && (
                 <button
                   type="button"
                   className="secondary"
@@ -1880,22 +1907,28 @@ export default function EmployeeHome() {
                 )
               )}
 
-              <label className="field-label">
-                {detailStatus === 'HQ_WORKING'
-                  ? `오늘 수행업무 (필수 — 언제·무엇을·어떻게 했는지 구체적으로, 최소 15자)`
-                  : detailStatus === 'CLIENT_MEETING' ? '미팅주제(무엇을/어떻게 — 최소 10자)' : '작업내용(무엇을/어떻게 — 최소 10자)'}
-              </label>
-              <textarea
-                className="detail-textarea right-col-textarea"
-                rows={3}
-                placeholder={detailStatus === 'HQ_WORKING' ? '예: 오전엔 A고객사 백업 정책서 신규 작성, 오후엔 사내 모니터링 대시보드 알람 규칙 정비' : detailStatus === 'CLIENT_MEETING' ? '예: 2026년도 유지보수 계약 조건 협의' : '예: 서버 3대 정기점검 후 백업 정책을 재협의함'}
-                value={workDetail}
-                onChange={(e) => setWorkDetail(e.target.value)}
-              />
-              {detailStatus === 'HQ_WORKING' && (
-                <p style={{ fontSize: 12, color: '#6b7594', marginTop: -6, marginBottom: 10 }}>
-                  💡 나중에 찾아보기 쉽도록, 오늘 한 일을 구체적으로 적어주세요(예: "무엇을 · 어떤 목적으로 · 어떻게" 순서로).
-                </p>
+              {/* 영업조직(isSimplifiedMeetingForm)은 이 작업내용 입력칸을 아예 안 보여준다 — 화면에
+                  없는 값은 submitDetailForm이 기본값으로 채워 보낸다(effectiveWorkDetail 참고). */}
+              {!isSimplifiedMeetingForm && (
+                <>
+                  <label className="field-label">
+                    {detailStatus === 'HQ_WORKING'
+                      ? `오늘 수행업무 (필수 — 언제·무엇을·어떻게 했는지 구체적으로, 최소 15자)`
+                      : detailStatus === 'CLIENT_MEETING' ? '미팅주제(무엇을/어떻게 — 최소 10자)' : '작업내용(무엇을/어떻게 — 최소 10자)'}
+                  </label>
+                  <textarea
+                    className="detail-textarea right-col-textarea"
+                    rows={3}
+                    placeholder={detailStatus === 'HQ_WORKING' ? '예: 오전엔 A고객사 백업 정책서 신규 작성, 오후엔 사내 모니터링 대시보드 알람 규칙 정비' : detailStatus === 'CLIENT_MEETING' ? '예: 2026년도 유지보수 계약 조건 협의' : '예: 서버 3대 정기점검 후 백업 정책을 재협의함'}
+                    value={workDetail}
+                    onChange={(e) => setWorkDetail(e.target.value)}
+                  />
+                  {detailStatus === 'HQ_WORKING' && (
+                    <p style={{ fontSize: 12, color: '#6b7594', marginTop: -6, marginBottom: 10 }}>
+                      💡 나중에 찾아보기 쉽도록, 오늘 한 일을 구체적으로 적어주세요(예: "무엇을 · 어떤 목적으로 · 어떻게" 순서로).
+                    </p>
+                  )}
+                </>
               )}
 
               {!SIMPLIFIED_EFFORT_STATUSES.has(detailStatus) && (
@@ -1909,7 +1942,9 @@ export default function EmployeeHome() {
                 </>
               )}
 
-              {SITE_DETAIL_STATUSES.has(detailStatus) && (
+              {/* 영업조직은 작업위치(siteType)를 화면에서 안 묻고 기본값(현장)으로 자동 처리한다
+                  (effectiveSiteType 참고) — 작업인원 항목도 같이 없앤다. */}
+              {SITE_DETAIL_STATUSES.has(detailStatus) && !isSimplifiedMeetingForm && (
                 <>
                   <label className="field-label">작업위치 (필수)</label>
                   <select className="field-select" value={siteType} onChange={(e) => setSiteType(e.target.value as 'ONSITE' | 'REMOTE')}>
@@ -1932,7 +1967,9 @@ export default function EmployeeHome() {
 
               <button
                 disabled={
-                  workDetail.trim().length < (detailStatus === 'HQ_WORKING' ? 15 : 10)
+                  // 영업조직은 작업내용 입력칸이 없으므로 이 최소글자수 검증을 건너뛴다(제출 시
+                  // 자동으로 채워짐 — effectiveWorkDetail 참고).
+                  (!isSimplifiedMeetingForm && workDetail.trim().length < (detailStatus === 'HQ_WORKING' ? 15 : 10))
                   || (!SIMPLIFIED_EFFORT_STATUSES.has(detailStatus) && !workReason.trim())
                   || (detailStatus === 'HQ_WORKING' ? !clientName.trim() : !workStart)
                   // 고객사미팅/고객사작업은 위 workStart 조건과 별개로 고객사 선택(clientName)도 필수다
