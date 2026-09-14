@@ -143,6 +143,54 @@ function nowHHMM(): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+// 2026-09-14: 네이티브 <input type="time">가 기기(특히 안드로이드)에 따라 시계/스피너 모양으로
+// 나와서 "누르기 불편하다"는 의견 — 시/분을 각각 드롭다운으로 고르는 방식으로 바꿔서 손가락으로
+// 탭만 하면 되게 했다.
+const TIME_SELECT_HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const TIME_SELECT_MINUTES = ['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55'];
+
+/**
+ * "HH:MM" 문자열을 시/분 드롭다운 두 개로 입력받는다 — 기존 <input type="time">과 값 형식은
+ * 그대로 "HH:MM"이라 다른 코드는 손댈 필요가 없다. allowEmpty가 true면 맨 앞에 "미정(진행중)"을
+ * 넣어서 완료시간처럼 비워둘 수 있는 필드에도 쓸 수 있게 한다. 현재 값의 분이 5분 단위가 아니어도
+ * (예: 지금 시각 자동입력) 목록에서 사라지지 않도록 그 값을 옵션에 끼워넣는다.
+ */
+function TimeSelectInput({ value, onChange, allowEmpty }: { value: string; onChange: (v: string) => void; allowEmpty?: boolean }) {
+  const [hPart, mPart] = value ? value.split(':') : ['', ''];
+  const hourList = hPart && !TIME_SELECT_HOURS.includes(hPart) ? [hPart, ...TIME_SELECT_HOURS] : TIME_SELECT_HOURS;
+  const minuteList = mPart && !TIME_SELECT_MINUTES.includes(mPart) ? [mPart, ...TIME_SELECT_MINUTES] : TIME_SELECT_MINUTES;
+  return (
+    <div style={{ display: 'flex', gap: 6 }}>
+      <select
+        className="field-select"
+        style={{ flex: 1 }}
+        value={hPart}
+        onChange={(e) => {
+          const newH = e.target.value;
+          onChange(newH ? `${newH}:${mPart || '00'}` : '');
+        }}
+      >
+        {allowEmpty && <option value="">미정(진행중)</option>}
+        {hourList.map((hh) => (
+          <option key={hh} value={hh}>{hh}시</option>
+        ))}
+      </select>
+      <select
+        className="field-select"
+        style={{ flex: 1 }}
+        value={mPart}
+        disabled={!hPart}
+        onChange={(e) => onChange(`${hPart}:${e.target.value}`)}
+      >
+        {!hPart && <option value="">-</option>}
+        {minuteList.map((mm) => (
+          <option key={mm} value={mm}>{mm}분</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 /** ISO 시각을 한국시간 "HH:MM"으로 변환 — 야간작업 등록 제안(lateClockOutSuggestion) 미리채움용. */
 function hhmmKST(iso: string): string {
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(iso));
@@ -1795,17 +1843,17 @@ export default function EmployeeHome() {
                 (detailStatus === 'CLIENT_MEETING' || detailStatus === 'CLIENT_WORK') && !showMoreFields ? (
                   <>
                     <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅시작' : '작업시작'}</label>
-                    <input type="time" value={workStart} onChange={(e) => setWorkStart(e.target.value)} />
+                    <TimeSelectInput value={workStart} onChange={setWorkStart} />
                   </>
                 ) : (
                   <div style={{ display: 'flex', gap: 8 }}>
                     <div style={{ flex: 1 }}>
                       <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅시작' : '작업시작'}</label>
-                      <input type="time" value={workStart} onChange={(e) => setWorkStart(e.target.value)} />
+                      <TimeSelectInput value={workStart} onChange={setWorkStart} />
                     </div>
                     <div style={{ flex: 1 }}>
                       <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅완료(선택 — 진행중이면 비워두세요)' : '작업완료(선택 — 진행중이면 비워두세요)'}</label>
-                      <input type="time" value={workEnd} onChange={(e) => setWorkEnd(e.target.value)} />
+                      <TimeSelectInput value={workEnd} onChange={setWorkEnd} allowEmpty />
                     </div>
                   </div>
                 )
