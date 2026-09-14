@@ -181,6 +181,21 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-siz
 .admin-nav-link.active .admin-nav-badge { background: #fff; color: #e03131; }
 .admin-page-subtitle { font-size: 13px; color: var(--dsti-text-muted); margin: -14px 0 20px; }
 
+/* 2026-09-14: 전사 상황판의 "다우오피스 직원동기화"처럼 자주 쓰지 않는 관리용 메뉴를 부제목
+   옆에 작게 붙여서, 화면 상단을 큰 툴바 한 줄로 차지하지 않게 한다. */
+.admin-subtitle-row {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 8px 14px; margin: -14px 0 20px;
+}
+.admin-subtitle-row .admin-page-subtitle { margin: 0; }
+.sync-mini-btn {
+  width: auto; margin: 0; padding: 5px 12px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  background: #eef1f6; color: var(--dsti-text-muted); border: 1px solid var(--dsti-border); white-space: nowrap;
+}
+.sync-mini-btn:disabled { opacity: 0.6; }
+.tsb-dark .sync-mini-btn { background: #151c34; color: var(--dsti-text-muted); border: 1px solid var(--dsti-border); }
+.sync-mini-message { font-size: 11.5px; color: var(--dsti-text-muted); margin: -14px 0 14px; text-align: right; }
+
 @media (max-width: 640px) {
   .admin-header { margin: 0 -14px 18px; padding: 12px 14px; }
   .admin-header h1 { font-size: 15.5px; }

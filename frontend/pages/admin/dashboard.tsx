@@ -62,6 +62,10 @@ interface EmployeeRow {
   locationMatch: boolean | null; locationDistanceMeters: number | null; locationCaptureStatus: string | null;
   locationConsentGiven: boolean; privacyConsentGiven: boolean;
   clockedOut: boolean; clockOutAt: string | null;
+  // 2026-09-09: "원격"(재택/원격지원 등)으로 등록된 고객사미팅/작업은 애초에 현장에 있을 필요가
+  // 없어서 백엔드가 위치대조 자체를 건너뛴다(attendance.routes.ts 참고) — 그 결과 locationMatch가
+  // null로 남는 게 정상인데, 이 값을 모르면 "위치 미확인"으로 잘못 flag된다. 관리자 문의로 발견.
+  siteType: string | null;
 }
 interface CompanyBoard { summary: Record<string, number>; employees: EmployeeRow[]; }
 
@@ -241,6 +245,8 @@ export default function AdminDashboard() {
     for (const e of filteredEmployees) {
       if (e.clockedOut) continue;
       if (!e.status || !LOCATION_CHECK_STATUSES.has(e.status)) continue;
+      // "원격"으로 등록된 건 위치대조 자체를 안 하므로 확인/불일치/미확인 어느 쪽으로도 세지 않는다.
+      if (e.siteType === 'REMOTE') continue;
       if (!e.locationConsentGiven || !e.privacyConsentGiven) { noConsent += 1; continue; }
       if (e.locationMatch === true) matched += 1;
       else if (e.locationMatch === false) mismatched += 1;
@@ -255,6 +261,9 @@ export default function AdminDashboard() {
     return filteredEmployees.filter((e) => {
       if (e.clockedOut) return false;
       if (!e.status || !LOCATION_CHECK_STATUSES.has(e.status)) return false;
+      // "원격"으로 등록된 건 위치대조 자체를 안 해서 locationMatch가 항상 null인 게 정상이다 —
+      // 이 경우까지 "확인 필요"로 띄우면 관리자가 매번 확인해도 해소되지 않는 항목이 계속 남는다.
+      if (e.siteType === 'REMOTE') return false;
       if (!e.locationConsentGiven || !e.privacyConsentGiven) return true;
       return e.locationMatch !== true;
     });
@@ -337,7 +346,16 @@ export default function AdminDashboard() {
   return (
     <div className="admin-shell tsb-dark">
       <AdminHeader title="전사 상황판" dark />
-      <p className="admin-page-subtitle">지금 누가 어디서 뭘 하고 있는지 한눈에 확인하세요.</p>
+      {/* 2026-09-14: "다우오피스 직원동기화" 메뉴는 자주 쓰는 기능이 아닌데도 기존엔 화면 상단에
+          툴바 한 줄을 통째로 차지하고 있었다 — 부제목 옆에 작은 버튼으로 줄이고 위치도 화면 맨
+          위로 옮겼다(요청 반영). */}
+      <div className="admin-subtitle-row">
+        <p className="admin-page-subtitle">지금 누가 어디서 뭘 하고 있는지 한눈에 확인하세요.</p>
+        <button type="button" className="sync-mini-btn" disabled={syncing !== null} onClick={runSyncEmployees}>
+          {syncing === 'employees' ? '동기화 중...' : '👤 다우오피스 직원 동기화'}
+        </button>
+      </div>
+      {syncMessage && <div className="sync-mini-message">{syncMessage}</div>}
       {error && <div className="error">{error}</div>}
 
       <div className="cc-stat-row">
@@ -413,13 +431,6 @@ export default function AdminDashboard() {
           </div>
         </>
       )}
-
-      <div className="toolbar">
-        <button style={{ width: 'auto' }} disabled={syncing !== null} onClick={runSyncEmployees}>
-          {syncing === 'employees' ? '직원 동기화 중...' : '👤 다우오피스 직원 동기화'}
-        </button>
-        {syncMessage && <span className="refresh-info">{syncMessage}</span>}
-      </div>
 
       <div className="toolbar">
         <select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}>
@@ -578,7 +589,7 @@ export default function AdminDashboard() {
                     {code === 'CLOCKED_OUT' && e.status && STATUS_META[e.status] && (
                       <div className="meta">마지막 상태: {STATUS_META[e.status].icon} {STATUS_META[e.status].label}</div>
                     )}
-                    {e.status && LOCATION_CHECK_STATUSES.has(e.status) && (() => {
+                    {e.status && LOCATION_CHECK_STATUSES.has(e.status) && e.siteType !== 'REMOTE' && (() => {
                       const badge = locationBadge(e);
                       return badge && (
                         <div className="meta" style={{ color: badge.color, fontWeight: 600 }} title={e.locationCaptureStatus ?? undefined}>

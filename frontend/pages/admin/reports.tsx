@@ -88,6 +88,29 @@ function startOfWeek(d: Date): Date {
   return monday;
 }
 
+// 2026-09-14: "부서별/전체목록 말고 영업부/기술부로도 보고 싶다"는 요청 — 부서명은 다우오피스
+// 조직도 명칭을 그대로 쓰기 때문에 "영업부"/"기술부"라는 코드값 자체가 없다. 그래서 이름 패턴으로
+// 판별한다: "OO사업부"/"OO사업본부"처럼 "사업"이 붙는 부서(index.tsx의 SALES_OVERRIDE 대상 부서—
+// 공공사업본부/보안사업본부/솔루션사업부/DX사업부/SI사업본부 등 — 와 동일한 기준)는 영업부, 그 외
+// 솔루션·엔지니어·기술지원·클라우드·Back-up·Cluster가 이름에 들어간 부서는 기술부로 묶는다.
+// "사업" 규칙을 먼저 적용해서 "솔루션사업부"처럼 둘 다 걸리는 경우 영업부가 우선한다.
+type DeptGroup = 'sales' | 'tech' | 'other';
+const TECH_DEPT_KEYWORDS = ['솔루션', '엔지니어', '기술지원', '클라우드', 'back-up', 'cluster'];
+function classifyDeptGroup(department: string): DeptGroup {
+  if (department.includes('사업')) return 'sales';
+  const lower = department.toLowerCase();
+  if (TECH_DEPT_KEYWORDS.some((kw) => lower.includes(kw))) return 'tech';
+  return 'other';
+}
+
+type AttendanceViewMode = 'dept' | 'all' | 'sales' | 'tech';
+const ATTENDANCE_VIEW_MODES: { key: AttendanceViewMode; label: string; icon: string }[] = [
+  { key: 'dept', label: '부서별 보기', icon: '👥' },
+  { key: 'all', label: '전체 목록 보기', icon: '📋' },
+  { key: 'sales', label: '영업부만 보기', icon: '💼' },
+  { key: 'tech', label: '기술부만 보기', icon: '🔧' },
+];
+
 function computeRange(period: Period, anchor: Date): { from: Date; to: Date; label: string } {
   if (period === 'day') return { from: anchor, to: anchor, label: fmt(anchor) };
   if (period === 'week') {
@@ -259,7 +282,9 @@ export default function AdminReportsPage() {
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [timelineTarget, setTimelineTarget] = useState<{ userId: string; date: string } | null>(null);
-  const [groupByDept, setGroupByDept] = useState(true);
+  // 2026-09-14: 부서별/전체목록 2단 토글을 부서별/전체목록/영업부만/기술부만 4단으로 확장했다
+  // (ATTENDANCE_VIEW_MODES 참고).
+  const [viewMode, setViewMode] = useState<AttendanceViewMode>('dept');
   const [timeline, setTimeline] = useState<DailyTimeline | null>(null);
   const [forceClockOutTarget, setForceClockOutTarget] = useState<string | null>(null);
   const [forceClockOutTime, setForceClockOutTime] = useState('');
@@ -367,6 +392,20 @@ export default function AdminReportsPage() {
         rows: [...rows].sort((a, b) => (a.clockInAt ?? '').localeCompare(b.clockInAt ?? '')),
       }));
   }, [attendanceDetail]);
+
+  // "영업부만/기술부만 보기" — 부서별 보기와 같은 구조(부서 구분줄 + 그 안에 출근시각순)를 쓰되,
+  // classifyDeptGroup 기준에 맞는 부서만 남긴다.
+  const attendanceGroupsToRender = useMemo(() => {
+    if (!attendanceByDept) return null;
+    if (viewMode === 'sales' || viewMode === 'tech') {
+      return attendanceByDept.filter((g) => classifyDeptGroup(g.department) === viewMode);
+    }
+    return attendanceByDept;
+  }, [attendanceByDept, viewMode]);
+  const isGroupedView = viewMode !== 'all';
+  // 영업부/기술부만 보기인데 해당 부서가 아예 없으면(전 직원이 다른 분류) 표 자체를 숨기고
+  // 안내문만 보여준다.
+  const hasNoMatchingDeptGroup = (viewMode === 'sales' || viewMode === 'tech') && (attendanceGroupsToRender?.length ?? 0) === 0;
 
   // "전체 목록 보기"용 — 부서별 보기와 달리 부서 구분이 없으므로, 다른 화면과 통일되게 이름
   // 가나다순으로 보여준다(2026-09-02).
@@ -486,14 +525,17 @@ export default function AdminReportsPage() {
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <h2>🕒 출퇴근 현황 — {rangeLabel}</h2>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button
-                style={{ width: 'auto', margin: 0 }}
-                className={groupByDept ? undefined : 'secondary'}
-                onClick={() => setGroupByDept((v) => !v)}
-              >
-                {groupByDept ? '👥 부서별 보기 중' : '📋 전체 목록 보기 중'}
-              </button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              {ATTENDANCE_VIEW_MODES.map((m) => (
+                <button
+                  key={m.key}
+                  style={{ width: 'auto', margin: 0 }}
+                  className={viewMode === m.key ? undefined : 'secondary'}
+                  onClick={() => setViewMode(m.key)}
+                >
+                  {m.icon} {m.label}
+                </button>
+              ))}
               <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
                 CSV 내려받기
               </button>
@@ -501,11 +543,14 @@ export default function AdminReportsPage() {
           </div>
           {!attendanceDetail && <div className="board-empty">불러오는 중...</div>}
           {attendanceDetail && attendanceDetail.rows.length === 0 && <div className="board-empty">이 날짜에 출근 기록이 없습니다.</div>}
+          {attendanceDetail && attendanceDetail.rows.length > 0 && hasNoMatchingDeptGroup && (
+            <div className="board-empty">{viewMode === 'sales' ? '영업부' : '기술부'}로 분류되는 부서에 등록된 인원이 없습니다.</div>
+          )}
 
           {/* 2026-09-06: 부서마다 표를 따로 그리던 것을(헤더가 부서 수만큼 반복되어 복잡해 보임) 표
-              하나 + 부서 구분줄로 통일했다. 표 틀은 부서별/전체 보기 모두 동일하고, 부서별 보기일 때만
-              "부서" 열 대신 구분줄로 부서를 나눈다. */}
-          {attendanceDetail && attendanceDetail.rows.length > 0 && (
+              하나 + 부서 구분줄로 통일했다. 표 틀은 부서별/전체 보기 모두 동일하고, 부서별로 묶어서
+              보여줄 때만(부서별/영업부만/기술부만) "부서" 열 대신 구분줄로 부서를 나눈다. */}
+          {attendanceDetail && attendanceDetail.rows.length > 0 && !hasNoMatchingDeptGroup && (
             <div className="table-scroll">
               <table className="att-table att-table--daily">
                 {/* 2026-09-06: 열 너비를 브라우저 자동계산에 맡기면 "이름" 열이 내용 없이도 과하게
@@ -513,17 +558,17 @@ export default function AdminReportsPage() {
                     fixed + colgroup으로 열 비율을 직접 지정해 항상 같은 균형을 유지한다. 이동시간은
                     이동경로 파악에 중요한 정보라 다른 숫자 열보다 살짝 더 넓게 잡았다. */}
                 <colgroup>
-                  <col style={{ width: groupByDept ? '26%' : '20%' }} />
-                  {!groupByDept && <col style={{ width: '13%' }} />}
-                  <col style={{ width: groupByDept ? '13%' : '12%' }} />
-                  <col style={{ width: groupByDept ? '18%' : '17%' }} />
-                  <col style={{ width: groupByDept ? '28%' : '23%' }} />
+                  <col style={{ width: isGroupedView ? '26%' : '20%' }} />
+                  {!isGroupedView && <col style={{ width: '13%' }} />}
+                  <col style={{ width: isGroupedView ? '13%' : '12%' }} />
+                  <col style={{ width: isGroupedView ? '18%' : '17%' }} />
+                  <col style={{ width: isGroupedView ? '28%' : '23%' }} />
                   <col style={{ width: '15%' }} />
                 </colgroup>
                 <thead>
                   <tr>
                     <th>이름</th>
-                    {!groupByDept && <th>부서</th>}
+                    {!isGroupedView && <th>부서</th>}
                     <th className="num">출근</th>
                     <th className="num">🚙 이동</th>
                     <th className="num">퇴근</th>
@@ -531,8 +576,8 @@ export default function AdminReportsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {groupByDept
-                    ? attendanceByDept?.flatMap(({ department, rows }) => [
+                  {isGroupedView
+                    ? attendanceGroupsToRender?.flatMap(({ department, rows }) => [
                         <tr className="att-dept-row" key={`dept-${department}`}>
                           <td colSpan={5}>🏷️ {department}<span className="att-dept-count">{rows.length}명</span></td>
                         </tr>,

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch, apiDownload } from '@/lib/api';
+import { sortByLabelKo } from '@/lib/sortKo';
 import AdminHeader from '@/components/AdminHeader';
 
 // 2026-09-01: 기존 "출퇴근·근로시간·공수" 페이지에서 고객사별 공수 부분만 분리해서 만든 페이지.
@@ -70,7 +71,7 @@ function aggregateClientByEngineer(client: EffortClientRow): EffortByUser[] {
 interface EngineerAggRow { userId: string; name: string; totalMinutes: number; }
 
 /** "엔지니어별 대상 목록" — client 기준 데이터를 엔지니어 기준으로 뒤집어서 총 투입시간을 구한다.
- * 총 투입시간이 많은 엔지니어부터 드롭다운에 나온다. */
+ * 드롭다운에 보여줄 최종 순서(이름 가나다순)는 clientTargets/engineerTargets에서 정한다. */
 function pivotByEngineer(clients: EffortClientRow[]): EngineerAggRow[] {
   const map = new Map<string, EngineerAggRow>();
   for (const client of clients) {
@@ -80,7 +81,7 @@ function pivotByEngineer(clients: EffortClientRow[]): EngineerAggRow[] {
       map.set(u.userId, row);
     }
   }
-  return [...map.values()].sort((a, b) => b.totalMinutes - a.totalMinutes);
+  return [...map.values()];
 }
 
 /** 대상(고객사 또는 엔지니어)이 이 기간에 실제로 수행한 개별 공수기록을, 날짜별로 묶는다. */
@@ -197,12 +198,26 @@ export default function AdminEffortPage() {
     setPeriod(p);
   }
 
+  // 2026-09-14: 대상 드롭다운은 투입시간 순이 아니라 항상 이름 가나다순(오름차순)으로 고정한다 —
+  // 대상이 많아질수록 시간순으로는 원하는 이름을 찾기 어렵다는 요청(sortByLabelKo 참고).
   const clientTargets = useMemo(
-    () => (effort ? effort.clients.map((c) => ({ key: c.clientName, label: c.clientName, totalMinutes: c.totalMinutes })) : []),
+    () =>
+      effort
+        ? sortByLabelKo(
+            effort.clients.map((c) => ({ key: c.clientName, label: c.clientName, totalMinutes: c.totalMinutes })),
+            (t) => t.label
+          )
+        : [],
     [effort]
   );
   const engineerTargets = useMemo(
-    () => (effort ? pivotByEngineer(effort.clients).map((e) => ({ key: e.userId, label: e.name, totalMinutes: e.totalMinutes })) : []),
+    () =>
+      effort
+        ? sortByLabelKo(
+            pivotByEngineer(effort.clients).map((e) => ({ key: e.userId, label: e.name, totalMinutes: e.totalMinutes })),
+            (t) => t.label
+          )
+        : [],
     [effort]
   );
   const currentTargets = perspective === 'client' ? clientTargets : engineerTargets;
