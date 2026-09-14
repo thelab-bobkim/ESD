@@ -1,7 +1,16 @@
 import { prisma } from '../../common/prisma';
 import { sendPushToUser, isPushConfigured } from '../../common/push';
-import { todayDateOnly, realDayWindow } from '../../common/attendance-helpers';
+import { todayDateOnly, realDayWindow, isWeekendKST, isPublicHolidayKST } from '../../common/attendance-helpers';
 import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
+
+// 2026-09-14: "주말/공휴일에도 출근 알림이 계속 온다"는 신고(김진호·김진영·권성주) 반영 — 주말은
+// "주말작업"만 등록 가능한 선택사항이라 굳이 출근을 강요할 이유가 없고, 공휴일도 마찬가지다.
+// 휴가/대체휴무는 여러 날에 걸쳐도 그 기간 매일 다시 아이콘을 누르지 않는 게 보통이라(휴가 시작일에
+// 한 번만 등록), "오늘" 로그가 아니라 "최근 상태"가 여전히 휴가/대체휴무인지로 판단한다(박준영 피드백).
+const NO_CLOCK_IN_REMINDER_STATUSES = new Set(['ON_LEAVE', 'ALT_DAY_OFF']);
+// 휴가/대체휴무는 길어야 보통 2주 이내이므로, 그보다 훨씬 예전 로그까지 뒤질 필요는 없다 —
+// 매분 도는 스케줄러라 조회 범위를 넉넉히 잡아도 좁혀두는 편이 안전하다.
+const LEAVE_STATUS_LOOKBACK_DAYS = 14;
 
 const CHECK_INTERVAL_MS = 60 * 1000; // 1분마다 "지금이 알림 보낼 시각인지" 확인
 // 2026-09-03: 하루 한 번만 보내고 끝나던 걸, 등록할 때까지 계속 다시 알려주는 방식으로 바꿨다
@@ -83,6 +92,9 @@ export function startClockInReminderScheduler() {
         lastPendingDetailSentAt = new Map();
       }
       if (kstHour >= QUIET_HOUR_KST || kstHour < 9) return; // 조용한 시간대엔 아무것도 안 보낸다.
+      // 2026-09-14: 주말/공휴일엔 출근을 강요할 이유가 없으므로 이 틱 자체를 조용히 건너뛴다
+      // (미출근/미퇴근/이동중 장시간/세부내용 미입력 알림 전부 포함).
+      if (isWeekendKST(now) || (await isPublicHolidayKST(now))) return;
 
       const activeUsers = await prisma.user.findMany({
         where: { employmentStatus: 'ACTIVE', name: { not: { startsWith: 'SAMPLE_' } } },
@@ -93,9 +105,24 @@ export function startClockInReminderScheduler() {
         select: { userId: true, clockInAt: true, clockOutAt: true },
       });
 
-      // 09시부터: 아직 출근 상태를 안 찍은 직원에게 5분마다 재알림.
+      // 09시부터: 아직 출근 상태를 안 찍은 직원에게 5분마다 재알림. 다만 휴가/대체휴무 중인
+      // 직원은 애초에 오늘 출근할 계획이 없으므로 대상에서 뺀다(박준영 피드백, 2026-09-14) —
+      // 휴가는 시작일에 한 번만 등록하는 경우가 많아 "오늘" 로그가 아니라 "최근 상태"를 본다.
       const clockedInIds = new Set(todayRecords.filter((r) => r.clockInAt).map((r) => r.userId));
-      const clockInTargets = activeUsers.filter((u) => !clockedInIds.has(u.id));
+      const notClockedInUsers = activeUsers.filter((u) => !clockedInIds.has(u.id));
+      const leaveLookbackStart = new Date(now.getTime() - LEAVE_STATUS_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+      const recentLogsForLeaveCheck = notClockedInUsers.length > 0
+        ? await prisma.statusChangeLog.findMany({
+            where: { userId: { in: notClockedInUsers.map((u) => u.id) }, changedAt: { gte: leaveLookbackStart } },
+            orderBy: { changedAt: 'desc' },
+            select: { userId: true, status: true },
+          })
+        : [];
+      const latestOverallStatusByUser = new Map<string, string>();
+      for (const log of recentLogsForLeaveCheck) {
+        if (!latestOverallStatusByUser.has(log.userId)) latestOverallStatusByUser.set(log.userId, log.status);
+      }
+      const clockInTargets = notClockedInUsers.filter((u) => !NO_CLOCK_IN_REMINDER_STATUSES.has(latestOverallStatusByUser.get(u.id) ?? ''));
       let clockInSentCount = 0;
       for (const u of clockInTargets) {
         const last = lastClockInSentAt.get(u.id);

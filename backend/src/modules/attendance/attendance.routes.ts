@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES } from '../../common/attendance-helpers';
+import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
@@ -98,11 +98,8 @@ attendanceRouter.use(requireAuth);
 // 야간작업과 똑같은 모양으로 유지하기 위함 — 프로젝트명은 항상 빈 값으로 저장됨). 이 두 상수는
 // 이 상태를 빼고는 반드시 같은 값을 유지해야 한다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'WEEKEND_WORK']);
-// 주말(토=6,일=0, KST) 여부 — "주말엔 주말작업만" 게이트 판단에 쓴다.
-function isWeekendKST(date: Date = new Date()): boolean {
-  const kstDay = new Date(date.getTime() + 9 * 60 * 60 * 1000).getUTCDay();
-  return kstDay === 0 || kstDay === 6;
-}
+// 주말(토=6,일=0, KST) 여부 — "주말엔 주말작업만" 게이트 판단에 쓴다. 2026-09-14: reminder-scheduler.ts도
+// 같은 기준이 필요해져서 attendance-helpers.ts로 옮기고 여기서는 그걸 그대로 가져다 쓴다.
 
 // 위치이탈 자동감지(/departure-suggest, 2026-09-04)가 만든 제안임을 구분하는 표시 — 이 문자열로
 // 시작하는 reason만 본인이 직접 확정/취소할 수 있다. 직원이 직접 신청한 지난 근무일 정정 요청은
@@ -162,25 +159,6 @@ attendanceRouter.post('/clock-in', async (req, res) => {
     });
   }
 
-  // 직출(본사 미경유): 위치정보가 있고 본사 좌표가 등록되어 있는데 본사와 멀리 떨어져 있으면,
-  // "출근" 버튼으로 본사근무 처리해버리지 않고 고객사미팅/고객사작업으로 유도한다.
-  if (location) {
-    const hqLat = await getPolicyString('HQ_LATITUDE', '');
-    const hqLng = await getPolicyString('HQ_LONGITUDE', '');
-    if (hqLat && hqLng) {
-      const match = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS);
-      if (match && !match.locationMatch && !hqVerifiedByAlternateMeans) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'AWAY_FROM_HQ',
-            message: `현재 위치가 본사에서 약 ${match.locationDistanceMeters}m 떨어져 있어요. 본사로 출근하는 게 아니라면, "출근" 버튼 대신 고객사 도착 후 "고객사미팅" 또는 "고객사작업"을 눌러 진행해주세요 — 그 시점부터 자동으로 출근 처리됩니다.`,
-          },
-        });
-      }
-    }
-  }
-
   // 2026-09-01 정책 변경: "출근" 버튼은 더 이상 위치확인 없이 조용히 통과시키지 않는다. 본사 좌표가
   // 등록되어 있다면 반드시 본사와 위치가 일치해야만 확정하고, 위치가 안 맞거나 아예 못 가져왔으면
   // 거부한 뒤 본사근무·고객사작업·고객사미팅·출장·고객사상주 중 실제 근무형태에 맞는 버튼을 눌러
@@ -214,15 +192,10 @@ attendanceRouter.post('/clock-in', async (req, res) => {
       });
     }
     hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS);
-    if (hqLocationResult && !hqLocationResult.locationMatch) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'AWAY_FROM_HQ',
-          message: `현재 위치가 본사에서 약 ${hqLocationResult.locationDistanceMeters}m 떨어져 있어요. 본사로 출근하는 게 아니라면 "출근" 버튼 대신 고객사미팅·고객사작업·출장·고객사상주 중 맞는 상태를 눌러 진행해주세요.`,
-        },
-      });
-    }
+    // 2026-09-14: 김유범 피드백 — 고층건물 실내 GPS 오차(최대 2.8km 실측)로 본사에 실제로 있는데도
+    // "출근" 버튼이 막히는 문제. /status의 본사근무 등록과 동일하게, 거리 불일치만으로는 막지 않고
+    // locationMatch=false·거리값만 기록해서 상황판에서 확인 가능하게 한다(사내망/주소 매칭이라는
+    // 다른 안전장치는 그대로 남아있음).
   }
   const locationConfirmed = hqConfigured && (hqVerifiedByAlternateMeans || Boolean(hqLocationResult?.locationMatch));
 
@@ -611,15 +584,12 @@ attendanceRouter.post('/status', async (req, res) => {
     const hqLng = await getPolicyString('HQ_LONGITUDE', '');
     if (hqLat && hqLng) {
       hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS);
-      if (hqLocationResult && !hqLocationResult.locationMatch) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'AWAY_FROM_HQ',
-            message: `현재 위치가 본사에서 약 ${hqLocationResult.locationDistanceMeters}m 떨어져 있어요. 본사근무 대신 "고객사미팅" 또는 "고객사작업"으로 등록해주세요.`,
-          },
-        });
-      }
+      // 2026-09-14: 김유범 피드백 — 신한이노플렉스 등 고층건물 실내에서는 GPS가 최대 2.8km까지도
+      // 빗나가는 사례가 실제로 있어(반경을 1km까지 넓혀도 여전히 벗어남), 거리 불일치만으로
+      // 본사근무 등록 자체를 막지 않는다. 2026-09-08에 고객사미팅/고객사작업에는 이미 적용한
+      // "막지 않고 locationMatch=false·거리값만 기록" 완화를 본사근무에도 동일하게 적용한다
+      // (locationMismatchException 패턴 참고). 사내망 IP·주소 매칭이라는 다른 안전장치는 여전히
+      // 남아있고, 위치 자체가 순간이동급으로 튄 경우는 프론트에서 별도로 차단한다(jumpDetected).
       if (!hqLocationResult) {
         const { start: dayStartForHq, end: dayEndForHq } = realDayWindow(todayDateOnly());
         const priorHqLocationFailures = await prisma.statusChangeLog.count({

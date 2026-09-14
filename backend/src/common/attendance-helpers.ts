@@ -1,5 +1,50 @@
 import { prisma } from './prisma';
-import { getPolicyNumber } from './policy-engine/policy-engine';
+import { getPolicyNumber, getPolicyJSON } from './policy-engine/policy-engine';
+
+/**
+ * 주말(토=6,일=0, KST) 여부 — attendance.routes.ts("주말엔 주말작업만" 게이트)와
+ * reminder-scheduler.ts(주말엔 미출근/미퇴근 알림을 아예 보내지 않음) 양쪽에서 같은 기준을 써야
+ * 하므로 원래 attendance.routes.ts에만 있던 걸 여기 하나로 모았다(2026-09-14).
+ */
+export function isWeekendKST(date: Date = new Date()): boolean {
+  const kstDay = new Date(date.getTime() + 9 * 60 * 60 * 1000).getUTCDay();
+  return kstDay === 0 || kstDay === 6;
+}
+
+// 2026-09-14: "주말/공휴일에도 출근 알림이 계속 온다"는 신고(김진호·김진영·권성주) 반영 —
+// 관공서의 공휴일에 관한 규정 기준 2026년 법정공휴일 기본값(대체공휴일·근로자의 날 포함).
+// 연도가 바뀌거나 회사 창립기념일 같은 회사만의 휴일을 추가해야 하면, 정책값
+// PUBLIC_HOLIDAYS_KST(JSON 문자열 배열, "YYYY-MM-DD")로 이 기본값 전체를 덮어쓸 수 있다.
+const DEFAULT_PUBLIC_HOLIDAYS_KST_2026 = [
+  '2026-01-01', // 신정
+  '2026-02-16', '2026-02-17', '2026-02-18', // 설날 연휴
+  '2026-03-01', // 삼일절
+  '2026-03-02', // 삼일절 대체공휴일
+  '2026-05-01', // 근로자의 날 (전 사업장 유급휴일)
+  '2026-05-05', // 어린이날
+  '2026-05-24', // 부처님오신날
+  '2026-05-25', // 부처님오신날 대체공휴일
+  '2026-06-06', // 현충일
+  '2026-08-15', // 광복절
+  '2026-08-17', // 광복절 대체공휴일
+  '2026-09-24', '2026-09-25', '2026-09-26', // 추석 연휴
+  '2026-10-03', // 개천절
+  '2026-10-05', // 개천절 대체공휴일
+  '2026-10-09', // 한글날
+  '2026-12-25', // 크리스마스
+];
+
+/** Date를 "YYYY-MM-DD"(KST 기준 날짜) 문자열로 변환한다 — 공휴일 목록 대조용. */
+function kstDateKey(date: Date): string {
+  const kst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  return kst.toISOString().slice(0, 10);
+}
+
+/** 오늘(또는 주어진 날짜)이 정책값 PUBLIC_HOLIDAYS_KST(없으면 기본 2026년 목록) 기준 공휴일인지. */
+export async function isPublicHolidayKST(date: Date = new Date()): Promise<boolean> {
+  const holidays = await getPolicyJSON<string[]>('PUBLIC_HOLIDAYS_KST', DEFAULT_PUBLIC_HOLIDAYS_KST_2026);
+  return holidays.includes(kstDateKey(date));
+}
 
 /**
  * "오늘"의 workDate를 계산한다. 자정이 아니라 새벽 3시(KST)를 하루의 경계로 삼는다 —

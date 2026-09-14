@@ -115,11 +115,41 @@ pilotRouter.post('/feedback', requireAuth, async (req, res) => {
  */
 pilotRouter.get('/feedback', requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'), async (_req, res) => {
   const feedback = await prisma.pilotFeedback.findMany({
-    include: { user: { select: { name: true, employeeNo: true } } },
+    include: {
+      user: { select: { name: true, employeeNo: true } },
+      resolvedBy: { select: { name: true } },
+    },
     orderBy: { createdAt: 'desc' },
     take: 300,
   });
   return res.json({ success: true, data: feedback });
+});
+
+/**
+ * 2026-09-14: 관리자 피드백함에서 조치 완료된 항목을 따로 표시해달라는 요청 — 누르면 처리완료로
+ * 표시(resolvedAt/resolvedByUserId 기록), 다시 누르면 미처리로 되돌릴 수 있게 토글로 만든다
+ * (실수로 눌렀을 때 되돌릴 방법이 없으면 곤란하므로).
+ */
+const resolveSchema = z.object({ resolved: z.boolean() });
+
+pilotRouter.patch('/feedback/:id/resolve', requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'), async (req, res) => {
+  const parsed = resolveSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '입력값을 확인하세요.' } });
+  }
+  const actorUserId = req.authUser!.userId;
+  const existing = await prisma.pilotFeedback.findUnique({ where: { id: req.params.id } });
+  if (!existing) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '피드백을 찾을 수 없습니다.' } });
+  }
+  const updated = await prisma.pilotFeedback.update({
+    where: { id: req.params.id },
+    data: parsed.data.resolved
+      ? { resolvedAt: new Date(), resolvedByUserId: actorUserId }
+      : { resolvedAt: null, resolvedByUserId: null },
+    include: { user: { select: { name: true, employeeNo: true } }, resolvedBy: { select: { name: true } } },
+  });
+  return res.json({ success: true, data: updated });
 });
 
 pilotRouter.get('/stats', requireAuth, managerOnly, async (_req, res) => {

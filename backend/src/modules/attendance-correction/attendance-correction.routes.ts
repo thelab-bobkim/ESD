@@ -96,13 +96,20 @@ attendanceCorrectionRouter.post('/requests', async (req, res) => {
   if (Number.isNaN(proposedClockOutAt.getTime())) {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '퇴근 시각 형식이 올바르지 않습니다.' } });
   }
-  const { start: dayStart, end: dayEnd } = realDayWindow(record.workDate);
-  if (proposedClockOutAt <= record.clockInAt || proposedClockOutAt < dayStart || proposedClockOutAt > dayEnd) {
+  // 2026-09-14: 안중석 피드백 — 주말작업처럼 새벽 3시를 넘겨서까지 실제로 근무한 경우, 상한을
+  // "그 workDate의 새벽 3시"로 고정해두면 실제 퇴근시각이 그보다 늦다는 이유만으로 정정 신청
+  // 자체를 낼 수 없었다(토요일 19:51 출근 → 일요일 08시경 퇴근인데도 거절됨). 이 신청이 막히면
+  // PastDayCorrectionCard 규칙상 다음 근무일 상태 등록까지 연쇄로 막혀버린다. 상한을 "지금(미래
+  // 금지)"으로 완화해서, 실제로 얼마나 늦게까지 일했든 신청은 가능하게 하고, 그 시각이 적절한지는
+  // 기존처럼 팀장/HR 승인 단계(approval.routes.ts)에서 사람이 확인하게 한다.
+  const { start: dayStart } = realDayWindow(record.workDate);
+  const now = new Date();
+  if (proposedClockOutAt <= record.clockInAt || proposedClockOutAt < dayStart || proposedClockOutAt > now) {
     return res.status(400).json({
       success: false,
       error: {
         code: 'OUT_OF_RANGE',
-        message: '퇴근 시각은 그날 출근 이후, 새벽 3시 이내여야 합니다. 그 이후까지 근무하셨다면 관리자에게 별도로 문의해주세요.',
+        message: '퇴근 시각은 그날 출근 이후, 현재 시각 이전이어야 합니다.',
       },
     });
   }

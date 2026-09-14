@@ -205,7 +205,8 @@ model User {
   leaveBalances          LeaveBalance[]
   leaveConversionRequests LeaveConversionRequest[]
   pilotGroupMembers      PilotGroupMember[]
-  pilotFeedback          PilotFeedback[]
+  pilotFeedback          PilotFeedback[] @relation("PilotFeedbackAuthor")
+  pilotFeedbackResolved  PilotFeedback[] @relation("PilotFeedbackResolvedBy")
   effortLogs             EffortLog[]
   businessTripLogs       BusinessTripLog[]
   pushSubscriptions      PushSubscription[]
@@ -499,10 +500,16 @@ model PilotFeedback {
   pilotGroupId String           @map("pilot_group_id")
   pilotGroup   PilotGroup       @relation(fields: [pilotGroupId], references: [id])
   userId       String           @map("user_id")
-  user         User             @relation(fields: [userId], references: [id])
+  user         User             @relation("PilotFeedbackAuthor", fields: [userId], references: [id])
   category     FeedbackCategory
   content      String
   createdAt    DateTime         @default(now()) @map("created_at")
+  // 2026-09-14: 관리자 피드백함에서 조치 완료된 항목을 따로 표시해달라는 요청 — alerts 테이블의
+  // resolvedAt과 동일한 패턴(별도 상태 컬럼 대신 "처리된 시각"만 남김, null이면 미처리).
+  // 누가 처리했는지도 같이 남겨서 관리자 화면에 표시한다.
+  resolvedAt       DateTime? @map("resolved_at")
+  resolvedByUserId String?   @map("resolved_by_user_id")
+  resolvedBy       User?     @relation("PilotFeedbackResolvedBy", fields: [resolvedByUserId], references: [id])
 
   @@map("pilot_feedback")
 }
