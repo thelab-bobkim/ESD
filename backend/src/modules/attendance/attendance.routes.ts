@@ -521,6 +521,17 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'TIME_REQUIRED', message: '작업시작 시간을 입력해야 합니다.' } });
   }
 
+  // 2026-09-14: "고객작업과 야간작업 주말작업은 모두 시작시간과 끝나는 시간이 있어야 됩니다" 요청
+  // 반영 — 이 세 상태는 완료시간도 필수다(고객사미팅은 요청에서 제외되어 기존처럼 "진행중" 허용).
+  // 다만 이 검증은 상세폼 제출(effort.description이 있는 등록)에만 건다 — 아이콘을 한 번 눌러
+  // 상태를 즉시 등록하는 최초 클릭(QUICK_REGISTER_STATUSES, 프론트 index.tsx)은 description 없이
+  // 시작시간만 보내고, 바로 이어서 열리는 상세폼에서 완료시간을 채우는 구조이므로 그 즉시등록
+  // 자체까지 막으면 안 된다.
+  const REQUIRE_END_TIME_STATUSES = new Set(['CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
+  if (REQUIRE_END_TIME_STATUSES.has(status) && effort?.description && !effort?.endTime) {
+    return res.status(400).json({ success: false, error: { code: 'END_TIME_REQUIRED', message: '완료 시간을 입력해야 합니다.' } });
+  }
+
   // 고객사작업/고객사미팅은 어떤 고객사인지 반드시 알아야 공수 산정·리포트가 의미가 있다
   // (2026-09-02: 빈칸으로 저장되던 기록이 리포트에서 통째로 누락되는 문제 해결 — 사용자 확인 완료).
   // 등록된 고객사 목록에서 고른 이름이어야 하며, 목록에 없는 새 이름이면 프론트에서 먼저

@@ -57,6 +57,10 @@ const SIMPLE_CLIENT_STATUSES = new Set(['RESIDENT_ONSITE']);
 const SITE_DETAIL_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
 // 백엔드 LOCATION_CHECK_STATUSES와 동일 — 이 상태들만 등록 순간 좌표를 등록된 고객사와 대조한다.
 const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
+// 2026-09-14: "고객작업과 야간작업 주말작업은 모두 시작시간과 끝나는 시간이 있어야 됩니다" 요청
+// 반영 — 이 세 상태는 완료시간도 필수다(백엔드 REQUIRE_END_TIME_STATUSES와 동일하게 유지).
+// 고객사미팅은 요청에서 제외되어 있어 기존처럼 완료시간 선택(진행중 허용)을 유지한다.
+const END_TIME_REQUIRED_STATUSES = new Set(['CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
 // 물리적으로 다른 장소인 근무형태들 — 백엔드 attendance-helpers.ts의 LOCATION_TIED_STATUSES와
 // 동일한 기준(REMOTE는 이동이 필요 없는 근무형태라 제외). 이 상태들 사이를 "이동중" 없이 곧장
 // 넘나들면(예: 본사근무에서 바로 고객사작업으로) 잘못 누른 게 아닌지 한 번 되물어본다(2026-09-14).
@@ -971,6 +975,8 @@ export default function EmployeeHome() {
     if (!SIMPLIFIED_EFFORT_STATUSES.has(code) && !workReason.trim()) return;
     // 작업위치(원격/현장, 필수) · 작업인원(선택) · 진행률/차수(선택, 야간작업만) — 야간작업/고객사미팅/고객사작업만 해당.
     if (SITE_DETAIL_STATUSES.has(code) && !siteType) return;
+    // 고객사작업/야간작업/주말작업은 완료시간까지 필수다(2026-09-14 요청) — 버튼 disabled와 동일.
+    if (END_TIME_REQUIRED_STATUSES.has(code) && !workEnd) return;
     const siteDetailSuffix = SITE_DETAIL_STATUSES.has(code)
       ? ` | 작업위치: ${siteType === 'ONSITE' ? '현장' : '원격'}${personnel ? ` | 작업인원: ${personnel}` : ''}`
       : '';
@@ -1813,7 +1819,9 @@ export default function EmployeeHome() {
               )}
 
               {/* 2026-09-14: "입력할 게 너무 많다"는 의견 — 고객사미팅/고객사작업은 필수가 아닌
-                  항목(프로젝트명·완료시간·작업인원)을 기본으로 접어두고, 필요할 때만 펼친다. */}
+                  항목(프로젝트명·작업인원, 고객사미팅은 완료시간도 포함)을 기본으로 접어두고,
+                  필요할 때만 펼친다. 고객사작업의 완료시간은 이제 필수라 접이 대상에서 뺐다
+                  (아래 시작/완료 시간 블록 참고). */}
               {(detailStatus === 'CLIENT_MEETING' || detailStatus === 'CLIENT_WORK') && (
                 <button
                   type="button"
@@ -1821,7 +1829,11 @@ export default function EmployeeHome() {
                   style={{ width: 'auto', margin: '0 0 10px', fontSize: 12, padding: '4px 10px' }}
                   onClick={() => setShowMoreFields((v) => !v)}
                 >
-                  {showMoreFields ? '▲ 선택 항목 접기' : '▾ 프로젝트명 · 완료시간 · 작업인원 입력(선택)'}
+                  {showMoreFields
+                    ? '▲ 선택 항목 접기'
+                    : detailStatus === 'CLIENT_MEETING'
+                      ? '▾ 프로젝트명 · 완료시간 · 작업인원 입력(선택)'
+                      : '▾ 프로젝트명 · 작업인원 입력(선택)'}
                 </button>
               )}
 
@@ -1840,9 +1852,12 @@ export default function EmployeeHome() {
               </select>
 
               {detailStatus !== 'HQ_WORKING' && (
-                (detailStatus === 'CLIENT_MEETING' || detailStatus === 'CLIENT_WORK') && !showMoreFields ? (
+                // 고객사미팅만 완료시간이 선택이라 기본으로 접어서 시작시간만 보여준다. 고객사작업/
+                // 야간작업/주말작업(END_TIME_REQUIRED_STATUSES)은 완료시간이 필수라 접지 않고
+                // 항상 시작~완료를 같이 보여준다(2026-09-14).
+                detailStatus === 'CLIENT_MEETING' && !showMoreFields ? (
                   <>
-                    <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅시작' : '작업시작'}</label>
+                    <label className="field-label">미팅시작</label>
                     <TimeSelectInput value={workStart} onChange={setWorkStart} />
                   </>
                 ) : (
@@ -1852,8 +1867,14 @@ export default function EmployeeHome() {
                       <TimeSelectInput value={workStart} onChange={setWorkStart} />
                     </div>
                     <div style={{ flex: 1 }}>
-                      <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅완료(선택 — 진행중이면 비워두세요)' : '작업완료(선택 — 진행중이면 비워두세요)'}</label>
-                      <TimeSelectInput value={workEnd} onChange={setWorkEnd} allowEmpty />
+                      <label className="field-label">
+                        {detailStatus === 'CLIENT_MEETING'
+                          ? '미팅완료(선택 — 진행중이면 비워두세요)'
+                          : END_TIME_REQUIRED_STATUSES.has(detailStatus)
+                            ? '작업완료 (필수)'
+                            : '작업완료(선택 — 진행중이면 비워두세요)'}
+                      </label>
+                      <TimeSelectInput value={workEnd} onChange={setWorkEnd} allowEmpty={!END_TIME_REQUIRED_STATUSES.has(detailStatus)} />
                     </div>
                   </div>
                 )
@@ -1918,6 +1939,8 @@ export default function EmployeeHome() {
                   // (목록에서 고르거나 새로 등록해야 확정되므로, 검색창 글자만 입력한 상태로는 등록 불가).
                   || (LOCATION_CHECK_STATUSES.has(detailStatus) && !clientName.trim())
                   || (SITE_DETAIL_STATUSES.has(detailStatus) && !siteType)
+                  // 고객사작업/야간작업/주말작업은 완료시간도 필수다(2026-09-14 요청 — 고객사미팅은 제외).
+                  || (END_TIME_REQUIRED_STATUSES.has(detailStatus) && !workEnd)
                 }
                 onClick={submitDetailForm}
               >
