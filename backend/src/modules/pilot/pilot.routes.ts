@@ -74,10 +74,23 @@ pilotRouter.get('/groups/:id/report', requireAuth, managerOnly, async (req, res)
 });
 
 const feedbackSchema = z.object({
-  pilotGroupId: z.string().uuid(),
+  pilotGroupId: z.string().uuid().optional(),
   category: z.enum(['BUG', 'UX', 'POLICY', 'OTHER']),
   content: z.string().min(1),
 });
+
+/**
+ * TSB-Ver3.1: pilotGroupId를 선택값으로 완화 — 정식 파일럿 그룹 멤버(pilot_group_members)로
+ * 등록된 인원이 극소수(2명)뿐이라, 대부분의 직원은 groupId를 몰라서 기존 방식대로는 피드백을
+ * 아예 남길 수 없었다. 본인이 속한 그룹이 있으면 그걸 쓰고, 없으면 가장 최근 파일럿 그룹으로
+ * 자동 귀속시킨다(2026-09-11 개선 제안서 Quick win 반영).
+ */
+async function resolvePilotGroupId(userId: string): Promise<string | null> {
+  const membership = await prisma.pilotGroupMember.findFirst({ where: { userId } });
+  if (membership) return membership.pilotGroupId;
+  const anyGroup = await prisma.pilotGroup.findFirst({ orderBy: { startDate: 'desc' } });
+  return anyGroup?.id ?? null;
+}
 
 pilotRouter.post('/feedback', requireAuth, async (req, res) => {
   const parsed = feedbackSchema.safeParse(req.body);
@@ -85,8 +98,26 @@ pilotRouter.post('/feedback', requireAuth, async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '입력값을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
+  const pilotGroupId = parsed.data.pilotGroupId ?? (await resolvePilotGroupId(userId));
+  if (!pilotGroupId) {
+    return res.status(400).json({ success: false, error: { code: 'NO_PILOT_GROUP', message: '등록된 파일럿 그룹이 없습니다. 관리자에게 문의해주세요.' } });
+  }
   const feedback = await prisma.pilotFeedback.create({
-    data: { pilotGroupId: parsed.data.pilotGroupId, userId, category: parsed.data.category, content: parsed.data.content },
+    data: { pilotGroupId, userId, category: parsed.data.category, content: parsed.data.content },
+  });
+  return res.json({ success: true, data: feedback });
+});
+
+/**
+ * TSB-Ver3.1: 관리자용 전체 피드백 목록 — 기존엔 그룹별 report(/groups/:id/report)나 통계(/stats)만
+ * 있고 "그냥 전체 피드백 목록"을 보는 API가 없어서 화면을 만들 수가 없었다. 다른 관리자 화면과
+ * 동일한 권한 범위로 열어준다.
+ */
+pilotRouter.get('/feedback', requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'), async (_req, res) => {
+  const feedback = await prisma.pilotFeedback.findMany({
+    include: { user: { select: { name: true, employeeNo: true } } },
+    orderBy: { createdAt: 'desc' },
+    take: 300,
   });
   return res.json({ success: true, data: feedback });
 });

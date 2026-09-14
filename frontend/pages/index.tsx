@@ -8,6 +8,7 @@ import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greeting
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
 import PastDayCorrectionCard, { type PendingCorrectionRow } from '@/components/PastDayCorrectionCard';
+import PilotFeedbackButton from '@/components/PilotFeedbackButton';
 
 // 요청하신 배열: 재택/본사근무/고객사상주, 이동중/고객사미팅/고객사작업, 야간작업/대체휴무/휴가 (총 9개)
 const STATUS_META: Record<string, { label: string; icon: string }> = {
@@ -230,7 +231,7 @@ export default function EmployeeHome() {
   const [clientLocations, setClientLocations] = useState<{ name: string; latitude: number; longitude: number }[]>([]);
   const [arrivedClient, setArrivedClient] = useState<string | null>(null);
   // 고객사미팅/고객사작업 등록 시 검색·선택하는 전체 고객사 목록(좌표 유무 무관) — 2026-09-02 추가.
-  const [clientOptions, setClientOptions] = useState<{ id: string; name: string }[]>([]);
+  const [clientOptions, setClientOptions] = useState<{ id: string; name: string; address?: string }[]>([]);
   // 2026-09-04: 목록을 못 불러온 건지(네트워크 오류) 아니면 진짜로 등록된 고객사가 없는 건지
   // 화면에서 구분이 안 돼서 "목록이 안 보여요" 문의가 들어옴 — 원인 파악용으로 구분해서 보여준다.
   const [clientOptionsError, setClientOptionsError] = useState(false);
@@ -1483,6 +1484,9 @@ export default function EmployeeHome() {
                 {pushLoading ? '처리 중...' : pushSubscribed ? '🔔 출퇴근 알림 끄기' : '🔕 출퇴근 알림 켜기(출근 오전 9시·퇴근 저녁)'}
               </button>
             )}
+            <div style={{ marginTop: 10 }}>
+              <PilotFeedbackButton />
+            </div>
           </div>
 
           <div className="card">
@@ -1733,7 +1737,8 @@ export default function EmployeeHome() {
                             setClientPickerOpen(false);
                           }}
                         >
-                          {c.name}
+                          <span className="client-combobox-name">{c.name}</span>
+                          {c.address && <span className="client-combobox-address">{c.address}</span>}
                         </button>
                       ))}
                       {clientQuery.trim() && !exactClientMatch && (

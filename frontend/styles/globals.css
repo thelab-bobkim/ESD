@@ -377,11 +377,13 @@ body.tsb-dark-body { background: #090d18; }
 .client-combobox-item:hover { background: #f1f3f5; }
 .client-combobox-add { color: #2f6feb; font-weight: 600; }
 .client-combobox-empty { padding: 8px 10px; font-size: 13px; color: #868e96; }
+.client-combobox-address { display: block; font-size: 12px; color: #000; margin-top: 2px; }
 .tsb-dark .client-combobox-list { background: #0d1326; border: 1px solid var(--dsti-border); box-shadow: 0 6px 20px rgba(0,0,0,0.35); }
 .tsb-dark .client-combobox-item { color: var(--dsti-text); }
 .tsb-dark .client-combobox-item:hover { background: #151c34; }
 .tsb-dark .client-combobox-add { color: var(--dsti-primary); }
 .tsb-dark .client-combobox-empty { color: var(--dsti-text-faint); }
+.tsb-dark .client-combobox-address { color: #000; }
 
 /* 히어로 카드 */
 .tsb-dark .hero-card { background: linear-gradient(135deg, #10162a 0%, #161d3a 100%); border: 1px solid var(--dsti-border); }

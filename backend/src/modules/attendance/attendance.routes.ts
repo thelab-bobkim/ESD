@@ -1057,7 +1057,7 @@ attendanceRouter.get('/clients-with-location', async (_req, res) => {
 attendanceRouter.get('/clients', async (_req, res) => {
   const clients = await prisma.client.findMany({
     where: { name: { not: { startsWith: 'SAMPLE_' } } },
-    select: { id: true, name: true },
+    select: { id: true, name: true, address: true },
     orderBy: { name: 'asc' },
   });
   return res.json({ success: true, data: clients });

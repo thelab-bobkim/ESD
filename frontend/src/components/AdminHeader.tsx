@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { href: '/admin/approvals', label: '승인함', icon: '✅' },
   { href: '/admin/clients', label: '고객사 위치관리', icon: '📍' },
   { href: '/admin/board-scope', label: '표시 대상 관리', icon: '🎯' },
+  { href: '/admin/feedback', label: '피드백함', icon: '💬' },
 ];
 
 interface Props {
