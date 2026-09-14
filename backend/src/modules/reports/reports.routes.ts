@@ -177,6 +177,23 @@ reportsRouter.get('/effort-summary', async (req, res) => {
   return res.json({ success: true, data: { from, to, clients } });
 });
 
+/**
+ * 2026-09-14: "엔지니어별 대상 목록은 출퇴근·근로시간의 '기술부만 보기'에 나오는 인원 전체를
+ * 항상 보여줘야 한다"는 요청 — effort-summary는 이 기간에 공수기록이 실제로 있는 사람만 내려주기
+ * 때문에, 기록이 아직 없는 엔지니어는 드롭다운에서 통째로 빠지는 문제가 있었다. attendance-detail과
+ * 동일한 재직중 표시대상(includedInBoard) 전체 명단에서 이름/부서만 내려주고, 기술부 여부 판별
+ * (classifyDeptGroup)과 기간별 투입시간 합산은 프론트에서 처리한다.
+ */
+reportsRouter.get('/employee-roster', async (_req, res) => {
+  const users = await prisma.user.findMany({
+    where: { includedInBoard: true, employmentStatus: 'ACTIVE', name: { not: { startsWith: 'SAMPLE_' } } },
+    select: { id: true, name: true, department: { select: { name: true } } },
+    orderBy: { name: 'asc' },
+  });
+  const rows = users.map((u) => ({ userId: u.id, name: u.name, department: u.department.name }));
+  return res.json({ success: true, data: rows });
+});
+
 const KST_WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 function kstWeekday(d: Date): string {
   return KST_WEEKDAYS[new Date(d.getTime() + 9 * 60 * 60 * 1000).getUTCDay()];

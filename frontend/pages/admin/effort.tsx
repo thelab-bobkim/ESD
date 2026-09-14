@@ -177,6 +177,15 @@ export default function AdminEffortPage() {
   // 년/월/일을 직접 선택하는 기간 — 지정하면 위 탭(월/분기/반기/년)보다 우선한다.
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
+  // 2026-09-14: "엔지니어별" 대상 목록은 이 기간에 공수기록이 있는 사람만이 아니라, 출퇴근·근로시간
+  // 화면의 "기술부만 보기"에 나오는 인원 전체(기록이 아직 없어도)를 항상 보여줘야 한다는 요청 —
+  // 기간과 무관한 재직중 전 직원 명단을 한 번만 불러와서(roster) 기술부만 걸러 쓴다.
+  const [roster, setRoster] = useState<{ userId: string; name: string; department: string }[] | null>(null);
+  useEffect(() => {
+    apiFetch<{ userId: string; name: string; department: string }[]>('/reports/employee-roster')
+      .then(setRoster)
+      .catch(() => setRoster([]));
+  }, []);
 
   const tabRange = useMemo(() => computeEffortRange(period, anchor), [period, anchor]);
   const isCustom = Boolean(customFrom && customTo);
@@ -214,26 +223,27 @@ export default function AdminEffortPage() {
     [effort]
   );
   // 2026-09-14: "엔지니어별" 관점은 출퇴근·근로시간 화면에서 정의한 영업부/기술부 분류 기준과
-  // 동일하게(classifyDeptGroup), 실제 기술부 소속만 "엔지니어"로 취급한다 — 고객사 미팅 등으로
-  // 공수기록이 남은 영업/관리 직원은 이 드롭다운(과 엔지니어별 관점 전체)에서 제외한다.
-  const engineerTargets = useMemo(
-    () =>
-      effort
-        ? sortByLabelKo(
-            pivotByEngineer(effort.clients)
-              .filter((e) => classifyDeptGroup(e.department) === 'tech')
-              .map((e) => ({ key: e.userId, label: e.name, totalMinutes: e.totalMinutes })),
-            (t) => t.label
-          )
-        : [],
-    [effort]
-  );
+  // 동일하게(classifyDeptGroup) 실제 기술부 소속만 "엔지니어"로 취급하고, "기술부만 보기"와
+  // 동일하게 이 기간에 공수기록이 없는 사람도 빠짐없이 보여준다(투입시간 0으로 표시) — 기록
+  // 기준이 아니라 재직중 인원(roster) 기준으로 목록을 만들고, 그 위에 이 기간의 투입시간을 얹는다.
+  const engineerTargets = useMemo(() => {
+    if (!roster) return [];
+    const minutesByUser = new Map(pivotByEngineer(effort?.clients ?? []).map((e) => [e.userId, e.totalMinutes]));
+    const techEmployees = roster.filter((r) => classifyDeptGroup(r.department) === 'tech');
+    return sortByLabelKo(
+      techEmployees.map((r) => ({ key: r.userId, label: r.name, totalMinutes: minutesByUser.get(r.userId) ?? 0 })),
+      (t) => t.label
+    );
+  }, [roster, effort]);
   const currentTargets = perspective === 'client' ? clientTargets : engineerTargets;
   // 선택된 대상이 이번 기간엔 없으면(예: 기간을 바꿔서 그 고객사/엔지니어의 기록이 없어짐) 목록의
   // 첫 항목으로 자연스럽게 넘어간다 — 빈 드롭다운이 뜨는 걸 막는다.
   const selectedKey = perspective === 'client' ? selectedClientName : selectedEngineerId;
   const resolvedKey = currentTargets.some((t) => t.key === selectedKey) ? selectedKey : (currentTargets[0]?.key ?? '');
   const currentTarget = currentTargets.find((t) => t.key === resolvedKey) ?? null;
+  // 고객사별 관점은 effort 응답만 있으면 되지만, 엔지니어별 관점은 roster까지 로드돼야 목록이
+  // 완성된다(engineerTargets 참고).
+  const isDataLoading = !effort || (perspective === 'engineer' && !roster);
 
   useEffect(() => {
     if (!resolvedKey) {
@@ -325,12 +335,14 @@ export default function AdminEffortPage() {
         </button>
       </div>
 
-      {!effort && <div className="card"><div className="board-empty">불러오는 중...</div></div>}
-      {effort && currentTargets.length === 0 && (
+      {/* 엔지니어별 관점은 roster(재직중 기술부 명단)까지 로드돼야 목록이 완성되므로, 기간 데이터
+          (effort)뿐 아니라 roster도 같이 기다린다. */}
+      {isDataLoading && <div className="card"><div className="board-empty">불러오는 중...</div></div>}
+      {!isDataLoading && currentTargets.length === 0 && (
         <div className="card"><div className="board-empty">이 조건에 등록된(완료된) 공수기록이 없습니다.</div></div>
       )}
 
-      {effort && currentTarget && (
+      {!isDataLoading && currentTarget && (
         <>
           <div className="card">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
