@@ -471,6 +471,11 @@ body.tsb-dark-body { background: #090d18; }
 .cc-alert-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .cc-alert-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .cc-avatar { flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; background: var(--cc-accent, #f59e0b); color: #06101f; font-weight: 800; font-size: 11px; display: flex; align-items: center; justify-content: center; }
+/* 2026-09-15: 상황판 직원 아바타를 눌러 관리자가 바로 메시지를 보낼 수 있게(dashboard.tsx
+   openMessageModal) — 클릭 가능하다는 걸 눈으로 알 수 있도록 살짝의 hover/active 반응만 추가. */
+.clickable-avatar { cursor: pointer; transition: transform 0.1s ease, box-shadow 0.1s ease; }
+.clickable-avatar:hover { box-shadow: 0 0 0 3px rgba(59,130,246,0.35); }
+.clickable-avatar:active { transform: scale(0.92); }
 .cc-alert-name .nm { font-size: 14px; font-weight: 800; color: var(--dsti-text); }
 .cc-alert-name .dept { font-size: 11px; color: var(--dsti-text-muted); }
 .cc-alert-flag { flex-shrink: 0; font-size: 10.5px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: rgba(245,158,11,0.15); color: #f59e0b; white-space: nowrap; }

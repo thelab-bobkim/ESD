@@ -137,6 +137,38 @@ export default function AdminDashboard() {
   const [pushStatus, setPushStatus] = useState<{ userId: string; name: string; department: string; subscribed: boolean }[] | null>(null);
   const [showPushList, setShowPushList] = useState(false);
 
+  // 2026-09-15: 상황판에서 "위치 불일치/미확인" 등으로 눈에 띈 직원에게, 관리자가 그 자리에서
+  // 바로 짧은 메시지를 보낼 수 있게 추가(직원 아바타 클릭). 등록된 푸시 구독으로 즉시 전달되고,
+  // 직원 앱(index.tsx)에서도 배너로 보여준다 — messages.routes.ts 참고.
+  const [messageTarget, setMessageTarget] = useState<{ userId: string; name: string } | null>(null);
+  const [messageText, setMessageText] = useState('');
+  const [sendingMessage, setSendingMessage] = useState(false);
+  const [messageResult, setMessageResult] = useState<string | null>(null);
+
+  function openMessageModal(userId: string, name: string) {
+    setMessageTarget({ userId, name });
+    setMessageText('');
+    setMessageResult(null);
+  }
+
+  async function sendAdminMessage() {
+    if (!messageTarget || !messageText.trim()) return;
+    setSendingMessage(true);
+    try {
+      await apiFetch('/messages/admin', {
+        method: 'POST',
+        body: JSON.stringify({ userId: messageTarget.userId, message: messageText.trim() }),
+      });
+      setMessageResult(`✅ ${messageTarget.name}님에게 메시지를 보냈습니다.`);
+      setMessageTarget(null);
+      setMessageText('');
+    } catch (e) {
+      setMessageResult(e instanceof Error ? e.message : '메시지 전송에 실패했습니다.');
+    } finally {
+      setSendingMessage(false);
+    }
+  }
+
   // TSB-Ver2.1: 전사 상황판을 다크 관제형 테마로 바꾸면서, 페이지 바깥(뷰포트 좌우 여백)까지
   // 어둡게 보이도록 body에도 클래스를 붙인다(다른 5개 관리자 화면엔 영향 없음 — 언마운트되면 제거).
   useEffect(() => {
@@ -356,6 +388,7 @@ export default function AdminDashboard() {
         </button>
       </div>
       {syncMessage && <div className="sync-mini-message">{syncMessage}</div>}
+      {messageResult && <div className="sync-mini-message">{messageResult}</div>}
       {error && <div className="error">{error}</div>}
 
       <div className="cc-stat-row">
@@ -419,7 +452,7 @@ export default function AdminDashboard() {
               <div className="cc-alert-card" key={p.userId} style={{ '--cc-accent': '#f59e0b' } as CSSProperties}>
                 <div className="cc-alert-head">
                   <div className="cc-alert-name">
-                    <div className="cc-avatar">{p.name.slice(-2)}</div>
+                    <div className="cc-avatar clickable-avatar" title={`${p.name}님에게 메시지 보내기`} onClick={() => openMessageModal(p.userId, p.name)}>{p.name.slice(-2)}</div>
                     <div style={{ minWidth: 0 }}>
                       <div className="nm">{p.name}</div>
                       <div className="dept">{p.department}</div>
@@ -471,7 +504,7 @@ export default function AdminDashboard() {
                 <div className="cc-alert-card" key={e.userId} style={{ '--cc-accent': accent } as CSSProperties}>
                   <div className="cc-alert-head">
                     <div className="cc-alert-name">
-                      <div className="cc-avatar">{e.name.slice(-2)}</div>
+                      <div className="cc-avatar clickable-avatar" title={`${e.name}님에게 메시지 보내기`} onClick={() => openMessageModal(e.userId, e.name)}>{e.name.slice(-2)}</div>
                       <div style={{ minWidth: 0 }}>
                         <div className="nm">
                           {e.name}
@@ -571,7 +604,14 @@ export default function AdminDashboard() {
                 {isExpanded && employees.map((e) => (
                   <div className="employee-chip" key={e.userId}>
                     <div className="chip-row">
-                      <div className="chip-avatar" style={{ background: meta.color }}>{e.name.slice(-2)}</div>
+                      <div
+                        className="chip-avatar clickable-avatar"
+                        style={{ background: meta.color }}
+                        title={`${e.name}님에게 메시지 보내기`}
+                        onClick={() => openMessageModal(e.userId, e.name)}
+                      >
+                        {e.name.slice(-2)}
+                      </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div className="name">
                           {e.name}
@@ -604,6 +644,41 @@ export default function AdminDashboard() {
             );
           })}
       </div>
+
+      {messageTarget && (
+        <div className="quick-confirm-backdrop" onClick={() => !sendingMessage && setMessageTarget(null)}>
+          <div className="card notice-tint-blue quick-confirm-sheet" onClick={(e) => e.stopPropagation()}>
+            📨 <strong>{messageTarget.name}</strong>님에게 메시지 보내기
+            <textarea
+              className="detail-textarea"
+              rows={3}
+              style={{ marginTop: 10 }}
+              placeholder="예: 등록하신 위치가 확인되지 않아요. 확인 부탁드립니다."
+              value={messageText}
+              onChange={(e) => setMessageText(e.target.value)}
+              maxLength={500}
+              autoFocus
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <button
+                style={{ width: 'auto', margin: 0 }}
+                disabled={sendingMessage || !messageText.trim()}
+                onClick={sendAdminMessage}
+              >
+                {sendingMessage ? '보내는 중...' : '보내기'}
+              </button>
+              <button
+                className="secondary"
+                style={{ width: 'auto', margin: 0 }}
+                disabled={sendingMessage}
+                onClick={() => setMessageTarget(null)}
+              >
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

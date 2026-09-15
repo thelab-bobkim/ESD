@@ -213,6 +213,11 @@ model User {
   approvalRequestsMade   ApprovalRequest[] @relation("Requester")
   approvalRequestsDecided ApprovalRequest[] @relation("Approver")
   attendanceCorrectionRequests AttendanceCorrectionRequest[]
+  // 2026-09-15: 관리자→직원 간단 메시지(위치/근태 이슈 등 확인 요청용) — 받는 사람 쪽만 관계로 둔다.
+  // 보낸 관리자는 이름만 스냅샷으로 남기고(AdminMessage.sentByName) 별도 관계를 두지 않는다
+  // (같은 User 모델을 두 번 참조하려면 @relation 이름 구분이 필요해지는데, 발신 이력 조회 화면이
+  // 아직 없어 굳이 관계로 만들 실익이 적다 — 필요해지면 그때 추가).
+  receivedAdminMessages  AdminMessage[]
 
   @@map("users")
 }
@@ -588,6 +593,27 @@ model PushSubscription {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("push_subscriptions")
+}
+
+/**
+ * 관리자 → 직원 간단 메시지. 2026-09-15: 상황판에서 "위치 불일치/미확인" 등으로 표시된 직원을
+ * 관리자가 눈으로 확인만 하고 따로 연락할 방법이 없었다(직원→관리자 피드백함의 반대 방향).
+ * 상황판의 직원 아바타(동그라미)를 눌러 짧은 메시지를 보내면, 등록된 푸시 구독으로 즉시 알림이
+ * 가고(common/push.ts sendPushToUser 재사용), 상황판 앱(index.tsx)에도 안 읽은 메시지가
+ * 배너로 표시된다. 근태 기록과는 무관한 단순 알림이라 별도 승인 흐름 없이 바로 전달된다.
+ */
+model AdminMessage {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  user       User      @relation(fields: [userId], references: [id])
+  message    String
+  // 보낸 관리자 이름 스냅샷(관계 없이 문자열로만 남김 — 위 User.receivedAdminMessages 주석 참고).
+  sentByName String    @map("sent_by_name")
+  readAt     DateTime? @map("read_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, readAt])
+  @@map("admin_messages")
 }
 
 // ===== 출장 =====

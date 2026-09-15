@@ -20,6 +20,7 @@ import { dauofficeRouter } from './modules/dauoffice/dauoffice.routes';
 import { pushRouter } from './modules/push/push.routes';
 import { clientsRouter } from './modules/clients/clients.routes';
 import { weatherRouter } from './modules/weather/weather.routes';
+import { messagesRouter } from './modules/messages/messages.routes';
 
 export function createApp() {
   const app = express();
@@ -54,7 +55,6 @@ export function createApp() {
   });
   app.use('/api/v1/auth/login', loginLimiter);
   app.use('/api/v1/auth/register-password', loginLimiter);
-  app.use('/api/v1/auth/reset-password', loginLimiter);
 
   app.get('/api/v1/health', (_req, res) => res.json({ success: true, data: { status: 'ok' } }));
 
@@ -76,6 +76,7 @@ export function createApp() {
   app.use('/api/v1/push', pushRouter);
   app.use('/api/v1/clients', clientsRouter);
   app.use('/api/v1/weather', weatherRouter);
+  app.use('/api/v1/messages', messagesRouter);
 
   // 공통 에러 핸들러
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

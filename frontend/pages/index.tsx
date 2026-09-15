@@ -317,6 +317,10 @@ export default function EmployeeHome() {
   // EARLY_LEAVE_REASON_REQUIRED로 거절하면 그 자리에서 사유를 입력받아 다시 시도할 수 있게 한다.
   const [departureNeedsReason, setDepartureNeedsReason] = useState(false);
   const [departureEarlyLeaveReason, setDepartureEarlyLeaveReason] = useState('');
+  // 2026-09-15: 관리자가 상황판에서 보낸 짧은 메시지(위치 불일치 등 확인 요청) — 안 읽은 것만
+  // 주기적으로 받아와 배너로 보여준다. 이미 등록된 푸시로도 즉시 알림이 가지만(sw.js), 앱을
+  // 열었을 때도 놓치지 않도록 여기서 한 번 더 보여준다. messages.routes.ts 참고.
+  const [adminMessages, setAdminMessages] = useState<{ id: string; message: string; sentByName: string; createdAt: string }[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [messageIsError, setMessageIsError] = useState(false);
   const [myStatus, setMyStatus] = useState<MeAttendance | null>(null);
@@ -515,6 +519,28 @@ export default function EmployeeHome() {
     const id = setInterval(loadWeather, 30 * 60 * 1000);
     return () => clearInterval(id);
   }, []);
+
+  // 관리자가 보낸 메시지(안 읽은 것만) — 1분마다 확인. 푸시가 안 왔거나(미구독) 이미 앱을 켜둔
+  // 상태에서 보낸 경우까지 놓치지 않게 폴링으로도 받아온다.
+  useEffect(() => {
+    function loadAdminMessages() {
+      apiFetch<{ id: string; message: string; sentByName: string; createdAt: string }[]>('/messages/unread')
+        .then(setAdminMessages)
+        .catch(() => {});
+    }
+    loadAdminMessages();
+    const id = setInterval(loadAdminMessages, 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function dismissAdminMessage(id: string) {
+    setAdminMessages((prev) => prev.filter((m) => m.id !== id));
+    try {
+      await apiFetch(`/messages/${id}/read`, { method: 'POST' });
+    } catch {
+      // 실패해도 조용히 넘어간다 — 다음 폴링 때 다시 나타날 뿐이다.
+    }
+  }
 
   // 본사 좌표를 한 번 불러온다(등록 안 돼있으면 아래 감지 자체를 안 함).
   useEffect(() => {
@@ -1451,6 +1477,17 @@ export default function EmployeeHome() {
           </div>
         </div>
       )}
+
+      {adminMessages.map((m) => (
+        <div className="card col-full notice-tint-blue" key={m.id}>
+          📨 <strong>{m.sentByName}</strong>님이 보낸 메시지: {m.message}
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button style={{ width: 'auto', margin: 0 }} onClick={() => dismissAdminMessage(m.id)}>
+              확인했어요
+            </button>
+          </div>
+        </div>
+      ))}
 
       {message && (
         <div className={`card col-full ${message.startsWith('⚠️') || messageIsError ? 'msg-warn' : 'msg-success'}`}>
