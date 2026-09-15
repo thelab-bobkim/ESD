@@ -381,6 +381,10 @@ export default function EmployeeHome() {
   const [projectName, setProjectName] = useState('');
   const [workStart, setWorkStart] = useState(nowHHMM());
   const [workEnd, setWorkEnd] = useState('');
+  // 2026-09-15: 박준영/이보용 피드백 — 고객사작업 등 완료시간 필수 상태인데 언제 끝날지 몰라 등록
+  // 자체를 못 하는 문제. 완료시간 필수 정책(END_TIME_REQUIRED_STATUSES)은 유지하되, 이 체크박스를
+  // 명시적으로 켠 경우에만 완료시간 없이 "진행중"으로 등록할 수 있게 예외를 둔다.
+  const [stillInProgress, setStillInProgress] = useState(false);
   const [workType, setWorkType] = useState(WORK_TYPE_OPTIONS[0]);
   const [workDetail, setWorkDetail] = useState('');
   const [workReason, setWorkReason] = useState(''); // 육하원칙 중 "왜(목적/사유)"
@@ -733,6 +737,7 @@ export default function EmployeeHome() {
     setProjectName('');
     setWorkStart(nowHHMM());
     setWorkEnd('');
+    setStillInProgress(false);
     setWorkType(code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : code === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS[0] : WORK_TYPE_OPTIONS[0]);
     setWorkDetail('');
     setWorkReason('');
@@ -905,12 +910,18 @@ export default function EmployeeHome() {
     );
   }
 
-  /** 즉시등록 확인 팝업에서 "네, 확정합니다"를 눌렀을 때 — 실제 등록을 진행한다. */
+  /** 즉시등록 확인 팝업에서 "네, 확정합니다"를 눌렀을 때 — 실제 등록을 진행한다.
+   * 2026-09-15: 여기서 skipSequenceCheck를 안 넘겨(기본값 false) changeStatus를 다시 부르면,
+   * 본사근무↔고객사상주처럼 "위치연동 상태끼리 직접 전환"이면서 "즉시등록 대상"이기도 한 상태는
+   * 아직 상태가 안 바뀐 채로(currentStatus가 그대로라서) 흐름재확인(pendingSequenceConfirm)이
+   * 다시 걸려 두 팝업이 서로를 계속 띄우는 무한루프가 생겼다(김진영님 "고객사 상주로 안 바뀜"
+   * 피드백으로 발견). 이 팝업까지 왔다는 건 흐름 확인도 이미 끝났거나 애초에 필요 없었다는
+   * 뜻이므로, 두 확인을 모두 건너뛰고 실제로 등록을 진행한다. */
   function confirmPendingQuickStatus() {
     if (!pendingQuickConfirm) return;
     const { code, prefilledClientName } = pendingQuickConfirm;
     setPendingQuickConfirm(null);
-    changeStatus(code, prefilledClientName, true);
+    changeStatus(code, prefilledClientName, true, true);
   }
 
   /** 흐름 재확인 팝업에서 "네, 맞아요"를 눌렀을 때 — 이동중 없이 건너뛴 게 맞다고 확인했으니 그대로 진행한다. */
@@ -1001,7 +1012,8 @@ export default function EmployeeHome() {
     // 작업위치(원격/현장, 필수) · 작업인원(선택) · 진행률/차수(선택, 야간작업만) — 야간작업/고객사미팅/고객사작업만 해당.
     if (SITE_DETAIL_STATUSES.has(code) && !effectiveSiteType) return;
     // 고객사작업/야간작업/주말작업은 완료시간까지 필수다(2026-09-14 요청) — 버튼 disabled와 동일.
-    if (END_TIME_REQUIRED_STATUSES.has(code) && !workEnd) return;
+    // 단, 2026-09-15부터 "진행중" 체크박스를 명시적으로 켠 경우에는 예외로 허용한다.
+    if (END_TIME_REQUIRED_STATUSES.has(code) && !workEnd && !stillInProgress) return;
     const siteDetailSuffix = SITE_DETAIL_STATUSES.has(code)
       ? ` | 작업위치: ${effectiveSiteType === 'ONSITE' ? '현장' : '원격'}${personnel ? ` | 작업인원: ${personnel}` : ''}`
       : '';
@@ -1025,6 +1037,9 @@ export default function EmployeeHome() {
         workType,
         startTime: workStart,
         endTime: workEnd || undefined,
+        // 완료시간을 비워둔 게 실수가 아니라 "진행중" 체크박스를 켜서 의도적으로 비운 것임을
+        // 서버가 구분할 수 있게 같이 보낸다(END_TIME_REQUIRED_STATUSES 예외 판단용, 2026-09-15).
+        inProgress: !workEnd && stillInProgress ? true : undefined,
         description: workReason.trim() ? `${workDetail} (목적: ${workReason})` : workDetail,
         ...(SITE_DETAIL_STATUSES.has(code) ? { personnel: personnel || undefined } : {}),
       };
@@ -1898,10 +1913,31 @@ export default function EmployeeHome() {
                         {detailStatus === 'CLIENT_MEETING'
                           ? '미팅완료(선택 — 진행중이면 비워두세요)'
                           : END_TIME_REQUIRED_STATUSES.has(detailStatus)
-                            ? '작업완료 (필수)'
+                            ? (stillInProgress ? '작업완료 (진행중 — 완료되면 다시 등록해주세요)' : '작업완료 (필수)')
                             : '작업완료(선택 — 진행중이면 비워두세요)'}
                       </label>
-                      <TimeSelectInput value={workEnd} onChange={setWorkEnd} allowEmpty={!END_TIME_REQUIRED_STATUSES.has(detailStatus)} />
+                      <TimeSelectInput
+                        value={workEnd}
+                        onChange={setWorkEnd}
+                        allowEmpty={!END_TIME_REQUIRED_STATUSES.has(detailStatus) || stillInProgress}
+                      />
+                      {/* 2026-09-15: 박준영/이보용 피드백 — 고객사작업 등은 완료시간이 필수라서,
+                          "언제 끝날지 모르는" 진행중인 작업은 애초에 등록 자체를 못 했다. 이 체크박스를
+                          켜면 이번만 완료시간 없이 "진행중" 상태로 등록할 수 있다(작업이 끝나면 그때
+                          다시 상태변경으로 완료시간까지 채워 등록해달라고 안내). */}
+                      {END_TIME_REQUIRED_STATUSES.has(detailStatus) && (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#4b5563', marginTop: 6 }}>
+                          <input
+                            type="checkbox"
+                            checked={stillInProgress}
+                            onChange={(e) => {
+                              setStillInProgress(e.target.checked);
+                              if (e.target.checked) setWorkEnd('');
+                            }}
+                          />
+                          아직 진행중이라 완료시간을 모릅니다(끝나면 다시 등록해주세요)
+                        </label>
+                      )}
                     </div>
                   </div>
                 )
@@ -1977,7 +2013,8 @@ export default function EmployeeHome() {
                   || (LOCATION_CHECK_STATUSES.has(detailStatus) && !clientName.trim())
                   || (SITE_DETAIL_STATUSES.has(detailStatus) && !siteType)
                   // 고객사작업/야간작업/주말작업은 완료시간도 필수다(2026-09-14 요청 — 고객사미팅은 제외).
-                  || (END_TIME_REQUIRED_STATUSES.has(detailStatus) && !workEnd)
+                  // 단, "진행중" 체크박스를 켠 경우는 예외(2026-09-15).
+                  || (END_TIME_REQUIRED_STATUSES.has(detailStatus) && !workEnd && !stillInProgress)
                 }
                 onClick={submitDetailForm}
               >

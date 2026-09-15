@@ -377,6 +377,11 @@ const effortSchema = z.object({
   workType: z.string().optional(),
   startTime: z.string().optional(), // "HH:MM" (KST)
   endTime: z.string().optional(), // "HH:MM" (KST), 없으면 진행중
+  // 2026-09-15: 박준영/이보용 피드백 — 완료시간이 필수인 상태(REQUIRE_END_TIME_STATUSES)라도,
+  // 프론트에서 "진행중" 체크박스를 명시적으로 켜서 보낸 경우엔 이 값이 true로 온다. 단순히
+  // 완료시간 입력을 깜빡한 것과 구분하기 위한 용도이며, 실제 완료시간 필수 여부 판단(아래
+  // REQUIRE_END_TIME_STATUSES 블록)에만 쓰인다.
+  inProgress: z.boolean().optional(),
   description: z.string().optional(),
   // 작업인원(본인 외 추가 투입 인원)·진행률/차수 — 별도 컬럼 없이 description에 합쳐서 저장한다
   // (야간작업/고객사작업 보고서에서 흔히 같이 적는 항목이라 자유서술 설명에 자연스럽게 붙는다).
@@ -500,8 +505,12 @@ attendanceRouter.post('/status', async (req, res) => {
   // 상태를 즉시 등록하는 최초 클릭(QUICK_REGISTER_STATUSES, 프론트 index.tsx)은 description 없이
   // 시작시간만 보내고, 바로 이어서 열리는 상세폼에서 완료시간을 채우는 구조이므로 그 즉시등록
   // 자체까지 막으면 안 된다.
+  // 2026-09-15: 박준영("고객사 작업이 언제 끝날지 모르는 상황") / 이보용 피드백 — 완료시간
+  // 필수 정책 자체는 유지하되, 프론트의 "진행중" 체크박스(effort.inProgress)를 명시적으로 켜서
+  // 보낸 경우에는 완료시간 없이도 등록을 허용한다(작업이 끝나면 다시 상태변경으로 완료시간까지
+  // 채워 등록하도록 프론트에서 안내).
   const REQUIRE_END_TIME_STATUSES = new Set(['CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
-  if (REQUIRE_END_TIME_STATUSES.has(status) && effort?.description && !effort?.endTime) {
+  if (REQUIRE_END_TIME_STATUSES.has(status) && effort?.description && !effort?.endTime && !effort?.inProgress) {
     return res.status(400).json({ success: false, error: { code: 'END_TIME_REQUIRED', message: '완료 시간을 입력해야 합니다.' } });
   }
 
