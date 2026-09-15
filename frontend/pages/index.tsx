@@ -61,6 +61,12 @@ const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
 // 반영 — 이 세 상태는 완료시간도 필수다(백엔드 REQUIRE_END_TIME_STATUSES와 동일하게 유지).
 // 고객사미팅은 요청에서 제외되어 있어 기존처럼 완료시간 선택(진행중 허용)을 유지한다.
 const END_TIME_REQUIRED_STATUSES = new Set(['CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
+// 2026-09-15: "시작~완료"가 있는 실제 작업 세션 상태 — 완료시간 없이(진행중) 등록해둔 뒤 폼을
+// 다시 열면 이어받아 채워넣는다(백엔드 attendance.routes.ts EFFORT_CONTINUATION_STATUSES와 동일해야
+// 함). 야간작업은 NightWorkSession으로 별도 관리되고(recordNightWork가 이미 올바르게 이어받음),
+// "18시 이후 야간작업으로 이어가시겠어요?" 제안(acceptLateClockOutSuggestion)이 openDetailForm
+// 직후 동기적으로 시작/완료시간을 직접 채워넣는 흐름과 겹쳐 여기서는 일부러 뺐다.
+const EFFORT_CONTINUATION_STATUSES_FRONT = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'WEEKEND_WORK']);
 // 물리적으로 다른 장소인 근무형태들 — 백엔드 attendance-helpers.ts의 LOCATION_TIED_STATUSES와
 // 동일한 기준(REMOTE는 이동이 필요 없는 근무형태라 제외). 이 상태들 사이를 "이동중" 없이 곧장
 // 넘나들면(예: 본사근무에서 바로 고객사작업으로) 잘못 누른 게 아닌지 한 번 되물어본다(2026-09-14).
@@ -161,6 +167,32 @@ interface WeeklySummary { from: string; to: string; totalMinutes: number; days: 
 function nowHHMM(): string {
   const d = new Date();
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** ISO 시각 문자열을 TimeSelectInput이 쓰는 "HH:MM" 형식으로 바꾼다(이어받기 시작시각 표시용). */
+function isoToHHMM(iso: string): string {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** submitDetailForm이 만드는 "workDetail (목적: workReason)\n작업인원: ..." 형태의 합쳐진
+ * description을 이어받기 위해 다시 나눈다. 이 형식은 프론트가 스스로 만든 것이라(자유서술 텍스트가
+ * 우연히 같은 패턴일 위험이 거의 없음) 정규식으로 역분리해도 안전하다 — 2026-09-15 "진행중" 이어받기용. */
+function parseComposedDescription(raw: string): { workDetail: string; workReason: string; personnel: string } {
+  const lines = raw.split('\n');
+  let first = lines[0] ?? '';
+  let workReason = '';
+  const m = first.match(/^(.*) \(목적: (.*)\)$/);
+  if (m) {
+    first = m[1];
+    workReason = m[2];
+  }
+  let personnel = '';
+  for (const line of lines.slice(1)) {
+    const pm = line.match(/^작업인원: (.*)$/);
+    if (pm) personnel = pm[1];
+  }
+  return { workDetail: first, workReason, personnel };
 }
 
 // 2026-09-14: 네이티브 <input type="time">가 기기(특히 안드로이드)에 따라 시계/스피너 모양으로
@@ -389,6 +421,10 @@ export default function EmployeeHome() {
   // 자체를 못 하는 문제. 완료시간 필수 정책(END_TIME_REQUIRED_STATUSES)은 유지하되, 이 체크박스를
   // 명시적으로 켠 경우에만 완료시간 없이 "진행중"으로 등록할 수 있게 예외를 둔다.
   const [stillInProgress, setStillInProgress] = useState(false);
+  // 2026-09-15: 박준영/이보용님 재확인 피드백 — "진행중"으로 등록해두고 나중에 완료시간을 넣으려고
+  // 다시 폼을 열면 처음부터 새로 입력해야 했다. 이전에 남겨둔 진행중 기록을 찾으면 이 문구로
+  // 알려주고, 그 기록의 내용으로 폼을 채워넣는다(openDetailForm 참고).
+  const [continuedNotice, setContinuedNotice] = useState<string | null>(null);
   const [workType, setWorkType] = useState(WORK_TYPE_OPTIONS[0]);
   const [workDetail, setWorkDetail] = useState('');
   const [workReason, setWorkReason] = useState(''); // 육하원칙 중 "왜(목적/사유)"
@@ -539,6 +575,31 @@ export default function EmployeeHome() {
       await apiFetch(`/messages/${id}/read`, { method: 'POST' });
     } catch {
       // 실패해도 조용히 넘어간다 — 다음 폴링 때 다시 나타날 뿐이다.
+    }
+  }
+
+  // 2026-09-15: "양방향으로 답장할 수 있으면 좋겠다"는 요청 반영 — 배너에서 바로 답장을 입력해
+  // 보낼 수 있다. 메시지 id별로 입력중인 답장 초안을 따로 들고 있는다.
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [replySending, setReplySending] = useState<Record<string, boolean>>({});
+
+  async function sendReplyToMessage(id: string) {
+    const text = (replyDrafts[id] || '').trim();
+    if (!text) return;
+    setReplySending((prev) => ({ ...prev, [id]: true }));
+    try {
+      await apiFetch('/messages/reply', { method: 'POST', body: JSON.stringify({ message: text }) });
+      setReplyDrafts((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      // 답장을 보냈으면 확인도 같이 처리하고 배너를 닫는다.
+      await dismissAdminMessage(id);
+    } catch {
+      // 실패하면 배너와 입력한 텍스트를 그대로 남겨둬서 다시 시도할 수 있게 한다.
+    } finally {
+      setReplySending((prev) => ({ ...prev, [id]: false }));
     }
   }
 
@@ -781,8 +842,37 @@ export default function EmployeeHome() {
     setLeaveEnd(todayDateLocal());
     setLeaveDestination('');
     setLeaveContact('');
+    setContinuedNotice(null);
     // 모바일에서 폼이 화면 아래로 밀려서 "아무 반응 없다"고 느껴지지 않게, 폼으로 스크롤을 옮겨준다.
     setTimeout(() => detailFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+
+    // 2026-09-15: 고객사작업/고객사미팅/재택/주말작업은 "진행중"으로 남겨둔 이전 등록이 있으면
+    // 이어받아 채워넣는다(박준영/이보용님 재확인 피드백 — 완료시간을 나중에 넣으려고 폼을 닫았다
+    // 다시 열면 처음부터 새로 입력해야 해서 불편하다는 지적). 폼은 일단 위에서 빈 값으로 열고,
+    // 있으면 비동기로 덮어쓴다. GPS 도착감지 등으로 이미 특정 고객사명이 넘어온 경우(prefilledClientName)
+    // 는 그 값이 우선이라 고객사명만은 덮어쓰지 않는다.
+    if (EFFORT_CONTINUATION_STATUSES_FRONT.has(code)) {
+      apiFetch<{ sourceStatus: string; clientName: string; projectName: string; workType: string; startTime: string; description: string } | null>(
+        `/attendance/effort/in-progress?status=${code}`
+      )
+        .then((open) => {
+          if (!open) return;
+          const startHHMM = isoToHHMM(open.startTime);
+          if (!prefilledClientName && open.clientName) {
+            setClientName(open.clientName);
+            setClientQuery(open.clientName);
+          }
+          if (open.projectName) setProjectName(open.projectName);
+          if (open.workType) setWorkType(open.workType);
+          setWorkStart(startHHMM);
+          const { workDetail: wd, workReason: wr, personnel: pn } = parseComposedDescription(open.description || '');
+          if (wd) setWorkDetail(wd);
+          if (wr) setWorkReason(wr);
+          if (pn) setPersonnel(pn);
+          setContinuedNotice(`⏳ 진행중이던 작업을 이어서 불러왔어요(시작 ${startHHMM}). 끝나셨으면 완료시간을 입력하고 등록해주세요.`);
+        })
+        .catch(() => {});
+    }
   }
 
   /** 퇴근 시 "18시 이후분은 야간작업으로 등록하시겠어요?" 제안을 수락하면, 야간작업 상세폼을
@@ -1481,8 +1571,24 @@ export default function EmployeeHome() {
       {adminMessages.map((m) => (
         <div className="card col-full notice-tint-blue" key={m.id}>
           📨 <strong>{m.sentByName}</strong>님이 보낸 메시지: {m.message}
+          <div style={{ marginTop: 8 }}>
+            <input
+              type="text"
+              value={replyDrafts[m.id] ?? ''}
+              onChange={(e) => setReplyDrafts((prev) => ({ ...prev, [m.id]: e.target.value }))}
+              placeholder="답장을 입력하세요(선택)"
+              style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8 }}
+            />
+          </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button style={{ width: 'auto', margin: 0 }} onClick={() => dismissAdminMessage(m.id)}>
+            <button
+              style={{ width: 'auto', margin: 0 }}
+              disabled={!replyDrafts[m.id]?.trim() || replySending[m.id]}
+              onClick={() => sendReplyToMessage(m.id)}
+            >
+              {replySending[m.id] ? '보내는 중...' : '답장 보내기'}
+            </button>
+            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={() => dismissAdminMessage(m.id)}>
               확인했어요
             </button>
           </div>
@@ -1824,6 +1930,11 @@ export default function EmployeeHome() {
               ) : (
                 <p className="hint-box">
                   * 내용을 입력하고 등록하면 바로 '{STATUS_META[detailStatus].label}' 상태로 반영됩니다. 완료시간은 몰라도(진행중이면) 비워두고 등록 가능합니다.
+                </p>
+              )}
+              {continuedNotice && (
+                <p className="hint-box" style={{ background: '#0f2a1f', borderColor: '#2f9e44', color: '#7fd99a' }}>
+                  {continuedNotice}
                 </p>
               )}
               <label className="field-label">

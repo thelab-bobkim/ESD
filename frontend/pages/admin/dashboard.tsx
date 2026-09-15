@@ -145,9 +145,49 @@ export default function AdminDashboard() {
   const [sendingMessage, setSendingMessage] = useState(false);
   const [messageResult, setMessageResult] = useState<string | null>(null);
 
-  function openMessageModal(userId: string, name: string) {
+  // 2026-09-15: 직원이 배너에서 답장을 보낼 수 있게 되면서(양방향), 관리자도 그 답장을 상황판에서
+  // 바로 볼 수 있어야 한다 — "안 읽은 답장" 요약을 폴링해 알려주고, 아바타를 누르면 대화 전체
+  // 내역(messageThread)을 불러와 보여준다(messages.routes.ts /admin/unread-summary, /thread/:userId).
+  interface UnreadReply { userId: string; name: string; department: string; lastMessage: string; lastMessageAt: string; unreadCount: number }
+  interface ThreadMessage { id: string; message: string; senderIsAdmin: boolean; sentByName: string; createdAt: string }
+  const [unreadReplies, setUnreadReplies] = useState<UnreadReply[] | null>(null);
+  const [showUnreadReplies, setShowUnreadReplies] = useState(false);
+  const [messageThread, setMessageThread] = useState<ThreadMessage[] | null>(null);
+  const [loadingThread, setLoadingThread] = useState(false);
+
+  function loadUnreadReplies() {
+    apiFetch<UnreadReply[]>('/messages/admin/unread-summary')
+      .then(setUnreadReplies)
+      .catch(() => setUnreadReplies(null));
+  }
+
+  useEffect(() => {
+    loadUnreadReplies();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [board]);
+
+  async function openMessageModal(userId: string, name: string) {
     setMessageTarget({ userId, name });
     setMessageText('');
+    setMessageResult(null);
+    setMessageThread(null);
+    setLoadingThread(true);
+    try {
+      const thread = await apiFetch<ThreadMessage[]>(`/messages/thread/${userId}`);
+      setMessageThread(thread);
+      // 대화창을 여는 순간 서버에서 그 직원의 안 읽은 답장을 전부 읽음 처리하므로(thread 엔드포인트
+      // 참고), 여기서도 카운트를 즉시 새로고침해 배지가 바로 사라지게 한다.
+      loadUnreadReplies();
+    } catch {
+      setMessageThread([]);
+    } finally {
+      setLoadingThread(false);
+    }
+  }
+
+  function closeMessageModal() {
+    setMessageTarget(null);
+    setMessageThread(null);
     setMessageResult(null);
   }
 
@@ -155,12 +195,15 @@ export default function AdminDashboard() {
     if (!messageTarget || !messageText.trim()) return;
     setSendingMessage(true);
     try {
+      const sent = messageText.trim();
       await apiFetch('/messages/admin', {
         method: 'POST',
-        body: JSON.stringify({ userId: messageTarget.userId, message: messageText.trim() }),
+        body: JSON.stringify({ userId: messageTarget.userId, message: sent }),
       });
-      setMessageResult(`✅ ${messageTarget.name}님에게 메시지를 보냈습니다.`);
-      setMessageTarget(null);
+      setMessageThread((prev) => [
+        ...(prev ?? []),
+        { id: `local-${Date.now()}`, message: sent, senderIsAdmin: true, sentByName: '관리자', createdAt: new Date().toISOString() },
+      ]);
       setMessageText('');
     } catch (e) {
       setMessageResult(e instanceof Error ? e.message : '메시지 전송에 실패했습니다.');
@@ -388,7 +431,6 @@ export default function AdminDashboard() {
         </button>
       </div>
       {syncMessage && <div className="sync-mini-message">{syncMessage}</div>}
-      {messageResult && <div className="sync-mini-message">{messageResult}</div>}
       {error && <div className="error">{error}</div>}
 
       <div className="cc-stat-row">
@@ -442,7 +484,54 @@ export default function AdminDashboard() {
             {showPushList ? '목록 접기 ▴' : '명단 보기 ▾'}
           </button>
         </div>
+        <div className="cc-stat-card" style={{ borderColor: unreadReplies && unreadReplies.length ? '#3a2340' : undefined }}>
+          <div className="cc-stat-label">💬 안 읽은 답장</div>
+          <div className="cc-stat-value" style={{ color: unreadReplies && unreadReplies.length ? '#3b82f6' : undefined }}>
+            {unreadReplies ? unreadReplies.reduce((sum, r) => sum + r.unreadCount, 0) : '-'}
+            <small>{unreadReplies ? `건 / ${unreadReplies.length}명` : ''}</small>
+          </div>
+          <button
+            className="secondary"
+            style={{ marginTop: 10, width: '100%' }}
+            disabled={!unreadReplies || unreadReplies.length === 0}
+            onClick={() => setShowUnreadReplies((v) => !v)}
+          >
+            {showUnreadReplies ? '목록 접기 ▴' : '명단 보기 ▾'}
+          </button>
+        </div>
       </div>
+
+      {showUnreadReplies && unreadReplies && unreadReplies.length > 0 && (
+        <>
+          <div className="cc-section-title">💬 안 읽은 직원 답장 <span className="cnt">{unreadReplies.length}</span></div>
+          <div className="cc-alert-grid">
+            {unreadReplies.map((r) => (
+              <div
+                className="cc-alert-card"
+                key={r.userId}
+                style={{ '--cc-accent': '#3b82f6', cursor: 'pointer' } as CSSProperties}
+                role="button"
+                tabIndex={0}
+                onClick={() => openMessageModal(r.userId, r.name)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openMessageModal(r.userId, r.name); }}
+              >
+                <div className="cc-alert-head">
+                  <div className="cc-alert-name">
+                    <div className="cc-avatar clickable-avatar" style={{ background: '#3b82f6' }} title={`${r.name}님과의 대화 열기`}>{r.name.slice(-2)}</div>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="nm">{r.name}</div>
+                      <div className="dept">{r.department}</div>
+                    </div>
+                  </div>
+                  <span className="cc-alert-flag">답장 {r.unreadCount}건</span>
+                </div>
+                <div className="cc-alert-note">“{r.lastMessage}”</div>
+                <div className="cc-stat-foot" style={{ marginTop: 8 }}>{timeAgo(r.lastMessageAt)}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       {showPushList && unsubscribedEmployees.length > 0 && (
         <>
@@ -646,12 +735,34 @@ export default function AdminDashboard() {
       </div>
 
       {messageTarget && (
-        <div className="quick-confirm-backdrop" onClick={() => !sendingMessage && setMessageTarget(null)}>
-          <div className="card notice-tint-blue quick-confirm-sheet" onClick={(e) => e.stopPropagation()}>
-            📨 <strong>{messageTarget.name}</strong>님에게 메시지 보내기
+        <div
+          className="quick-confirm-backdrop"
+          onClick={() => !sendingMessage && closeMessageModal()}
+        >
+          <div className="card notice-tint-blue quick-confirm-sheet msg-thread-sheet" onClick={(e) => e.stopPropagation()}>
+            📨 <strong>{messageTarget.name}</strong>님과의 메시지
+
+            <div className="msg-thread-list">
+              {loadingThread && <div className="msg-thread-loading">대화 내역을 불러오는 중...</div>}
+              {!loadingThread && messageThread && messageThread.length === 0 && (
+                <div className="msg-thread-loading">아직 주고받은 메시지가 없어요.</div>
+              )}
+              {!loadingThread &&
+                messageThread?.map((m) => (
+                  <div key={m.id} className={`msg-bubble-row ${m.senderIsAdmin ? 'from-admin' : 'from-employee'}`}>
+                    <div className="msg-bubble">
+                      <div className="msg-bubble-text">{m.message}</div>
+                      <div className="msg-bubble-time">{m.senderIsAdmin ? m.sentByName : messageTarget.name} · {timeAgo(m.createdAt)}</div>
+                    </div>
+                  </div>
+                ))}
+            </div>
+
+            {messageResult && <div className="msg-warn" style={{ marginTop: 8, padding: '6px 10px', borderRadius: 8 }}>{messageResult}</div>}
+
             <textarea
               className="detail-textarea"
-              rows={3}
+              rows={2}
               style={{ marginTop: 10 }}
               placeholder="예: 등록하신 위치가 확인되지 않아요. 확인 부탁드립니다."
               value={messageText}
@@ -671,9 +782,9 @@ export default function AdminDashboard() {
                 className="secondary"
                 style={{ width: 'auto', margin: 0 }}
                 disabled={sendingMessage}
-                onClick={() => setMessageTarget(null)}
+                onClick={closeMessageModal}
               >
-                취소
+                닫기
               </button>
             </div>
           </div>

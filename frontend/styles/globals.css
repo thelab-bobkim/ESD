@@ -476,6 +476,23 @@ body.tsb-dark-body { background: #090d18; }
 .clickable-avatar { cursor: pointer; transition: transform 0.1s ease, box-shadow 0.1s ease; }
 .clickable-avatar:hover { box-shadow: 0 0 0 3px rgba(59,130,246,0.35); }
 .clickable-avatar:active { transform: scale(0.92); }
+
+/* 2026-09-15: 관리자↔직원 메시지 대화창(dashboard.tsx messageTarget 모달) — 기존 "메시지
+   보내기"(작성만 가능) 시트를 대화 내역이 보이는 스레드형으로 확장(양방향 답장 지원). */
+.msg-thread-sheet { max-width: 420px; }
+.msg-thread-list {
+  max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+  margin-top: 12px; padding-right: 2px;
+}
+.msg-thread-loading { font-size: 12.5px; color: var(--dsti-text-faint); text-align: center; padding: 12px 0; }
+.msg-bubble-row { display: flex; }
+.msg-bubble-row.from-admin { justify-content: flex-end; }
+.msg-bubble-row.from-employee { justify-content: flex-start; }
+.msg-bubble { max-width: 78%; border-radius: 14px; padding: 8px 12px; }
+.msg-bubble-row.from-admin .msg-bubble { background: #3b82f6; color: #fff; border-bottom-right-radius: 4px; }
+.msg-bubble-row.from-employee .msg-bubble { background: #1c2440; color: var(--dsti-text); border-bottom-left-radius: 4px; }
+.msg-bubble-text { font-size: 13px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+.msg-bubble-time { font-size: 10px; opacity: 0.75; margin-top: 4px; }
 .cc-alert-name .nm { font-size: 14px; font-weight: 800; color: var(--dsti-text); }
 .cc-alert-name .dept { font-size: 11px; color: var(--dsti-text-muted); }
 .cc-alert-flag { flex-shrink: 0; font-size: 10.5px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: rgba(245,158,11,0.15); color: #f59e0b; white-space: nowrap; }

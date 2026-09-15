@@ -6,6 +6,7 @@ import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
+import { recordEffort, findOpenEffort } from '../../common/effort-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
 
@@ -98,6 +99,11 @@ attendanceRouter.use(requireAuth);
 // 야간작업과 똑같은 모양으로 유지하기 위함 — 프로젝트명은 항상 빈 값으로 저장됨). 이 두 상수는
 // 이 상태를 빼고는 반드시 같은 값을 유지해야 한다.
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'WEEKEND_WORK']);
+// 2026-09-15: EFFORT_STATUSES 중 "시작~완료"가 있는 실제 작업 세션 개념인 것들만 — 완료시간
+// 없이(진행중) 등록했다가 나중에 이어받아 완료 처리할 수 있다(effort-helpers.ts recordEffort).
+// 본사근무(HQ_WORKING)는 빼야 한다 — 애초에 완료시간 입력칸 자체가 없어 endTime이 항상 null인
+// 하루 단위 상태라, 포함시키면 매일의 업무일지가 전부 최초 한 기록에 계속 덮어써지는 사고가 난다.
+const EFFORT_CONTINUATION_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'WEEKEND_WORK']);
 // 주말(토=6,일=0, KST) 여부 — "주말엔 주말작업만" 게이트 판단에 쓴다. 2026-09-14: reminder-scheduler.ts도
 // 같은 기준이 필요해져서 attendance-helpers.ts로 옮기고 여기서는 그걸 그대로 가져다 쓴다.
 
@@ -713,20 +719,20 @@ attendanceRouter.post('/status', async (req, res) => {
     const workDate = todayDateOnly();
     const startTime = effort.startTime ? combineDateTime(workDate, effort.startTime) : new Date();
     const endTime = effort.endTime ? resolveEndTime(startTime, combineDateTime(workDate, effort.endTime)) : null;
-    const minutes = endTime ? Math.max(0, Math.round((endTime.getTime() - startTime.getTime()) / 60000)) : null;
-    effortLog = await prisma.effortLog.create({
-      data: {
-        userId,
-        workDate,
-        clientName: effort.clientName || '',
-        projectName: effort.projectName || '',
-        workType: effort.workType || '기타',
-        startTime,
-        endTime,
-        minutes,
-        description: composeEffortDescription(effort),
-      },
-    });
+    const effortData = {
+      workDate,
+      clientName: effort.clientName || '',
+      projectName: effort.projectName || '',
+      workType: effort.workType || '기타',
+      startTime,
+      endTime,
+      description: composeEffortDescription(effort),
+    };
+    // 2026-09-15: "진행중"으로 남겨둔 기록이 있으면 새로 만들지 않고 이어받아 완료 처리한다
+    // (effort-helpers.ts recordEffort 참고, 박준영/이보용 피드백). 본사근무는 이 개념이 없어 제외.
+    effortLog = EFFORT_CONTINUATION_STATUSES.has(status)
+      ? await recordEffort(userId, status, effortData)
+      : await prisma.effortLog.create({ data: { userId, ...effortData, sourceStatus: status } });
   }
 
   let nightWork = null;
@@ -1009,6 +1015,50 @@ attendanceRouter.get('/me', async (req, res) => {
   return res.json({
     success: true,
     data: { record, latestStatus, latestEffort: latestEffort ? { clientName: latestEffort.clientName } : null, regularWorkEndHour },
+  });
+});
+
+/**
+ * 2026-09-15: "진행중"으로 남겨둔 공수 기록(고객사미팅/작업/재택/주말작업) 또는 야간작업 세션을
+ * 조회한다 — 상세폼을 다시 열 때 프론트가 이 값으로 기존 입력을 이어받아 채워넣는다(박준영/
+ * 이보용 피드백: 완료시간을 나중에 넣으려고 폼을 닫았다 다시 열면 처음부터 새로 입력해야 하던
+ * 문제 해결). 이어받을 게 없으면 data: null.
+ */
+attendanceRouter.get('/effort/in-progress', async (req, res) => {
+  const userId = req.authUser!.userId;
+  const status = String(req.query.status || '');
+
+  if (status === 'NIGHT_WORK') {
+    const session = await prisma.nightWorkSession.findFirst({ where: { userId, status: 'IN_PROGRESS' } });
+    if (!session) return res.json({ success: true, data: null });
+    return res.json({
+      success: true,
+      data: {
+        sourceStatus: 'NIGHT_WORK',
+        clientName: '',
+        projectName: '',
+        workType: '',
+        startTime: session.startedAt,
+        description: session.note ?? '',
+      },
+    });
+  }
+
+  if (!EFFORT_CONTINUATION_STATUSES.has(status)) {
+    return res.json({ success: true, data: null });
+  }
+  const open = await findOpenEffort(userId, status);
+  if (!open) return res.json({ success: true, data: null });
+  return res.json({
+    success: true,
+    data: {
+      sourceStatus: open.sourceStatus,
+      clientName: open.clientName,
+      projectName: open.projectName,
+      workType: open.workType,
+      startTime: open.startTime,
+      description: open.description ?? '',
+    },
   });
 });
 
