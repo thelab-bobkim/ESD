@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST } from '../../common/attendance-helpers';
+import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
 import { recordEffort, findOpenEffort } from '../../common/effort-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS } from '../../common/location';
@@ -137,6 +137,11 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   const location = req.body?.location as { lat: number; lng: number } | undefined;
   // 카카오맵 역지오코딩 주소(frontend에서 이미 변환해서 보내줌) — 좌표와 마찬가지로 대조 후 폐기.
   const locationAddress = req.body?.locationAddress as string | undefined;
+  // 2026-09-16: 그 순간 GPS가 스스로 보고한 오차범위(미터) — /status와 동일하게 반경 판정에 반영한다.
+  const rawAccuracyMeters = req.body?.accuracyMeters;
+  const accuracyMeters = typeof rawAccuracyMeters === 'number' && Number.isFinite(rawAccuracyMeters) && rawAccuracyMeters >= 0
+    ? rawAccuracyMeters
+    : undefined;
   // 사내망(공인IP) 확인 — 회사 와이파이에 연결되어 있으면 아래 GPS 기반 위치확인들을 모두 통과시킨다.
   const officeNetworkConfirmed = await isRequestFromOfficeNetwork(req, userId);
   // 주소 매칭 확인 — 건물명/도로명 키워드가 맞으면 GPS 거리와 무관하게 통과시킨다.
@@ -197,7 +202,7 @@ attendanceRouter.post('/clock-in', async (req, res) => {
         },
       });
     }
-    hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS);
+    hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS, accuracyMeters);
     // 2026-09-14: 김유범 피드백 — 고층건물 실내 GPS 오차(최대 2.8km 실측)로 본사에 실제로 있는데도
     // "출근" 버튼이 막히는 문제. /status의 본사근무 등록과 동일하게, 거리 불일치만으로는 막지 않고
     // locationMatch=false·거리값만 기록해서 상황판에서 확인 가능하게 한다(사내망/주소 매칭이라는
@@ -221,9 +226,10 @@ attendanceRouter.post('/clock-in', async (req, res) => {
         userId,
         status: 'HQ_WORKING',
         source: 'WEB',
-        note: locationConfirmed ? null : '출근 버튼 클릭 시 잠정 설정(실제 상태로 바꾸면 그 값이 우선함)',
+        note: locationConfirmed ? null : PROVISIONAL_HQ_NOTE,
         locationMatch: hqLocationResult?.locationMatch ?? null,
         locationDistanceMeters: hqLocationResult?.locationDistanceMeters ?? null,
+        locationAccuracyMeters: hqLocationResult ? (accuracyMeters ?? null) : null,
         locationCaptureStatus: location ? 'OK' : null,
       },
     });
@@ -423,6 +429,10 @@ const statusSchema = z.object({
   // 위치를 못 가져온 이유(권한거부/타임아웃/미동의 등) — location이 없을 때만 의미 있음.
   // clock-out과 동일한 값 목록(LOCATION_CAPTURE_STATUSES)을 그대로 사용한다.
   locationStatus: z.string().optional(),
+  // 2026-09-16: 그 순간 GPS가 스스로 보고한 오차범위(미터, frontend geolocation.ts가 이미 계산해
+  // 갖고 있던 값) — location이 있을 때만 의미 있음. common/location.ts의 checkLocationMatch가
+  // 반경 판정에 반영한다(위치 미확인/불일치 개선 1순위).
+  accuracyMeters: z.number().nonnegative().optional(),
   // 카카오맵 역지오코딩 주소(frontend에서 변환) — 본사근무 등록 시 건물명/도로명 키워드 매칭용.
   locationAddress: z.string().optional(),
   // 원격/현장 — 고객사미팅/고객사작업/야간작업 등록 시 필수. 상태 종류와 무관하게 항상
@@ -454,7 +464,7 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '상태값을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
-  const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus, locationAddress } = parsed.data;
+  const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus, locationAddress, accuracyMeters } = parsed.data;
 
   // 주말(토/일, KST) 게이트(2026-09-06 요청): 주말엔 "주말작업"만 등록할 수 있고 나머지 상태는
   // 막는다 — 반대로 평일엔 "주말작업"을 등록할 수 없다. 관리자 계정도 예외 없이 적용한다(프론트
@@ -598,7 +608,7 @@ attendanceRouter.post('/status', async (req, res) => {
     const hqLat = await getPolicyString('HQ_LATITUDE', '');
     const hqLng = await getPolicyString('HQ_LONGITUDE', '');
     if (hqLat && hqLng) {
-      hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS);
+      hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS, accuracyMeters);
       // 2026-09-14: 김유범 피드백 — 신한이노플렉스 등 고층건물 실내에서는 GPS가 최대 2.8km까지도
       // 빗나가는 사례가 실제로 있어(반경을 1km까지 넓혀도 여전히 벗어남), 거리 불일치만으로
       // 본사근무 등록 자체를 막지 않는다. 2026-09-08에 고객사미팅/고객사작업에는 이미 적용한
@@ -660,7 +670,7 @@ attendanceRouter.post('/status', async (req, res) => {
       : await prisma.client.findFirst({
           where: { name: { contains: effort.clientName.trim(), mode: 'insensitive' } },
         });
-    locationResult = checkLocationMatch(location, matchedClientForLocation);
+    locationResult = checkLocationMatch(location, matchedClientForLocation, undefined, accuracyMeters);
   }
 
   // 등록된 고객사 좌표가 있는 경우에만 강제한다(현장 사칭 방지).
@@ -705,6 +715,9 @@ attendanceRouter.post('/status', async (req, res) => {
       source: 'WEB',
       locationMatch: (locationResult ?? hqLocationResult)?.locationMatch ?? null,
       locationDistanceMeters: (locationResult ?? hqLocationResult)?.locationDistanceMeters ?? null,
+      // 2026-09-16: 대조가 실제로 이뤄진 경우(locationResult/hqLocationResult가 있는 경우)에만
+      // 남긴다 — 위치대조 자체를 안 하는 상태(재택 등)에는 accuracyMeters가 와도 의미가 없다.
+      locationAccuracyMeters: (locationResult ?? hqLocationResult) ? (accuracyMeters ?? null) : null,
       siteType: siteType ?? null,
       locationCaptureStatus: (LOCATION_CHECK_STATUSES.has(status) || status === 'HQ_WORKING') ? (locationCaptureStatus ?? null) : null,
     },

@@ -60,8 +60,14 @@ interface EmployeeRow {
   // 있으면 여기 담겨온다(2026-09-04 — "고객사 정보 없이 등록된 사람" 문의 대응. dashboard.routes.ts 참고).
   effortClientName: string | null;
   locationMatch: boolean | null; locationDistanceMeters: number | null; locationCaptureStatus: string | null;
+  // 2026-09-16: 그 판정에 쓰인 GPS 오차범위(미터) — 위치 불일치가 "명백한지" "오차범위 안에서
+  // 애매한 것인지" 관리자가 구분할 수 있게 배지에 같이 표시한다.
+  locationAccuracyMeters: number | null;
   locationConsentGiven: boolean; privacyConsentGiven: boolean;
   clockedOut: boolean; clockOutAt: string | null;
+  // 2026-09-16: "출근" 버튼만 누르고 실제로 상태를 고른 적 없는 잠정 본사근무 기록인지 여부
+  // (dashboard.routes.ts 참고) — true면 화면에서 "본사근무로 확정됨"처럼 보이지 않게 처리한다.
+  isProvisional: boolean;
   // 2026-09-09: "원격"(재택/원격지원 등)으로 등록된 고객사미팅/작업은 애초에 현장에 있을 필요가
   // 없어서 백엔드가 위치대조 자체를 건너뛴다(attendance.routes.ts 참고) — 그 결과 locationMatch가
   // null로 남는 게 정상인데, 이 값을 모르면 "위치 미확인"으로 잘못 flag된다. 관리자 문의로 발견.
@@ -78,8 +84,13 @@ function locationBadge(e: EmployeeRow): { text: string; color: string } | null {
   if (!e.locationConsentGiven || !e.privacyConsentGiven) {
     return { text: '🚫 개인정보 활용 미동의', color: '#868e96' };
   }
+  // 2026-09-16: 판정에 반영된 GPS 오차범위를 같이 보여준다 — 예를 들어 "불일치(약 800m)"인데
+  // 오차범위가 ±900m였다면 "GPS가 나빠서 애매한 것"이고, 오차범위가 ±30m인데도 800m 떨어졌다면
+  // "명백히 다른 곳"이다. 반경 판정 자체는 이미 서버(common/location.ts)가 오차범위를 반영해서
+  // 내려준 값이므로, 여기서는 참고 정보로만 덧붙인다.
+  const accuracySuffix = e.locationAccuracyMeters != null ? ` · 오차범위 ±${Math.round(e.locationAccuracyMeters)}m` : '';
   if (e.locationMatch === true) return { text: '📍 위치 확인됨', color: '#2f9e44' };
-  if (e.locationMatch === false) return { text: `📍 위치 불일치 (약 ${e.locationDistanceMeters}m)`, color: '#e03131' };
+  if (e.locationMatch === false) return { text: `📍 위치 불일치 (약 ${e.locationDistanceMeters}m${accuracySuffix})`, color: '#e03131' };
   return { text: '⚠ 위치 미확인', color: '#f08c00' };
 }
 
@@ -586,8 +597,12 @@ export default function AdminDashboard() {
             {flaggedEmployees.map((e) => {
               const badge = locationBadge(e);
               const noConsent = !e.locationConsentGiven || !e.privacyConsentGiven;
-              const accent = noConsent ? '#94a3b8' : e.locationMatch === false ? '#ef4444' : '#f59e0b';
-              const flagClass = noConsent ? 'gray' : e.locationMatch === false ? 'red' : '';
+              // 2026-09-16: "출근" 버튼만 누르고 상태를 직접 고르지 않아 잠정으로 채워진 본사근무
+              // 기록은, 실제로 본사근무를 선택했다가 위치가 안 맞은 경우(진짜 위치 불일치)와 다르다 —
+              // 전용 accent 색(보라)과 라벨("확인 대기중")로 구분해서, "본사근무인데 80km 떨어짐" 같은
+              // 모순된 표시가 나오지 않게 한다(김용태·손지원·임규동 사례로 발견).
+              const accent = e.isProvisional ? '#7048e8' : noConsent ? '#94a3b8' : e.locationMatch === false ? '#ef4444' : '#f59e0b';
+              const flagClass = e.isProvisional ? '' : noConsent ? 'gray' : e.locationMatch === false ? 'red' : '';
               const meta = e.status ? STATUS_META[e.status] : null;
               return (
                 <div className="cc-alert-card" key={e.userId} style={{ '--cc-accent': accent } as CSSProperties}>
@@ -599,12 +614,26 @@ export default function AdminDashboard() {
                           {e.name}
                           {e.statusSource === 'SYSTEM' && <span style={{ marginLeft: 6, fontSize: 10, color: '#6b7594', fontWeight: 400 }}>(자동추정)</span>}
                         </div>
-                        <div className="dept">{e.department}{meta ? ` · ${meta.icon} ${meta.label}` : ''}</div>
+                        <div className="dept">
+                          {e.department}
+                          {e.isProvisional ? ' · ⏳ 확인 대기중' : meta ? ` · ${meta.icon} ${meta.label}` : ''}
+                        </div>
                       </div>
                     </div>
-                    {badge && <span className={`cc-alert-flag${flagClass ? ` ${flagClass}` : ''}`}>{badge.text.replace(/^\S+\s/, '')}</span>}
+                    {e.isProvisional ? (
+                      <span className="cc-alert-flag" style={{ background: 'rgba(112,72,222,0.15)', color: '#7048e8' }}>확인 대기중</span>
+                    ) : (
+                      badge && <span className={`cc-alert-flag${flagClass ? ` ${flagClass}` : ''}`}>{badge.text.replace(/^\S+\s/, '')}</span>
+                    )}
                   </div>
-                  {e.statusNote ? (
+                  {e.isProvisional ? (
+                    <div className="cc-alert-note">
+                      출근 버튼만 누르고 아직 오늘 상태(본사근무/고객사작업 등)를 직접 고르지 않았어요 — &quot;본사근무&quot;로 확정된 게 아니라 위치확인 전 임시값입니다. 본인이 실제 근무형태를 고르면 그 값으로 바뀝니다.
+                      {e.locationDistanceMeters != null && (
+                        <> (참고: 마지막으로 확보된 위치는 본사에서 약 {e.locationDistanceMeters}m — 위치가 실제로 확정된 것은 아니에요)</>
+                      )}
+                    </div>
+                  ) : e.statusNote ? (
                     <div className="cc-alert-note">“{e.statusNote}”</div>
                   ) : e.effortClientName ? (
                     <div className="cc-alert-note" style={{ color: '#94a3b8', fontStyle: 'italic' }}>
@@ -714,7 +743,10 @@ export default function AdminDashboard() {
                         </div>
                       </div>
                     </div>
-                    {code !== 'CLOCKED_OUT' && e.statusNote && <div className="meta" style={{ color: 'var(--dsti-text)', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
+                    {code !== 'CLOCKED_OUT' && e.isProvisional && (
+                      <div className="meta" style={{ color: '#7048e8', fontWeight: 600 }}>⏳ 확인 대기중(출근 버튼만 누름 — 상태 미확정)</div>
+                    )}
+                    {code !== 'CLOCKED_OUT' && !e.isProvisional && e.statusNote && <div className="meta" style={{ color: 'var(--dsti-text)', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
                     {code === 'CLOCKED_OUT' && e.status && STATUS_META[e.status] && (
                       <div className="meta">마지막 상태: {STATUS_META[e.status].icon} {STATUS_META[e.status].label}</div>
                     )}

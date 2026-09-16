@@ -953,12 +953,17 @@ export default function EmployeeHome() {
         hqQuickLocationMeta.jumpDetected = jumpDetected;
         if (coords) {
           body.location = coords;
+          // 2026-09-16: 이미 계산해뒀던 오차범위를 서버로도 함께 보낸다 — 서버가 "거리 - 오차범위
+          // <= 반경"으로 반영해서, 반경 상수 자체를 계속 늘리지 않고도 정확도 낮은 측정을 봐줄 수
+          // 있게 한다(위치 미확인/불일치 개선 1순위).
+          body.locationAccuracyMeters = accuracyMeters ?? undefined;
           // 카카오맵 역지오코딩 — GPS 오차가 커도(예: 신한이노플렉스 사무실 835m 오차 사례) 주소가
           // 본사 건물명/도로명과 일치하면 서버에서 통과시켜줄 수 있게, 변환된 주소도 같이 보낸다.
           body.locationAddress = (await reverseGeocode(coords.lat, coords.lng)) ?? undefined;
         } else {
           delete body.location;
           delete body.locationAddress;
+          delete body.locationAccuracyMeters;
         }
       };
       if (code === 'HQ_WORKING') {
@@ -1172,12 +1177,16 @@ export default function EmployeeHome() {
       detailFormLocationMeta.jumpDetected = jumpDetected;
       if (coords) {
         body.location = coords;
+        // 2026-09-16: 오차범위를 서버로 함께 보낸다(위치 미확인/불일치 개선 1순위, HQ_WORKING과
+        // 동일한 이유 — refreshHqQuickLocation 주석 참고).
+        body.locationAccuracyMeters = accuracyMeters ?? undefined;
         // 본사근무만 역지오코딩 주소를 같이 보낸다 — 고객사미팅/작업은 등록된 고객사 좌표와
         // 직접 대조하므로 주소 매칭이 필요 없다(불필요한 카카오맵 호출도 줄인다).
         body.locationAddress = code === 'HQ_WORKING' ? (await reverseGeocode(coords.lat, coords.lng)) ?? undefined : undefined;
       } else {
         delete body.location;
         delete body.locationAddress;
+        delete body.locationAccuracyMeters;
       }
     };
     if (needsLocationCheck) {
@@ -1622,10 +1631,13 @@ export default function EmployeeHome() {
                     clockInLocationMeta.jumpDetected = jumpDetected;
                     if (coords) {
                       clockInBody.location = coords;
+                      // 2026-09-16: 오차범위를 서버로 함께 보낸다(위치 미확인/불일치 개선 1순위).
+                      clockInBody.locationAccuracyMeters = accuracyMeters ?? undefined;
                       clockInBody.locationAddress = (await reverseGeocode(coords.lat, coords.lng)) ?? undefined;
                     } else {
                       delete clockInBody.location;
                       delete clockInBody.locationAddress;
+                      delete clockInBody.locationAccuracyMeters;
                     }
                   };
                   await refreshClockInLocation();
@@ -1787,8 +1799,14 @@ export default function EmployeeHome() {
               <button
                 onClick={() =>
                   run(async () => {
-                    const loc = me?.locationConsentGiven ? await getCurrentLocation() : null;
-                    return apiFetch('/resident/checkin', { method: 'POST', body: JSON.stringify(loc ? { location: loc } : {}) });
+                    // 2026-09-16: getCurrentLocation() 대신 getCurrentLocationWithStatus()를 써서
+                    // 오차범위(accuracyMeters)도 같이 받아 서버로 전송한다 — 본사근무/고객사미팅/
+                    // 작업과 동일한 방식으로 위치대조 정확도를 개선한다(위치 미확인/불일치 개선 1순위).
+                    const { coords: loc, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+                    return apiFetch('/resident/checkin', {
+                      method: 'POST',
+                      body: JSON.stringify(loc ? { location: loc, accuracyMeters: accuracyMeters ?? undefined } : {}),
+                    });
                   }, '도착체크가 완료되었습니다.')
                 }
               >

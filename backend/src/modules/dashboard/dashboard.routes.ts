@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
-import { realDayWindow } from '../../common/attendance-helpers';
+import { realDayWindow, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 
 // 본사근무/고객사작업/고객사미팅/재택은 "우선 등록, 세부내용은 나중에" 원칙상 등록 직후엔
 // note가 비어있을 수 있다(attendance.routes.ts EFFORT_STATUSES와 동일하게 유지). 이 경우에도
@@ -100,6 +100,12 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
       const effectiveLocationCaptureStatus = bestLocationLogToday
         ? (bestLocationLogToday.locationCaptureStatus ?? 'OK')
         : (statusOnDay?.locationCaptureStatus ?? null);
+      // 2026-09-16: 위치 판정에 이미 반영된 GPS 오차범위를 상황판에도 같이 보여준다 — "위치
+      // 불일치"인데 오차범위 자체가 컸는지(애매한 케이스)와 오차범위가 작은데도 멀리 떨어진 것인지
+      // (명백한 불일치)를 관리자가 구분할 수 있게 한다.
+      const effectiveLocationAccuracyMeters = bestLocationLogToday
+        ? bestLocationLogToday.locationAccuracyMeters
+        : (statusOnDay?.locationAccuracyMeters ?? checkinOnDay?.locationAccuracyMeters ?? null);
       return {
         userId: u.id,
         name: u.name,
@@ -113,6 +119,7 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
         effortClientName: fallbackEffort?.clientName || null,
         locationMatch: effectiveLocationMatch,
         locationDistanceMeters: effectiveLocationDistanceMeters,
+        locationAccuracyMeters: effectiveLocationAccuracyMeters,
         // 2026-09-02: locationMatch가 null인 이유를 상황판에서 구분해서 보여주기 위해 추가.
         // (1) 위치확인 자체를 안 하는 상태(재택/출장 등)라 애초에 시도조차 안 한 건지,
         // (2) 동의는 했는데 그 순간 캡처가 실패했는지(권한거부/시간초과 등, ResidentCheckin에는
@@ -122,11 +129,21 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
         // 성공 이력 기준(대개 'OK')으로 맞춰 내려간다 — 실제로는 확인됐는데 문구만 미확인으로
         // 보이는 걸 막기 위함.)
         locationCaptureStatus: effectiveLocationCaptureStatus,
+        // 2026-09-09: "원격"(재택/원격지원 등)으로 등록된 고객사미팅/작업은 현장에 있을 필요가
+        // 없어서 attendance.routes.ts가 위치대조 자체를 건너뛴다 — 그 결과 locationMatch가 null로
+        // 남는 게 정상인데, 프론트가 이 값을 몰라서 "위치 미확인"으로 잘못 flag하고 있었다(관리자
+        // 문의로 발견, 예: 손세기 사원 코람코자산운용 "원격" 등록 건). 프론트에서 이 값을 보고
+        // 원격 등록은 위치대조 대상에서 아예 제외하도록 내려준다.
+        siteType: statusOnDay?.siteType ?? null,
         locationConsentGiven: u.locationConsentAt != null,
         privacyConsentGiven: u.privacyConsentAt != null,
         lastConfirmedAt: checkinOnDay?.lastConfirmedAt ?? null,
         clockedOut,
         clockOutAt: attendanceOnDay?.clockOutAt ?? null,
+        // 2026-09-16: "출근" 버튼만 누르고 그날 상태를 직접 고른 적이 없어 잠정으로 HQ_WORKING이
+        // 채워진 기록인지 여부 — 상황판(admin/dashboard.tsx)이 이 값을 보고 "본사근무로 확정됨"과
+        // "아직 확인 대기중"을 구분해서 보여준다(라벨은 본사근무인데 거리는 수십km인 모순 표시 방지).
+        isProvisional: statusOnDay?.note === PROVISIONAL_HQ_NOTE,
       };
     })
   );

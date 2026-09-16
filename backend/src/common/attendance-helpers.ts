@@ -174,6 +174,14 @@ export async function applyAttendanceCorrection(correctionRequestId: string, ear
   return { updatedRecord, totalWorkedMinutes, correction };
 }
 
+// "출근" 버튼을 눌렀는데 그날 상태를 하나도 안 골랐으면(attendance.routes.ts /clock-in), 위치확인
+// 성공 여부와 무관하게 일단 HQ_WORKING으로 채워 넣는 잠정 값에 붙이는 안내문구다. 이 문구가 붙은
+// 기록은 "본인이 실제로 본사근무를 선택해서 확정된 것"이 아니라 "출근 버튼만 누르고 방치된 상태"이므로,
+// 상황판에서 이 둘을 구분해서 보여줘야 한다(2026-09-16, "본사근무 라벨인데 거리가 수십km"라는 관리자
+// 문의로 발견 — 김용태·손지원·임규동 사례). 쓰는 쪽(attendance.routes.ts)과 읽는 쪽
+// (dashboard.routes.ts)이 정확히 같은 문자열을 봐야 하므로 여기 하나로 모은다.
+export const PROVISIONAL_HQ_NOTE = '출근 버튼 클릭 시 잠정 설정(실제 상태로 바꾸면 그 값이 우선함)';
+
 // 물리적으로 다른 장소를 오가는 상태들 — "이동중"을 명시적으로 찍지 않고 바로 다음 장소 상태로
 // 넘어간 경우, 이 상태들 사이의 구간에서만 이동시간을 자동으로 추정한다. 재택/야간작업/출장/
 // 대체휴무 등은 물리적 이동 대상이 아니라 제외한다(2026-09-06).

@@ -11,6 +11,9 @@ residentRouter.use(requireAuth);
 
 const checkinSchema = z.object({
   location: z.object({ lat: z.number(), lng: z.number() }).optional(),
+  // 2026-09-16: attendance.routes.ts와 동일하게 GPS 오차범위를 판정에 반영한다(위치 미확인/불일치
+  // 개선 1순위).
+  accuracyMeters: z.number().nonnegative().optional(),
 });
 
 /**
@@ -23,13 +26,14 @@ residentRouter.post('/checkin', async (req, res) => {
   const userId = req.authUser!.userId;
   const parsed = checkinSchema.safeParse(req.body);
   const location = parsed.success ? parsed.data.location : undefined;
+  const accuracyMeters = parsed.success ? parsed.data.accuracyMeters : undefined;
 
   const user = await prisma.user.findUnique({ where: { id: userId }, include: { assignedClient: true } });
   if (!user || !user.assignedClientId) {
     return res.status(400).json({ success: false, error: { code: 'NO_ASSIGNED_CLIENT', message: '배정된 고객사가 없습니다.' } });
   }
 
-  const locationResult = checkLocationMatch(location, user.assignedClient);
+  const locationResult = checkLocationMatch(location, user.assignedClient, undefined, accuracyMeters);
 
   const checkin = await prisma.residentCheckin.create({
     data: {
@@ -39,6 +43,7 @@ residentRouter.post('/checkin', async (req, res) => {
       lastConfirmedAt: new Date(),
       locationMatch: locationResult?.locationMatch ?? null,
       locationDistanceMeters: locationResult?.locationDistanceMeters ?? null,
+      locationAccuracyMeters: locationResult ? (accuracyMeters ?? null) : null,
     },
   });
   await prisma.statusChangeLog.create({
@@ -48,6 +53,7 @@ residentRouter.post('/checkin', async (req, res) => {
       source: 'WEB',
       locationMatch: locationResult?.locationMatch ?? null,
       locationDistanceMeters: locationResult?.locationDistanceMeters ?? null,
+      locationAccuracyMeters: locationResult ? (accuracyMeters ?? null) : null,
     },
   });
   await ensureClockIn(userId);
