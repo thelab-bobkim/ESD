@@ -946,7 +946,11 @@ attendanceRouter.post('/departure-suggest/confirm', async (req, res) => {
   // 2026-09-08: 위치이탈 자동감지로 확정되는 퇴근도 수동 "퇴근" 버튼과 동일하게 최소근무시간
   // (정책값, 기본 8시간) 규칙을 적용한다 — 김진호 사례(출근 1분/2시간 뒤 자동감지 시각으로
   // 사유 확인 없이 그대로 확정됨)로 발견된 사고를 막기 위함.
-  if (correction.attendanceRecord.clockInAt) {
+  // 2026-09-16: proposedClockOutAt이 nullable로 바뀐 뒤(CANCEL_CLOCK_OUT 타입 추가) 서버 빌드에서
+  // TS2345로 걸림 — 위치이탈 자동감지 제안은 항상 proposedClockOutAt을 채워서 만들어지지만
+  // (위 '/departure-suggest' 참고), 타입상으로는 null일 수 있으므로 null 가드를 추가한다
+  // (approval.routes.ts의 동일 패턴과 맞춤).
+  if (correction.attendanceRecord.clockInAt && correction.proposedClockOutAt) {
     const { ok, remainMinutes } = await checkMinWorkedMinutes(correction.attendanceRecord.clockInAt, correction.proposedClockOutAt);
     if (!ok && !earlyLeaveReason) {
       const remainH = Math.floor(remainMinutes / 60);
