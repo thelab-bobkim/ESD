@@ -71,7 +71,11 @@ approvalRouter.post('/requests/:id/approve', async (req, res) => {
       where: { id: request.attendanceCorrectionRequestId },
       include: { attendanceRecord: { select: { clockInAt: true } } },
     });
-    if (correctionForCheck?.attendanceRecord.clockInAt) {
+    // 2026-09-16: "오늘 퇴근 취소"(CANCEL_CLOCK_OUT)는 새 퇴근시각을 제안하는 게 아니라 기존
+    // 퇴근을 아예 비우는 신청이라 proposedClockOutAt이 없다 — 최소근무시간 미달 여부를 따질
+    // 대상 자체가 아니므로 이 검사는 MISSING_CLOCK_OUT일 때만 수행한다(안 그러면 null을
+    // checkMinWorkedMinutes에 넘겨 승인 처리 자체가 에러로 죽는다).
+    if (correctionForCheck?.type === 'MISSING_CLOCK_OUT' && correctionForCheck.attendanceRecord.clockInAt && correctionForCheck.proposedClockOutAt) {
       const { ok } = await checkMinWorkedMinutes(correctionForCheck.attendanceRecord.clockInAt, correctionForCheck.proposedClockOutAt);
       if (!ok) {
         earlyLeaveReasonForCorrection = (parsed.success ? parsed.data.comment : undefined) || correctionForCheck.reason || undefined;

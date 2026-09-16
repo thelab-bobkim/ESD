@@ -8,6 +8,7 @@ import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greeting
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
 import PastDayCorrectionCard, { type PendingCorrectionRow } from '@/components/PastDayCorrectionCard';
+import CancelClockOutCard, { type CancelClockOutStatus } from '@/components/CancelClockOutCard';
 import PilotFeedbackButton from '@/components/PilotFeedbackButton';
 
 // 요청하신 배열: 재택/본사근무/고객사상주, 이동중/고객사미팅/고객사작업, 야간작업/대체휴무/휴가 (총 9개)
@@ -466,11 +467,14 @@ export default function EmployeeHome() {
   // 아직 신청조차 안 했거나, 신청했다가 반려된 지난 근무일이 하나라도 있으면 상태 아이콘을 잠근다.
   // 승인 대기중(PENDING)인 것은 이미 본인이 조치했으므로 잠그지 않는다.
   const mustResolvePastCorrection = pendingCorrections.some((r) => !r.latestRequest || r.latestRequest.status === 'REJECTED');
+  // 2026-09-16: 오늘 퇴근을 잘못 눌렀을 때의 "퇴근 취소 신청" 최신 상태(CancelClockOutCard 참고).
+  const [cancelClockOutStatus, setCancelClockOutStatus] = useState<CancelClockOutStatus | null>(null);
 
   function refreshMyStatus() {
     apiFetch<MeAttendance>('/attendance/me').then(setMyStatus).catch(() => {});
     apiFetch<WeeklySummary>('/attendance/me/weekly').then(setWeekly).catch(() => {});
     apiFetch<PendingCorrectionRow[]>('/attendance-correction/pending').then(setPendingCorrections).catch(() => {});
+    apiFetch<CancelClockOutStatus | null>('/attendance-correction/cancel-clock-out/today').then(setCancelClockOutStatus).catch(() => {});
   }
 
   useEffect(() => {
@@ -1744,6 +1748,13 @@ export default function EmployeeHome() {
               <div className="board-empty" style={{ marginBottom: 8, color: '#f08c00', fontWeight: 600 }}>
                 🔒 퇴근 처리되어 상태를 더 이상 바꿀 수 없습니다 (야간작업은 계속 등록 가능해요). 내일 다시 만나요!
               </div>
+            )}
+            {clockedOut && myStatus?.record?.clockOutAt && (
+              <CancelClockOutCard
+                clockOutAt={myStatus.record.clockOutAt}
+                latestRequest={cancelClockOutStatus}
+                onSubmitted={refreshMyStatus}
+              />
             )}
             {isWeekendToday && (
               <div className="board-empty" style={{ marginBottom: 8, color: '#1c7ed6' }}>

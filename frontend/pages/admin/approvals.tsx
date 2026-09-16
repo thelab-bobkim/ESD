@@ -17,7 +17,11 @@ interface RequesterInfo { id: string; name: string; department?: { name: string 
 interface LeaveConversionInfo { id: string; convertedMinutes: number }
 interface AttendanceCorrectionInfo {
   id: string;
-  proposedClockOutAt: string;
+  // 2026-09-16: "오늘 퇴근 취소" 신청(CANCEL_CLOCK_OUT) 추가 — 기존 "지난 근무일 퇴근 누락"
+  // (MISSING_CLOCK_OUT)과 달리 proposedClockOutAt이 없다(새 퇴근시각을 제안하는 게 아니라
+  // 기존 퇴근을 취소하는 신청이므로).
+  type: 'MISSING_CLOCK_OUT' | 'CANCEL_CLOCK_OUT';
+  proposedClockOutAt: string | null;
   reason: string;
   attendanceRecord: { workDate: string; clockInAt: string | null; clockOutAt: string | null };
 }
@@ -178,7 +182,9 @@ export default function ApprovalsPage() {
               <div>
                 <span style={{ fontWeight: 700 }}>{r.requester?.name ?? '(알 수 없음)'}</span>
                 <span style={{ marginLeft: 8, fontSize: 12, padding: '2px 8px', borderRadius: 999, background: '#e7f5ff', color: '#1c7ed6' }}>
-                  {TYPE_LABEL[r.type] ?? r.type}
+                  {r.type === 'ATTENDANCE_CORRECTION' && r.attendanceCorrectionRequest?.type === 'CANCEL_CLOCK_OUT'
+                    ? '오늘 퇴근 취소'
+                    : TYPE_LABEL[r.type] ?? r.type}
                 </span>
                 <div style={{ fontSize: 12, color: '#868e96' }}>신청 {fmtDateTime(r.requestedAt)}</div>
               </div>
@@ -200,7 +206,18 @@ export default function ApprovalsPage() {
               <div style={{ fontSize: 14, marginTop: 6, lineHeight: 1.6 }}>
                 근무일: {new Date(r.attendanceCorrectionRequest.attendanceRecord.workDate).toLocaleDateString('ko-KR')}
                 {' · '}출근 {fmtDateTime(r.attendanceCorrectionRequest.attendanceRecord.clockInAt)}
-                {' → '}신청 퇴근 <strong>{fmtDateTime(r.attendanceCorrectionRequest.proposedClockOutAt)}</strong>
+                {r.attendanceCorrectionRequest.type === 'CANCEL_CLOCK_OUT' ? (
+                  <>
+                    {' · '}현재 퇴근 <strong>{fmtDateTime(r.attendanceCorrectionRequest.attendanceRecord.clockOutAt)}</strong>
+                    <div style={{ color: '#e8590c', fontWeight: 600, marginTop: 4 }}>
+                      ⚠️ 승인하면 이 퇴근 처리가 취소되고, 다시 근무중 상태로 되돌아갑니다.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {' → '}신청 퇴근 <strong>{fmtDateTime(r.attendanceCorrectionRequest.proposedClockOutAt)}</strong>
+                  </>
+                )}
                 <div style={{ color: '#495057', marginTop: 4 }}>사유: {r.attendanceCorrectionRequest.reason}</div>
               </div>
             )}

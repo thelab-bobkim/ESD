@@ -115,7 +115,7 @@ attendanceCorrectionRouter.post('/requests', async (req, res) => {
   }
 
   const correction = await prisma.attendanceCorrectionRequest.create({
-    data: { userId, attendanceRecordId, proposedClockOutAt, reason },
+    data: { userId, attendanceRecordId, type: 'MISSING_CLOCK_OUT', proposedClockOutAt, reason },
   });
   const approval = await prisma.approvalRequest.create({
     data: {
@@ -186,4 +186,82 @@ attendanceCorrectionRouter.get('/requests/me', async (req, res) => {
     orderBy: { createdAt: 'desc' },
   });
   return res.json({ success: true, data: requests });
+});
+
+/**
+ * 2026-09-16: "오늘 퇴근을 잘못 눌렀는데 되돌릴 방법이 없다"(채수권·윤유상 피드백) 반영.
+ * 상태 아이콘 오클릭엔 10분 내 되돌리기가 있지만 퇴근 버튼엔 없었고, 위의 정정 신청은
+ * "지난 근무일 퇴근 누락"만 다뤄서 오늘 날짜는 애초에 신청 대상이 아니었다(USE_NORMAL_CLOCKOUT로
+ * 거절됨). 오늘 퇴근을 취소해 다시 근무중 상태로 되돌리는 별도 신청 — 근태 기록을 되돌리는
+ * 것이므로 지난 근무일 정정과 동일하게 팀장/HR 승인을 거쳐야 실제 반영된다(applyAttendanceCorrection
+ * 참고). 자동승인은 두지 않는다 — 하루 전체를 다시 여는 조치라 사람이 확인하는 게 안전하다.
+ */
+const cancelClockOutSchema = z.object({
+  reason: z.string().trim().min(10, '사유를 10자 이상 구체적으로 입력해주세요.'),
+});
+
+attendanceCorrectionRouter.post('/cancel-clock-out', async (req, res) => {
+  const parsed = cancelClockOutSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'INVALID_INPUT', message: parsed.error.issues[0]?.message || '입력값을 확인하세요.' },
+    });
+  }
+  const userId = req.authUser!.userId;
+  const today = todayDateOnly();
+
+  const record = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate: today } } });
+  if (!record || !record.clockInAt) {
+    return res.status(400).json({ success: false, error: { code: 'NOT_CLOCKED_IN', message: '오늘 출근 기록이 없습니다.' } });
+  }
+  if (!record.clockOutAt) {
+    return res.status(400).json({ success: false, error: { code: 'NOT_CLOCKED_OUT', message: '아직 퇴근 처리되지 않았습니다.' } });
+  }
+
+  const existingPending = await prisma.attendanceCorrectionRequest.findFirst({
+    where: { attendanceRecordId: record.id, status: 'PENDING' },
+  });
+  if (existingPending) {
+    return res.status(400).json({ success: false, error: { code: 'ALREADY_PENDING', message: '이미 승인 대기중인 정정 신청이 있습니다.' } });
+  }
+
+  const correction = await prisma.attendanceCorrectionRequest.create({
+    data: { userId, attendanceRecordId: record.id, type: 'CANCEL_CLOCK_OUT', reason: parsed.data.reason },
+  });
+  const approval = await prisma.approvalRequest.create({
+    data: {
+      type: 'ATTENDANCE_CORRECTION',
+      referenceId: correction.id,
+      requesterId: userId,
+      attendanceCorrectionRequestId: correction.id,
+    },
+  });
+
+  await recordAuditLog({
+    actorUserId: userId,
+    actionType: 'STATUS_CHANGE',
+    targetType: 'attendance_correction_request',
+    targetId: correction.id,
+    afterValue: { correction, approval },
+  });
+
+  return res.json({ success: true, data: { request: correction, approval } });
+});
+
+/** 오늘자 "퇴근 취소" 신청의 최신 상태 — 프론트가 대기중/반려 배지를 보여주는 용도. */
+attendanceCorrectionRouter.get('/cancel-clock-out/today', async (req, res) => {
+  const userId = req.authUser!.userId;
+  const today = todayDateOnly();
+
+  const record = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate: today } } });
+  if (!record) return res.json({ success: true, data: null });
+
+  const latest = await prisma.attendanceCorrectionRequest.findFirst({
+    where: { attendanceRecordId: record.id, type: 'CANCEL_CLOCK_OUT' },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!latest) return res.json({ success: true, data: null });
+
+  return res.json({ success: true, data: { status: latest.status, reason: latest.reason, createdAt: latest.createdAt } });
 });

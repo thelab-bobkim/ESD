@@ -149,20 +149,45 @@ export async function applyAttendanceCorrection(correctionRequestId: string, ear
   });
   if (!correction || !correction.attendanceRecord.clockInAt) return null;
 
-  const clockInAt = correction.attendanceRecord.clockInAt;
   const targetRecord = correction.attendanceRecord;
+
+  // 2026-09-16: "오늘 퇴근 취소" 신청 — 새 퇴근시각을 확정하는 게 아니라, 실수로 처리된 퇴근을
+  // 완전히 되돌려서 다시 근무중 상태로 만든다. 퇴근 관련 필드를 전부 비워서 attendance.routes.ts의
+  // /clock-out을 다시 정상적으로 탈 수 있게 한다(단, isCorrected/correctionReason은 남겨서
+  // "이 기록은 한 번 정정됐다"는 흔적을 감사로그와 별개로 근태 기록 자체에도 남긴다).
+  if (correction.type === 'CANCEL_CLOCK_OUT') {
+    const updatedRecord = await prisma.attendanceRecord.update({
+      where: { id: targetRecord.id },
+      data: {
+        clockOutAt: null,
+        totalWorkedMinutes: null,
+        clockOutLocation: null,
+        clockOutLocationStatus: null,
+        earlyLeaveReason: null,
+        isCorrected: true,
+        correctionReason: correction.reason,
+      },
+    });
+    await prisma.attendanceCorrectionRequest.update({ where: { id: correction.id }, data: { status: 'APPROVED' } });
+    return { updatedRecord, totalWorkedMinutes: null as number | null, correction };
+  }
+
+  // 기존 "지난 근무일 퇴근 누락" 정정 — proposedClockOutAt이 항상 채워져 있다(요청 생성 시 필수값).
+  if (!correction.proposedClockOutAt) return null;
+  const proposedClockOutAt = correction.proposedClockOutAt;
+  const clockInAt = correction.attendanceRecord.clockInAt;
   const totalBreakMinutes = targetRecord.breakSessions.reduce((sum, b) => {
     if (!b.endAt) return sum;
     return sum + Math.round((b.endAt.getTime() - b.startAt.getTime()) / 60000);
   }, 0);
-  const grossMinutes = Math.round((correction.proposedClockOutAt.getTime() - clockInAt.getTime()) / 60000);
+  const grossMinutes = Math.round((proposedClockOutAt.getTime() - clockInAt.getTime()) / 60000);
   const lunchBreakMinutes = await getLunchBreakMinutes();
   const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes - lunchBreakMinutes);
 
   const updatedRecord = await prisma.attendanceRecord.update({
     where: { id: targetRecord.id },
     data: {
-      clockOutAt: correction.proposedClockOutAt,
+      clockOutAt: proposedClockOutAt,
       totalWorkedMinutes,
       isCorrected: true,
       correctionReason: correction.reason,
@@ -171,7 +196,7 @@ export async function applyAttendanceCorrection(correctionRequestId: string, ear
   });
   await prisma.attendanceCorrectionRequest.update({ where: { id: correction.id }, data: { status: 'APPROVED' } });
 
-  return { updatedRecord, totalWorkedMinutes, correction };
+  return { updatedRecord, totalWorkedMinutes: totalWorkedMinutes as number | null, correction };
 }
 
 // "출근" 버튼을 눌렀는데 그날 상태를 하나도 안 골랐으면(attendance.routes.ts /clock-in), 위치확인

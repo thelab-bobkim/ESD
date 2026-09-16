@@ -292,7 +292,13 @@ model AttendanceCorrectionRequest {
   user               User                       @relation(fields: [userId], references: [id])
   attendanceRecordId String                     @map("attendance_record_id")
   attendanceRecord   AttendanceRecord           @relation(fields: [attendanceRecordId], references: [id])
-  proposedClockOutAt DateTime                   @map("proposed_clock_out_at")
+  // 2026-09-16: "오늘 퇴근을 잘못 눌렀는데 되돌릴 방법이 없다"(채수권·윤유상 피드백) 반영 —
+  // 기존엔 "지난 근무일 퇴근 누락"(MISSING_CLOCK_OUT, proposedClockOutAt 필수)만 있었는데,
+  // 여기에 "오늘 퇴근 취소"(CANCEL_CLOCK_OUT, clockOutAt을 다시 비움)를 추가한다. 기존 행은
+  // 전부 MISSING_CLOCK_OUT이므로 기본값으로 하위호환 유지.
+  type               AttendanceCorrectionType   @default(MISSING_CLOCK_OUT)
+  // CANCEL_CLOCK_OUT은 새 퇴근시각을 제안하는 게 아니라 기존 퇴근을 취소하는 것이라 값이 없다.
+  proposedClockOutAt DateTime?                  @map("proposed_clock_out_at")
   reason             String
   status             AttendanceCorrectionStatus @default(PENDING)
   createdAt          DateTime                   @default(now()) @map("created_at")
@@ -300,6 +306,11 @@ model AttendanceCorrectionRequest {
   approvalRequest ApprovalRequest?
 
   @@map("attendance_correction_requests")
+}
+
+enum AttendanceCorrectionType {
+  MISSING_CLOCK_OUT
+  CANCEL_CLOCK_OUT
 }
 
 enum AttendanceCorrectionStatus {
