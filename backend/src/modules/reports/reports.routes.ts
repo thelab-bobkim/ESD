@@ -390,6 +390,9 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
       clockOutAt: r?.clockOutAt ?? null,
       clockOutLocation: r?.clockOutLocation ?? null,
       totalWorkedMinutes: r?.totalWorkedMinutes ?? null,
+      // 2026-09-16: "조기퇴근인데 사유가 없다"는 걸 관리자가 이 목록에서 바로 알아볼 수 있게
+      // 노출한다(퇴근을 잘못 눌렀을 가능성이 있는 케이스를 admin/reports.tsx에서 배지로 표시).
+      earlyLeaveReason: r?.earlyLeaveReason ?? null,
       // 정정(관리자 강제확정/위치이탈 자동감지 확정 포함)된 기록인지 — 관리자 화면에서 "정정됨" 배지와
       // 사유(추정시각 vs 실제 등)를 보여주는 데 쓴다.
       isCorrected: r?.isCorrected ?? false,
@@ -448,6 +451,8 @@ reportsRouter.get('/daily-timeline', async (req, res) => {
       clockOutAt: record?.clockOutAt ?? null,
       clockOutLocation: record?.clockOutLocation ?? null,
       totalWorkedMinutes: record?.totalWorkedMinutes ?? null,
+      // 2026-09-16: attendance-detail과 동일하게 조기퇴근 사유도 상세 타임라인에서 확인할 수 있게 함께 내려준다.
+      earlyLeaveReason: record?.earlyLeaveReason ?? null,
       totalTravelMinutes,
       timeline,
       // 2026-09-08: 이 날짜의 근무기록과 출근시각이 어긋나 있으면(또는 출근시각 자체가 없으면)

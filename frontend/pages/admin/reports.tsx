@@ -5,6 +5,9 @@ import { classifyDeptGroup } from '@/lib/deptGroup';
 import AdminHeader from '@/components/AdminHeader';
 
 const WEEKLY_LIMIT_MINUTES = 52 * 60; // 주52시간제 기준
+// 서버 정책값(MIN_HOURS_BEFORE_CLOCKOUT) 기본값과 맞춘 표시용 기준 — 관리자가 정책을 다르게
+// 설정했더라도 여기서는 "조기퇴근 사유 배지"를 보여줄지 판단하는 용도로만 쓴다(실제 강제는 서버가 함).
+const MIN_WORK_MINUTES_DISPLAY = 8 * 60;
 type Period = 'day' | 'week' | 'month' | 'year';
 const PERIOD_LABELS: Record<Period, string> = { day: '일', week: '주', month: '월', year: '년' };
 // 타임라인에 표시할 상태별 아이콘/라벨/색상 (직원화면 STATUS_META와 동일한 코드 목록)
@@ -34,6 +37,9 @@ interface AttendanceDetailRow {
   // 기록도 없는 사람은 recordId가 null로 내려온다("미출근" 상태 — 아래 AttendanceRowTr 참고).
   recordId: string | null; userId: string; employeeNo: string; name: string; department: string;
   clockInAt: string | null; clockOutAt: string | null; clockOutLocation: string | null; totalWorkedMinutes: number | null;
+  // 2026-09-16: 최소 근무시간(정책 기본 8시간) 미만으로 퇴근했을 때 본인이 입력한 조기퇴근 사유 —
+  // null이면 사유 없이 확정된 것이라, 퇴근을 잘못 눌렀을 가능성을 관리자가 바로 알아챌 수 있게 쓴다.
+  earlyLeaveReason: string | null;
   isCorrected: boolean; correctionReason: string | null;
   // 이동시간(공수 산정용) — 본인이 "이동중"으로 직접 찍은 시간 + 미기록 구간 자동추정치의 합.
   // travelHasEstimate는 그중 일부가 자동추정인지(=실제로 이동중을 안 찍은 구간이 있었는지) 표시한다.
@@ -57,6 +63,7 @@ interface TimelineEntry {
 interface DailyTimeline {
   date: string; name: string; department: string;
   clockInAt: string | null; clockOutAt: string | null; clockOutLocation: string | null; totalWorkedMinutes: number | null;
+  earlyLeaveReason: string | null;
   totalTravelMinutes: number;
   timeline: TimelineEntry[];
   clockInMismatch: ClockInMismatch | null;
@@ -245,7 +252,27 @@ function AttendanceRowTr({
       </td>
       <td className="num">
         {r.totalWorkedMinutes != null ? (
-          hoursLabel(r.totalWorkedMinutes)
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+            <span>{hoursLabel(r.totalWorkedMinutes)}</span>
+            {/* 2026-09-16: 최소 근무시간(정책 기본값 8시간) 미만으로 확정된 날 — 조기퇴근 사유가
+                있으면 참고용 배지만, 없으면 "퇴근을 잘못 눌렀을 가능성"으로 보고 눈에 띄게 경고한다.
+                (한상호·박상민님 사례처럼 근무 3~4시간 만에 퇴근이 찍힌 케이스를 관리자가 목록에서
+                바로 알아볼 수 있도록 — 클릭해서 상세 타임라인/사유를 확인해달라는 의미.) */}
+            {r.totalWorkedMinutes < MIN_WORK_MINUTES_DISPLAY && (
+              r.earlyLeaveReason ? (
+                <span className="att-pill att-pill-warn" title={`조기퇴근 사유: ${r.earlyLeaveReason}`}>
+                  🕒 조기퇴근 사유 있음
+                </span>
+              ) : (
+                <span
+                  className="att-pill att-pill-danger"
+                  title="최소 근무시간(8시간) 미만인데 조기퇴근 사유가 없습니다 — 퇴근을 잘못 눌렀을 가능성이 있어요. 클릭해서 확인해주세요."
+                >
+                  ⚠ 사유 없음·확인필요
+                </span>
+              )
+            )}
+          </div>
         ) : isUnconfirmedAfter18 && r.clockInAt ? (
           <span title="18시 기준으로 어림 계산한 값 — 확정 아님(정정신청 승인 시 실제 값으로 바뀜)">
             {hoursLabel(tentativeMinutesTo18(r.clockInAt))}
@@ -689,6 +716,13 @@ export default function AdminReportsPage() {
                       {timeline.clockOutLocation && (
                         <div style={{ fontSize: 12, color: '#868e96', marginTop: 2, fontStyle: 'italic' }}>“📍 {timeline.clockOutLocation}”</div>
                       )}
+                      {timeline.earlyLeaveReason ? (
+                        <div style={{ fontSize: 12, color: '#e8590c', marginTop: 4 }}>🕒 조기퇴근 사유: {timeline.earlyLeaveReason}</div>
+                      ) : timeline.totalWorkedMinutes != null && timeline.totalWorkedMinutes < MIN_WORK_MINUTES_DISPLAY ? (
+                        <div style={{ fontSize: 12, color: '#e03131', marginTop: 4, fontWeight: 600 }}>
+                          ⚠ 최소 근무시간(8시간) 미만인데 조기퇴근 사유가 없어요 — 퇴근을 잘못 눌렀을 가능성이 있습니다.
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 )}

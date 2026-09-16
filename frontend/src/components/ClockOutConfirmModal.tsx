@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getCurrentLocationDetailed, locationFailureLabel, isLowAccuracy, accuracyWarningLabel, LOCATION_JUMP_WARNING, type LocationCaptureResult } from '@/lib/geolocation';
+import SlideToConfirm from '@/components/SlideToConfirm';
 
 interface Props {
   clockInAt: string;
@@ -61,11 +62,14 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
   // 이상치(순간이동) 감지 시 퇴근 확정을 막고 재측정을 유도한다(2026-09 요청 — 등록 차단).
   const jumpDetected = locationResult !== 'checking' && locationResult.jumpDetected;
 
-  async function handleConfirm() {
-    if (jumpDetected) return;
+  // 2026-09-16: 슬라이더(SlideToConfirm)의 onConfirm은 반환값이 false면 손잡이를 원위치로
+  // 되돌리고 확정 처리하지 않는다 — 조기퇴근 사유 미입력처럼 아직 확정하면 안 되는 경우 그대로
+  // 활용한다(기존엔 버튼 클릭을 그냥 무시하고 인라인 에러만 보여줬었다).
+  async function handleConfirm(): Promise<boolean> {
+    if (jumpDetected) return false;
     if (isEarlyLeave && !earlyLeaveReason.trim()) {
       setShowEarlyLeaveError(true);
-      return;
+      return false;
     }
     setSubmitting(true);
     try {
@@ -75,6 +79,7 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
         locationStatus: result.status,
         earlyLeaveReason: earlyLeaveReason.trim() || undefined,
       });
+      return true;
     } finally {
       setSubmitting(false);
     }
@@ -145,10 +150,16 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
             <div style={{ fontSize: 11, color: '#6b7594', marginTop: 4 }}>부족한 시간은 이번 주 누계에 그대로 반영되어, 다른 날 초과근무와 자연스럽게 합산됩니다.</div>
           </div>
         )}
-        <button disabled={submitting || jumpDetected} onClick={handleConfirm}>
-          {submitting ? '처리 중...' : jumpDetected ? '위치 재확인 필요' : '퇴근 확정'}
-        </button>
-        <button className="secondary" disabled={submitting} onClick={onCancel}>
+        {/* 2026-09-16: "퇴근을 잘못 눌렀다"는 신고(채수권·윤유상 등)가 반복돼서, 되돌릴 수 없다고
+            안내만 하던 탭 버튼을 밀어서 확정하는 슬라이더로 바꿨다 — 뜬 직후 잠깐은 밀어도 반응하지
+            않고 끝까지 밀어야만 확정되므로, 스치는 터치 한 번으로는 퇴근이 확정되지 않는다. */}
+        <SlideToConfirm
+          onConfirm={handleConfirm}
+          label="밀어서 퇴근 확정"
+          disabled={jumpDetected}
+          disabledHint="위치 재확인 필요"
+        />
+        <button className="secondary" disabled={submitting} style={{ marginTop: 8 }} onClick={onCancel}>
           취소
         </button>
       </div>

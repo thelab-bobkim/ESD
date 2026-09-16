@@ -7,6 +7,7 @@ import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, rever
 import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greetings';
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
+import SlideToConfirm from '@/components/SlideToConfirm';
 import PastDayCorrectionCard, { type PendingCorrectionRow } from '@/components/PastDayCorrectionCard';
 import CancelClockOutCard, { type CancelClockOutStatus } from '@/components/CancelClockOutCard';
 import PilotFeedbackButton from '@/components/PilotFeedbackButton';
@@ -1414,17 +1415,18 @@ export default function EmployeeHome() {
       {pendingQuickConfirm && (
         // 2026-09-09: 화면 아래쪽 아이콘을 눌러도 확인 팝업은 배너 목록 맨 위쪽에 렌더링돼서
         // 스크롤을 안 올리면 안 보이던 문제 — 화면 하단에 고정된 시트로 띄워 항상 바로 보이게 한다.
+        // 2026-09-16: "가방/주머니 속에서 아이콘이 계속 잘못 눌린다"는 요청으로, 이 팝업의 확정
+        // 버튼을 탭 한 번짜리 버튼 대신 밀어서 확정하는 슬라이더(SlideToConfirm)로 바꿨다 — 뜬 직후
+        // 잠깐은 밀어도 반응하지 않고, 끝까지 밀어야만 확정되므로 스치는 터치로는 확정되지 않는다.
         <div className="quick-confirm-backdrop" onClick={cancelPendingQuickStatus}>
           <div className="card notice-tint-blue quick-confirm-sheet" onClick={(e) => e.stopPropagation()}>
             {STATUS_META[pendingQuickConfirm.code].icon} '{STATUS_META[pendingQuickConfirm.code].label}'(으)로 확정합니까?
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              <button style={{ width: 'auto', margin: 0 }} onClick={confirmPendingQuickStatus}>
-                네, 확정합니다
-              </button>
-              <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={cancelPendingQuickStatus}>
-                아니요
-              </button>
+            <div style={{ marginTop: 10 }}>
+              <SlideToConfirm onConfirm={confirmPendingQuickStatus} label="밀어서 확정" />
             </div>
+            <button className="secondary" style={{ width: 'auto', margin: '8px 0 0' }} onClick={cancelPendingQuickStatus}>
+              아니요, 취소할게요
+            </button>
           </div>
         </div>
       )}
