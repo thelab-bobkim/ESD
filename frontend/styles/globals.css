@@ -490,7 +490,11 @@ body.tsb-dark-body { background: #090d18; }
 .msg-bubble-row.from-employee { justify-content: flex-start; }
 .msg-bubble { max-width: 78%; border-radius: 14px; padding: 8px 12px; }
 .msg-bubble-row.from-admin .msg-bubble { background: #3b82f6; color: #fff; border-bottom-right-radius: 4px; }
-.msg-bubble-row.from-employee .msg-bubble { background: #1c2440; color: var(--dsti-text); border-bottom-left-radius: 4px; }
+/* 2026-09-16: color를 var(--dsti-text)로 두면 라이트 테마 페이지(피드백함/메시지함 등)에서
+   이 변수가 어두운 값이 돼서 어두운 말풍선 배경(#1c2440) 위에 어두운 글자가 겹쳐 안 보였다
+   (원래 이 컴포넌트는 상황판의 다크 테마 안에서만 쓰여서 드러나지 않았던 문제). from-admin
+   말풍선처럼 테마와 무관하게 항상 밝은 글자색을 쓰도록 고정한다. */
+.msg-bubble-row.from-employee .msg-bubble { background: #1c2440; color: #e7ebf5; border-bottom-left-radius: 4px; }
 .msg-bubble-text { font-size: 13px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
 .msg-bubble-time { font-size: 10px; opacity: 0.75; margin-top: 4px; }
 .cc-alert-name .nm { font-size: 14px; font-weight: 800; color: var(--dsti-text); }

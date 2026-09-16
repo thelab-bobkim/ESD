@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: '/admin/clients', label: '고객사 위치관리', icon: '📍' },
   { href: '/admin/board-scope', label: '표시 대상 관리', icon: '🎯' },
   { href: '/admin/feedback', label: '피드백함', icon: '💬' },
+  { href: '/admin/messages', label: '메시지함', icon: '📨' },
 ];
 
 interface Props {
@@ -46,6 +47,22 @@ export default function AdminHeader({ title, eyebrow = 'DSTI-TSB 관리자', dar
     return () => clearInterval(id);
   }, []);
 
+  // 2026-09-16: 메시지함 메뉴에도 승인함처럼 안 읽은 직원 답장 건수를 배지로 보여준다
+  // (messages.routes.ts /admin/conversations 참고). HR_ADMIN/SYSTEM_ADMIN 전용 API라 그 외
+  // 역할 계정은 403을 받는데, 그때는 승인함과 동일하게 배지 없이 조용히 넘어간다.
+  const [unreadMessageCount, setUnreadMessageCount] = useState(0);
+
+  useEffect(() => {
+    function loadUnreadMessageCount() {
+      apiFetch<{ unreadCount: number }[]>('/messages/admin/conversations')
+        .then((rows) => setUnreadMessageCount(Array.isArray(rows) ? rows.reduce((sum, r) => sum + r.unreadCount, 0) : 0))
+        .catch(() => {});
+    }
+    loadUnreadMessageCount();
+    const id = setInterval(loadUnreadMessageCount, 30 * 1000); // 30초마다 최신화
+    return () => clearInterval(id);
+  }, []);
+
   function logout() {
     clearToken();
     router.push('/login');
@@ -68,6 +85,9 @@ export default function AdminHeader({ title, eyebrow = 'DSTI-TSB 관리자', dar
             <span>{item.icon}</span>{item.label}
             {item.href === '/admin/approvals' && pendingApprovals > 0 && (
               <span className="admin-nav-badge">{pendingApprovals > 99 ? '99+' : pendingApprovals}</span>
+            )}
+            {item.href === '/admin/messages' && unreadMessageCount > 0 && (
+              <span className="admin-nav-badge">{unreadMessageCount > 99 ? '99+' : unreadMessageCount}</span>
             )}
           </button>
         ))}

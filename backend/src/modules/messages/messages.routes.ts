@@ -131,6 +131,52 @@ messagesRouter.get('/admin/unread-summary', requireRole('HR_ADMIN', 'SYSTEM_ADMI
 });
 
 /**
+ * 관리자 전용 — "메시지함" 목록. 기존 admin/unread-summary는 안 읽은 답장이 있는 직원만
+ * 보여줘서(상황판 알림용) 이미 확인한 대화나 관리자가 먼저 보내기만 하고 아직 답장이 없는
+ * 대화는 빠졌었다. 2026-09-16: 별도 "메시지함" 메뉴를 만들면서, 주고받은 이력이 있는 모든
+ * 직원을 최근 순으로 보여주는 용도로 추가 — unreadCount는 그중 관리자가 아직 안 읽은
+ * 직원 답장 개수(0일 수 있음).
+ */
+messagesRouter.get('/admin/conversations', requireRole('HR_ADMIN', 'SYSTEM_ADMIN'), async (_req, res) => {
+  const rows = await prisma.adminMessage.findMany({
+    include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
+    orderBy: { createdAt: 'desc' },
+  });
+  const byUser = new Map<
+    string,
+    {
+      userId: string;
+      name: string;
+      employeeNo: string;
+      department: string;
+      lastMessage: string;
+      lastMessageAt: Date;
+      lastMessageFromAdmin: boolean;
+      unreadCount: number;
+    }
+  >();
+  for (const r of rows) {
+    const isUnreadReply = !r.senderIsAdmin && !r.readAt;
+    const existing = byUser.get(r.userId);
+    if (existing) {
+      if (isUnreadReply) existing.unreadCount += 1;
+    } else {
+      byUser.set(r.userId, {
+        userId: r.userId,
+        name: r.user.name,
+        employeeNo: r.user.employeeNo,
+        department: r.user.department.name,
+        lastMessage: r.message,
+        lastMessageAt: r.createdAt,
+        lastMessageFromAdmin: r.senderIsAdmin,
+        unreadCount: isUnreadReply ? 1 : 0,
+      });
+    }
+  }
+  return res.json({ success: true, data: Array.from(byUser.values()) });
+});
+
+/**
  * 관리자 전용 — 특정 직원과 주고받은 메시지 전체(오래된 순). 조회하는 순간 그 직원이 보낸
  * 안 읽은 답장을 전부 읽음 처리한다(이 화면 자체가 관리자의 받은함 역할이라 별도 확인 버튼을
  * 두지 않았다).

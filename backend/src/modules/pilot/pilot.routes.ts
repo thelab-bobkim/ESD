@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
+import { sendPushToUser } from '../../common/push';
 
 export const pilotRouter = Router();
 
@@ -149,6 +150,25 @@ pilotRouter.patch('/feedback/:id/resolve', requireAuth, requireRole('TEAM_LEAD',
       : { resolvedAt: null, resolvedByUserId: null },
     include: { user: { select: { name: true, employeeNo: true } }, resolvedBy: { select: { name: true } } },
   });
+
+  /**
+   * 2026-09-16: "미처리 -> 처리완료"로 새로 전환되는 순간, 기존 관리자↔직원 양방향 메시지 기능
+   * (messages.routes.ts/AdminMessage — 상황판 아바타 클릭 메시지와 동일한 테이블·푸시 경로)을 그대로
+   * 재사용해 작성자에게 처리완료 사실을 안내한다. 문자(SMS) 발송 요청이었으나, 이미 배포돼 있는
+   * 이 인앱 메시지 기능이 그대로 요구사항을 충족해서 재사용했다(요청자 확인, 2026-09-16).
+   * 미처리로 되돌렸다가 다시 처리완료로 바꾸는 경우까지 매번 알리면 스팸처럼 느껴질 수 있어,
+   * "새로 전환되는 순간"(existing.resolvedAt이 null이었던 경우)에만 1회 보낸다.
+   */
+  if (parsed.data.resolved && !existing.resolvedAt) {
+    const actor = await prisma.user.findUnique({ where: { id: actorUserId }, select: { name: true } });
+    const preview = existing.content.length > 60 ? `${existing.content.slice(0, 60)}...` : existing.content;
+    const notice = `[피드백 처리완료] 남겨주신 의견이 처리되었습니다.\n"${preview}"`;
+    await prisma.adminMessage.create({
+      data: { userId: existing.userId, message: notice, senderIsAdmin: true, sentByName: actor?.name ?? '관리자' },
+    });
+    await sendPushToUser(existing.userId, { title: '📨 피드백 처리완료', body: notice, url: '/' }).catch(() => {});
+  }
+
   return res.json({ success: true, data: updated });
 });
 
