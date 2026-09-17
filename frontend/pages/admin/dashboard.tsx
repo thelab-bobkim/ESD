@@ -72,6 +72,11 @@ interface EmployeeRow {
   // 없어서 백엔드가 위치대조 자체를 건너뛴다(attendance.routes.ts 참고) — 그 결과 locationMatch가
   // null로 남는 게 정상인데, 이 값을 모르면 "위치 미확인"으로 잘못 flag된다. 관리자 문의로 발견.
   siteType: string | null;
+  // 2026-09-17: "위치 미확인"이 GPS 문제가 아니라 그날 등록한 고객사 자체가 시스템에 없거나
+  // 좌표가 비어있어서인 경우를 구분해서 알려준다(dashboard.routes.ts 참고) — null이면 이 사유가
+  // 아니라는 뜻(기존 GPS 캡처 실패 등으로 봐야 함).
+  clientLocationDiagnosis: 'NO_CLIENT_MATCH' | 'CLIENT_NO_COORDS' | null;
+  clientLocationDiagnosisName: string | null;
 }
 interface CompanyBoard { summary: Record<string, number>; employees: EmployeeRow[]; }
 
@@ -649,6 +654,16 @@ export default function AdminDashboard() {
                         {hqLocationNote(e.locationCaptureStatus)}
                       </div>
                     )
+                  )}
+                  {/* 2026-09-17: 위 statusNote 등이 이미 "무슨 작업인지"는 보여주지만 "왜 위치가
+                      미확인/불일치인지"는 알려주지 않았다 — 특히 고객사에 좌표가 없어서인 경우가
+                      많아서(하루 10명 넘게 반복), 원인이 명확할 땐 구체적 조치를 바로 안내한다. */}
+                  {!e.isProvisional && e.clientLocationDiagnosis && (
+                    <div className="cc-alert-note" style={{ color: '#f08c00', fontWeight: 600, marginTop: 4 }}>
+                      {e.clientLocationDiagnosis === 'NO_CLIENT_MATCH'
+                        ? `⚠ '${e.clientLocationDiagnosisName}' 고객사가 시스템에 등록되어 있지 않아 위치 대조를 할 수 없어요 — 고객사 위치관리에서 등록해주세요.`
+                        : `⚠ '${e.clientLocationDiagnosisName}' 고객사에 좌표가 아직 등록되지 않아 위치 대조를 할 수 없어요 — 고객사 위치관리에서 좌표를 추가해주세요.`}
+                    </div>
                   )}
                   <div className="cc-stat-foot" style={{ marginTop: 8 }}>{timeAgo(e.statusChangedAt)} 등록</div>
                 </div>

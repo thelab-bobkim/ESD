@@ -33,6 +33,10 @@ export default function AdminClientsPage() {
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<'name' | 'address'>('name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  // 2026-09-17: 상황판 "위치 미확인" 다수가 실은 GPS 문제가 아니라 이 고객사들에 좌표가 아직
+  // 등록되지 않아서인 경우가 많다는 게 드러나서(하루 16명씩 반복), 좌표 없는 곳을 한 번에
+  // 찾아 정리할 수 있게 필터를 추가한다 — 이름순으로만 보면 수십 개 사이에 섞여 찾기 어려웠음.
+  const [missingCoordsOnly, setMissingCoordsOnly] = useState(false);
 
   function toggleSort(key: 'name' | 'address') {
     if (sortKey === key) {
@@ -184,9 +188,11 @@ export default function AdminClientsPage() {
   }
 
   const mapTargetClient = clients?.find((c) => c.id === mapTargetId) ?? null;
+  const missingCoordsCount = clients?.filter((c) => !c.hasCoordinates).length ?? 0;
   const visibleClients = clients
     ? clients
         .filter((c) => c.name.includes(search) || c.address.includes(search))
+        .filter((c) => !missingCoordsOnly || !c.hasCoordinates)
         .sort((a, b) => {
           const cmp = a[sortKey].localeCompare(b[sortKey], 'ko');
           return sortDir === 'asc' ? cmp : -cmp;
@@ -281,13 +287,29 @@ export default function AdminClientsPage() {
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
           <h2>고객사 목록 {clients && `(총 ${clients.length}곳, 이름순 정렬)`}</h2>
-          <input
-            style={{ margin: 0, width: 220 }}
-            placeholder="고객사명/주소 검색"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12.5, color: missingCoordsCount > 0 ? '#e8590c' : '#868e96', fontWeight: missingCoordsCount > 0 ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              <input type="checkbox" checked={missingCoordsOnly} onChange={(e) => setMissingCoordsOnly(e.target.checked)} style={{ width: 'auto', margin: 0 }} />
+              ⚠ 좌표 없는 곳만 보기{clients ? ` (${missingCoordsCount}곳)` : ''}
+            </label>
+            <input
+              style={{ margin: 0, width: 220 }}
+              placeholder="고객사명/주소 검색"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
         </div>
+        {/* 2026-09-17: "위치 미확인"으로 상황판에 매일 반복해서 뜨는 직원 다수가 실제로는 GPS
+            문제가 아니라, 그날 등록한 고객사에 좌표가 아직 등록되지 않아서인 경우였다(예:
+            한국hp교육센터·아이티로그인 세미나처럼 직원이 임시로 등록한 세미나/교육장 등) — 이런
+            곳들의 좌표를 여기서 채워두면 그 고객사로 등록하는 모든 직원의 "위치 미확인"이 한 번에
+            해소된다. */}
+        {clients && missingCoordsCount > 0 && (
+          <div className="hint-box" style={{ marginTop: 8, marginBottom: 8 }}>
+            ⚠ 좌표가 등록되지 않은 고객사가 {missingCoordsCount}곳 있어요 — 이 상태로 직원이 이 고객사로 고객사미팅/작업을 등록하면 위치 대조 자체가 불가능해서 상황판에 "위치 미확인"으로 계속 표시됩니다. 위 체크박스로 걸러서 좌표를 채워주세요.
+          </div>
+        )}
         <p style={{ fontSize: 12, color: '#868e96', marginTop: -6 }}>
           각 줄의 "🗺️ 지도에서 찾기"를 눌러서 좌표를 다시 등록/수정하거나, 위도/경도 칸을 직접 고쳐서 "직접입력 저장"을 눌러도 됩니다.
         </p>

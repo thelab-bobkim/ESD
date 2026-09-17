@@ -106,6 +106,37 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
       const effectiveLocationAccuracyMeters = bestLocationLogToday
         ? bestLocationLogToday.locationAccuracyMeters
         : (statusOnDay?.locationAccuracyMeters ?? checkinOnDay?.locationAccuracyMeters ?? null);
+
+      // 2026-09-17: "위치 미확인"이 매일 10명 넘게 반복된다는 지적으로 원인을 다시 살펴보니,
+      // 상당수가 GPS 정확도 문제가 아니라 그날 등록한 고객사 자체가 아직 시스템에 없거나(오타/신규
+      // 임시등록) 등록은 돼 있어도 좌표가 비어있어서(attendance.routes.ts의 checkLocationMatch가
+      // client를 못 찾거나 client.latitude/longitude가 null이면 그냥 null을 반환) 애초에 대조를
+      // 시도조차 못 하는 경우였다. 지금까지는 이 경우와 "GPS 캡처 실패"가 똑같이 "위치 미확인"
+      // 배지 하나로만 보여서 관리자가 원인을 구분할 방법이 없었다 — 여기서 실제로 어떤 경우인지
+      // 판정해서 내려주면 프론트가 "이 고객사 좌표를 등록해주세요" 같은 구체적 조치를 안내할 수 있다.
+      const isClientLocationStatus = statusOnDay?.status === 'CLIENT_MEETING' || statusOnDay?.status === 'CLIENT_WORK';
+      let clientLocationDiagnosis: 'NO_CLIENT_MATCH' | 'CLIENT_NO_COORDS' | null = null;
+      let clientLocationDiagnosisName: string | null = null;
+      if (isClientLocationStatus && effectiveLocationMatch !== true && statusOnDay?.siteType !== 'REMOTE') {
+        const effortForDiagnosis = fallbackEffort
+          ?? await prisma.effortLog.findFirst({ where: { userId: u.id, workDate: workDateLabel }, orderBy: { startTime: 'desc' } });
+        const diagnosisClientName = effortForDiagnosis?.clientName?.trim();
+        if (diagnosisClientName) {
+          // attendance.routes.ts와 동일한 방식(이름 부분일치, 대소문자 무시)으로 다시 찾아본다 —
+          // 그 등록 순간에 어떤 지점(clientId)을 정확히 골랐는지는 저장돼 있지 않아 완벽히 같은
+          // 결과를 보장할 순 없지만, "아예 없음/좌표 없음" 여부를 가리기엔 충분하다.
+          const matchedClient = await prisma.client.findFirst({
+            where: { name: { contains: diagnosisClientName, mode: 'insensitive' } },
+          });
+          if (!matchedClient) {
+            clientLocationDiagnosis = 'NO_CLIENT_MATCH';
+          } else if (matchedClient.latitude == null || matchedClient.longitude == null) {
+            clientLocationDiagnosis = 'CLIENT_NO_COORDS';
+          }
+          clientLocationDiagnosisName = diagnosisClientName;
+        }
+      }
+
       return {
         userId: u.id,
         name: u.name,
@@ -129,6 +160,10 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
         // 성공 이력 기준(대개 'OK')으로 맞춰 내려간다 — 실제로는 확인됐는데 문구만 미확인으로
         // 보이는 걸 막기 위함.)
         locationCaptureStatus: effectiveLocationCaptureStatus,
+        // 2026-09-17: 위에서 계산한 "왜 위치대조가 아예 불가능했는지" 진단 — null이면 이 원인이
+        // 아니라는 뜻(GPS 캡처 실패 등 기존 사유로 봐야 함).
+        clientLocationDiagnosis,
+        clientLocationDiagnosisName,
         // 2026-09-09: "원격"(재택/원격지원 등)으로 등록된 고객사미팅/작업은 현장에 있을 필요가
         // 없어서 attendance.routes.ts가 위치대조 자체를 건너뛴다 — 그 결과 locationMatch가 null로
         // 남는 게 정상인데, 프론트가 이 값을 몰라서 "위치 미확인"으로 잘못 flag하고 있었다(관리자
