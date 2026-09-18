@@ -252,6 +252,20 @@ export default function AdminDashboard() {
       .catch(() => setPushStatus(null));
   }, [board]);
 
+  // 2026-09-18: 다우오피스 "전사 휴가현황"을 스크래핑해서(leave-scraper.ts, 매일 오전 10시·오후
+  // 1시 자동 실행) 오늘 매칭된 휴가자만 별도로 보여준다. 직원의 실시간 상태값(status)은 전혀
+  // 건드리지 않는다 — 관리자가 굳이 확인할 필요 없이 "오늘 누가 쉬는지"만 참고하는 용도.
+  interface LeaveTodayEntry {
+    userId: string | null; name: string; department: string | null; leaveType: string;
+    durationLabel: string; startTime: string | null; endTime: string | null;
+  }
+  const [leaveToday, setLeaveToday] = useState<LeaveTodayEntry[] | null>(null);
+  useEffect(() => {
+    apiFetch<LeaveTodayEntry[]>('/dashboard/leave-today')
+      .then(setLeaveToday)
+      .catch(() => setLeaveToday(null));
+  }, [board]);
+
   const unsubscribedEmployees = useMemo(
     () => (pushStatus ?? []).filter((p) => !p.subscribed).sort((a, b) => a.name.localeCompare(b.name, 'ko')),
     [pushStatus]
@@ -521,6 +535,42 @@ export default function AdminDashboard() {
           </button>
         </div>
       </div>
+
+      {/* 2026-09-18: 다우오피스 "전사 휴가현황" 스크래핑 결과 — 직원의 실시간 상태(status)와는
+          완전히 분리된 별도 섹션이다. 오늘 매칭된 휴가자가 있을 때만 표시하고, 없으면 아무것도
+          렌더링하지 않는다(관리자가 매번 빈 섹션을 볼 필요 없게). */}
+      {leaveToday && leaveToday.length > 0 && (
+        <>
+          <div className="cc-section-title">🌴 오늘의 휴가자 <span className="cnt">{leaveToday.length}</span></div>
+          <div className="cc-alert-grid">
+            {leaveToday.map((l, idx) => (
+              <div className="cc-alert-card" key={`${l.userId ?? l.name}-${idx}`} style={{ '--cc-accent': '#868e96' } as CSSProperties}>
+                <div className="cc-alert-head">
+                  <div className="cc-alert-name">
+                    <div className="cc-avatar" style={{ background: '#868e96' }}>{l.name.slice(-2)}</div>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="nm">{l.name}</div>
+                      <div className="dept">{l.department ?? '-'}</div>
+                    </div>
+                  </div>
+                  <span className="cc-alert-flag">{l.durationLabel}</span>
+                </div>
+                <div className="cc-alert-note">
+                  {l.leaveType}
+                  {l.startTime && l.endTime && (
+                    <>
+                      {' · '}
+                      {new Date(l.startTime).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+                      {'~'}
+                      {new Date(l.endTime).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       {showUnreadReplies && unreadReplies && unreadReplies.length > 0 && (
         <>

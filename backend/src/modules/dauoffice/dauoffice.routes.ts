@@ -4,6 +4,7 @@ import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { syncEmployeesFromDauoffice } from './sync-employees';
+import { scrapeCompanyLeaveStatus } from './leave-scraper';
 
 export const dauofficeRouter = Router();
 dauofficeRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN'));
@@ -26,6 +27,37 @@ dauofficeRouter.post('/sync/employees', async (req, res) => {
 // "전사 휴가현황"의 실제 휴가자와 맞지 않는 것을 확인했다(우리 앱으로 출퇴근을 관리하다 보니
 // 다우오피스 자체 출근체크를 안 쓰는 사람이 대부분이라 "출근없음"이 휴가와 무관하게 대량 발생).
 // 즉 이 API로는 휴가 여부를 구분할 수 없다 — 정식 휴가 API가 확인되면 그때 다시 시도한다.
+
+// 2026-09-18: 위 문제의 대안으로, 다우오피스 "전사 휴가현황" 화면을 headless 브라우저로 직접
+// 읽어오는 스크래핑을 추가했다(leave-scraper.ts). 로그인 단계는 실제 로그인 페이지 구조를 보지
+// 못한 채 작성한 추정치라 첫 실행은 반드시 dryRun=true로 결과부터 확인해야 한다. 스크래핑 결과는
+// 직원의 실시간 상태값(StatusChangeLog)을 건드리지 않고 dashboard.routes.ts의 "오늘의 휴가자"
+// 섹션에만 별도로 반영된다(관리자 확정 방향 — 예전에 다우오피스 출퇴근 자동동기화를 아예 껐던
+// 것과 같은 이유: 직원이 앱에서 직접 등록한 상태와 충돌하지 않게 하기 위함).
+
+/**
+ * "전사 휴가현황" 수동 스크래핑 트리거. dryRun=true면 DB에 저장하지 않고 파싱 결과만 돌려준다 —
+ * 로그인/표 파싱 셀렉터가 실제 다우오피스 화면과 맞는지 먼저 확인하는 용도.
+ */
+dauofficeRouter.post('/leave/scrape', async (req, res) => {
+  const dryRun = req.query.dryRun === 'true';
+  try {
+    const result = await scrapeCompanyLeaveStatus({ dryRun });
+    await recordAuditLog({
+      actorUserId: req.authUser!.userId,
+      actionType: 'DAUOFFICE_LEAVE_SCRAPE',
+      targetType: 'dauoffice_leave_entry',
+      targetId: dryRun ? 'dry-run' : 'scrape',
+      afterValue: { scrapedRowCount: result.scrapedRowCount, savedCount: result.savedCount, unmatchedCount: result.unmatched.length },
+    });
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'LEAVE_SCRAPE_FAILED', message: err instanceof Error ? err.message : '휴가현황 스크래핑에 실패했습니다.' },
+    });
+  }
+});
 
 /** 부서명 수동 보정값 목록 조회 (AMS의 하드코딩 DEPT_MAP을 대체하는 테이블) */
 dauofficeRouter.get('/department-overrides', async (_req, res) => {

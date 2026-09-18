@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { createApp } from './app';
 import { startDauofficeScheduler } from './modules/dauoffice/dauoffice-scheduler';
+import { startLeaveScrapeScheduler } from './modules/dauoffice/leave-scrape-scheduler';
 import { startClockInReminderScheduler } from './modules/push/reminder-scheduler';
 import { startMismatchCoordPurgeScheduler } from './modules/push/mismatch-coord-purge-scheduler';
 
@@ -13,5 +14,6 @@ app.listen(PORT, () => {
 });
 
 startDauofficeScheduler();
+startLeaveScrapeScheduler();
 startClockInReminderScheduler();
 startMismatchCoordPurgeScheduler();

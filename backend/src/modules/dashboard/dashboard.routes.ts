@@ -316,3 +316,37 @@ dashboardRouter.get('/recent-activity', async (req, res) => {
   }));
   return res.json({ success: true, data: rows });
 });
+
+/**
+ * 2026-09-18: 다우오피스 "전사 휴가현황" 스크래핑 결과(leave-scraper.ts, 매일 오전 10시·오후 1시
+ * 자동 실행) 중 특정 날짜(기본 오늘)·매칭 성공한 건만 상황판에 별도 섹션으로 보여준다. 직원의
+ * 실시간 상태값(StatusChangeLog)은 전혀 건드리지 않으므로(관리자 확정 방향) 이 엔드포인트는
+ * 순수 조회용이다 — 자세한 배경은 dauoffice.routes.ts의 2026-09-04/09-18 기록 참고.
+ */
+dashboardRouter.get('/leave-today', async (req, res) => {
+  const dateParam = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : null;
+  // 휴가는 근태(workDate)와 달리 새벽 3시가 아니라 달력상 그날짜 그대로다(다우오피스 "휴가사용일"도
+  // 마찬가지) — dateOnlyUTC()의 3시 경계를 그대로 쓰면 자정~새벽3시 사이엔 하루 전 휴가자가
+  // 보이는 어긋남이 생길 수 있어 여기서는 순수 KST 달력일로 별도 계산한다.
+  const kstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const workDate = dateParam
+    ? new Date(`${dateParam}T00:00:00.000Z`)
+    : new Date(Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()));
+  const entries = await prisma.dauofficeLeaveEntry.findMany({
+    where: { workDate, matched: true },
+    orderBy: [{ departmentRaw: 'asc' }, { nameRaw: 'asc' }],
+  });
+  const rows = entries.map((e: {
+    userId: string | null; nameRaw: string; departmentRaw: string; leaveType: string;
+    durationLabel: string; startTime: Date | null; endTime: Date | null;
+  }) => ({
+    userId: e.userId,
+    name: e.nameRaw,
+    department: e.departmentRaw || null,
+    leaveType: e.leaveType,
+    durationLabel: e.durationLabel,
+    startTime: e.startTime,
+    endTime: e.endTime,
+  }));
+  return res.json({ success: true, data: rows });
+});

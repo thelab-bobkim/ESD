@@ -7,6 +7,12 @@ RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /v
 COPY package.json package-lock.json* ./
 RUN npm install --no-audit --no-fund
 
+# 2026-09-18: 다우오피스 "전사 휴가현황" 스크래핑(leave-scraper.ts)용 Chromium 설치. 다우오피스
+# 공식 API로는 휴가 여부를 구분할 수 없다는 게 이미 확인돼서(dauoffice.routes.ts 2026-09-04
+# 기록) headless 브라우저로 그 화면을 직접 읽어온다. --with-deps가 폰트·libnss3 등 Chromium
+# 실행에 필요한 OS 패키지까지 apt로 같이 설치해준다(이미지 용량이 꽤 늘어난다 — 정상).
+RUN npx playwright install --with-deps chromium
+
 COPY prisma ./prisma
 RUN npx prisma generate
 

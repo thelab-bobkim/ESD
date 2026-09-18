@@ -621,6 +621,36 @@ model EffortLog {
   @@map("effort_logs")
 }
 
+// ===== 다우오피스 "전사 휴가현황" 스크래핑 =====
+// 2026-09-18: 다우오피스 공식 API(attnd-v2/attnd)로는 휴가 여부를 구분할 수 없다는 게 이미
+// 확인돼서(dauoffice.routes.ts 2026-09-04 기록 — dayWorkStatusCode 등이 이 계정에서 전부 null로만
+// 내려옴) headless 브라우저로 "전사 휴가현황" 화면을 직접 읽어와 채운다(leave-scraper.ts).
+// 관리자 요청으로, 직원의 실시간 상태값(StatusChangeLog)은 건드리지 않고 상황판에 "오늘의
+// 휴가자"를 별도로 얹어 보여주는 용도로만 쓴다 — 그래서 User와 정식 관계(@relation)는 두지
+// 않고, 매칭에 성공하면 User.id를 스냅샷으로만 저장한다(표시 전용 데이터라 User 삭제·변경
+// 이력과 얽히지 않게 하기 위함).
+model DauofficeLeaveEntry {
+  id            String    @id @default(uuid())
+  workDate      DateTime  @db.Date @map("work_date") // 휴가 사용일(하루 단위 — 여러 날짜에 걸친 휴가는 날짜별로 나눠 저장)
+  userId        String?   @map("user_id")
+  employeeNoRaw String?   @map("employee_no_raw")
+  nameRaw       String    @map("name_raw")
+  // 멱등성 키(@@unique)에 쓰이는 값이라 항상 문자열로 정규화한다("" = 부서 미기재) — null을 쓰면
+  // Postgres UNIQUE 제약에서 NULL끼리 서로 다른 값으로 취급돼 중복 행이 생길 수 있다.
+  departmentRaw String    @default("") @map("department_raw")
+  leaveType     String    @map("leave_type") // 원본 표기(연차/기타휴가 등)
+  durationLabel String    @map("duration_label") // 종일/오전반차/오후반차/반반차/기타
+  startTime     DateTime? @map("start_time")
+  endTime       DateTime? @map("end_time")
+  matched       Boolean   @default(false)
+  scrapedAt     DateTime  @default(now()) @map("scraped_at")
+
+  // 같은 사람의 같은 날짜·같은 휴가유형은 하루 두 번(오전10시/오후1시) 스크래핑해도 한 줄로
+  // 유지되게(덮어쓰기) 하는 멱등성 키.
+  @@unique([workDate, nameRaw, departmentRaw, leaveType])
+  @@map("dauoffice_leave_entries")
+}
+
 // ===== 브라우저 푸시 알림 =====
 // "오전 9시까지 출근/재택 등록 안 하면 알림" 기능을 위한 구독 정보.
 // 웹 표준 Push API(VAPID) 방식이라 안드로이드는 브라우저에서 바로, iOS는 PWA로 홈화면에
