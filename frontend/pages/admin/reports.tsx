@@ -554,6 +554,12 @@ export default function AdminReportsPage() {
               <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
                 CSV 내려받기
               </button>
+              {/* 2026-09-18: "이 화면 CSV엔 왜 고객사 정보가 없냐"는 문의 대응 — 이 CSV(근태)는
+                  출퇴근 기록이라 애초에 고객사 개념이 없다. 일별·사용자별·고객사별 작업시간은
+                  별도 데이터(공수기록)라서, 헷갈리지 않게 바로 옆에 전용 다운로드 버튼을 둔다. */}
+              <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/client-work-daily-export', 'client-work-daily-export.csv')}>
+                📊 일별 고객사 작업시간 CSV
+              </button>
             </div>
           </div>
           {!attendanceDetail && <div className="board-empty">불러오는 중...</div>}
@@ -613,11 +619,16 @@ export default function AdminReportsPage() {
       {/* 여러 날: 누적 근무시간 표 */}
       {!isSingleDay && (
         <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <h2>📊 근무시간 누계 (주52시간제 기준) — {rangeLabel}</h2>
-            <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
-              CSV 내려받기
-            </button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
+                CSV 내려받기
+              </button>
+              <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/client-work-daily-export', 'client-work-daily-export.csv')}>
+                📊 일별 고객사 작업시간 CSV
+              </button>
+            </div>
           </div>
           {!worktime && <div className="board-empty">불러오는 중...</div>}
           {worktime && worktime.rows.length === 0 && <div className="board-empty">이 기간에 확정된 근무기록이 없습니다.</div>}

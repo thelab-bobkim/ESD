@@ -57,10 +57,11 @@ function kstDateTime(d: Date | null | undefined): string {
   return `${y}-${mo}-${day} ${hh}:${mm}`;
 }
 
-// 2026-09-18: "일별로 어떤 고객사에 몇 시간 일했는지 쉽게 보고 싶다" 요청 반영 — 분 단위만 있으면
-// 매번 암산해야 해서, 시간 단위(소수 첫째자리)로 바로 계산되는 컬럼을 추가로 내려준다. 분 컬럼은
-// 정확한 원본 값 확인용으로 그대로 남겨둔다(둘 다 있으면 엑셀에서 합계 낼 때도 시간 컬럼을 바로
-// SUM 하면 되니 더 편하다).
+// 2026-09-18: "일별로 어떤 고객사에 몇 시간 일했는지 쉽게 보고 싶다" 요청 반영 — 분 단위는
+// 매번 암산해야 해서, 시간 단위(소수 첫째자리)로 바로 계산되는 값으로 CSV에는 이 값만 내려준다.
+// (같은 날 후속 문의로 "분 단위는 필요없고 시간 단위만 보여달라"고 확정돼, 분 컬럼 자체는
+// CSV에서 뺐다 — 아래 각 export의 row 매핑에서 minutes/workedMinutes 원본값은 이 변환에만 쓰고
+// 별도 컬럼으로 내보내지 않는다.)
 function minutesToHours(minutes: number | null | undefined): number | '' {
   if (minutes == null) return '';
   return Math.round((minutes / 60) * 10) / 10;
@@ -80,7 +81,6 @@ const ATTENDANCE_EXPORT_HEADERS: Record<string, string> = {
   workDate: '근무일자',
   clockInAt: '출근시각',
   clockOutAt: '퇴근시각',
-  totalWorkedMinutes: '실근무시간(분)',
   totalWorkedHours: '실근무시간(시간)',
 };
 
@@ -93,7 +93,6 @@ const EFFORT_EXPORT_HEADERS: Record<string, string> = {
   workType: '작업유형',
   startTime: '시작시각',
   endTime: '종료시각',
-  minutes: '근무시간(분)',
   hours: '근무시간(시간)',
   description: '비고',
 };
@@ -103,10 +102,22 @@ const NIGHT_WORK_EXPORT_HEADERS: Record<string, string> = {
   name: '이름',
   startedAt: '시작시각',
   endedAt: '종료시각',
-  workedMinutes: '근무시간(분)',
   workedHours: '근무시간(시간)',
   conversionStatus: '대체휴가 전환상태',
-  convertedMinutes: '전환된시간(분)',
+  convertedHours: '전환된시간(시간)',
+};
+
+// 2026-09-18: "고객사별 공수관리 화면에 나오는 것처럼, 사용자별로 매일 어떤 고객사에 얼마나
+// 일했는지"를 CSV 한 장으로 바로 보고 싶다는 요청 — 기존 effort-export는 등록된 공수기록 원본을
+// 한 줄씩 그대로 내보내서(같은 날 같은 고객사라도 여러 번 나눠 등록했으면 여러 줄로 나뉨), 하루
+// 합계를 보려면 직접 엑셀에서 피벗을 만들어야 했다. 이 export는 (근무일자, 사용자, 고객사) 기준으로
+// 미리 합산해서 한 줄로 내려준다 — "일별×사용자별×고객사별" 표가 바로 필요한 관리 목적에 맞춘 것.
+const CLIENT_WORK_DAILY_EXPORT_HEADERS: Record<string, string> = {
+  workDate: '근무일자',
+  employeeNo: '사번',
+  name: '이름',
+  clientName: '고객사',
+  hours: '근무시간(시간)',
 };
 
 const rangeSchema = z.object({
@@ -361,13 +372,59 @@ reportsRouter.get('/effort-export', async (req, res) => {
     workType: l.workType,
     startTime: kstDateTime(l.startTime),
     endTime: kstDateTime(l.endTime),
-    minutes: l.minutes ?? '',
     hours: minutesToHours(l.minutes),
     description: l.description ?? '',
   }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="effort-export.csv"');
   return res.send(CSV_BOM + toCSV(rows, EFFORT_EXPORT_HEADERS));
+});
+
+/**
+ * 2026-09-18: "고객사별 공수관리 화면처럼, 사용자별로 매일 어떤 고객사에 얼마나 일했는지 CSV로
+ * 보고 싶다"는 요청 — effort-export(원본 기록 그대로, 같은 날 같은 고객사도 여러 줄로 나뉠 수 있음)
+ * 와 달리, (근무일자, 사용자, 고객사) 단위로 미리 합산해서 한 줄로 보여준다. 완료된(작업시간이
+ * 계산된) 기록만, 고객사명이 있는 기록만 대상으로 한다(effort-summary와 동일한 기준).
+ */
+reportsRouter.get('/client-work-daily-export', async (_req, res) => {
+  const logs = await prisma.effortLog.findMany({
+    where: { minutes: { not: null } },
+    include: { user: { select: { name: true, employeeNo: true } } },
+    orderBy: { workDate: 'desc' },
+    take: 5000,
+  });
+
+  interface DailyClientGroup {
+    workDate: string;
+    employeeNo: string;
+    name: string;
+    clientName: string;
+    minutes: number;
+  }
+  const byKey = new Map<string, DailyClientGroup>();
+  for (const l of logs) {
+    const clientName = l.clientName?.trim();
+    if (!clientName) continue; // 사내 업무일지 등 고객사명이 없는 기록은 이 리포트 목적상 제외(effort-summary와 동일한 기준)
+    const workDate = l.workDate.toISOString().slice(0, 10);
+    const key = `${workDate}::${l.userId}::${clientName}`;
+    const group = byKey.get(key) ?? { workDate, employeeNo: l.user.employeeNo, name: l.user.name, clientName, minutes: 0 };
+    group.minutes += l.minutes ?? 0;
+    byKey.set(key, group);
+  }
+
+  const rows = Array.from(byKey.values())
+    .sort((a, b) => b.workDate.localeCompare(a.workDate) || a.name.localeCompare(b.name, 'ko') || a.clientName.localeCompare(b.clientName, 'ko'))
+    .map((g) => ({
+      workDate: g.workDate,
+      employeeNo: g.employeeNo,
+      name: g.name,
+      clientName: g.clientName,
+      hours: minutesToHours(g.minutes),
+    }));
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="client-work-daily-export.csv"');
+  return res.send(CSV_BOM + toCSV(rows, CLIENT_WORK_DAILY_EXPORT_HEADERS));
 });
 
 reportsRouter.get('/attendance-export', async (req, res) => {
@@ -383,7 +440,6 @@ reportsRouter.get('/attendance-export', async (req, res) => {
     workDate: r.workDate.toISOString().slice(0, 10),
     clockInAt: kstDateTime(r.clockInAt),
     clockOutAt: kstDateTime(r.clockOutAt),
-    totalWorkedMinutes: r.totalWorkedMinutes ?? '',
     totalWorkedHours: minutesToHours(r.totalWorkedMinutes),
   }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -403,10 +459,9 @@ reportsRouter.get('/night-work-export', async (req, res) => {
     name: s.user.name,
     startedAt: kstDateTime(s.startedAt),
     endedAt: kstDateTime(s.endedAt),
-    workedMinutes: s.workedMinutes ?? '',
     workedHours: minutesToHours(s.workedMinutes),
     conversionStatus: LEAVE_CONVERSION_STATUS_LABELS[s.leaveConversionRequest?.status ?? 'NONE'] ?? (s.leaveConversionRequest?.status ?? '해당없음'),
-    convertedMinutes: s.leaveConversionRequest?.convertedMinutes ?? '',
+    convertedHours: minutesToHours(s.leaveConversionRequest?.convertedMinutes),
   }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="night-work-export.csv"');
