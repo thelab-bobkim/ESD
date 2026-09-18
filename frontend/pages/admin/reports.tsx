@@ -619,14 +619,11 @@ export default function AdminReportsPage() {
                   {m.icon} {m.label}
                 </button>
               ))}
-              <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
-                CSV 내려받기
-              </button>
-              {/* 2026-09-18: "이 화면 CSV엔 왜 고객사 정보가 없냐"는 문의 대응 — 이 CSV(근태)는
-                  출퇴근 기록이라 애초에 고객사 개념이 없다. 일별·사용자별·고객사별 작업시간은
-                  별도 데이터(공수기록)라서, 헷갈리지 않게 바로 옆에 전용 다운로드 버튼을 둔다. */}
-              <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/client-work-daily-export', 'client-work-daily-export.csv')}>
-                📊 일별 고객사 작업시간 CSV
+              {/* 2026-09-19: 예전엔 "CSV 내려받기"(출퇴근)와 "일별 고객사 작업시간 CSV"가 따로
+                  있어서 헷갈린다는 요청으로 하나로 합쳤다. 엑셀 한 파일 안에 일별 상세 + 주별·월별
+                  누계 시트를 같이 담는다(attendance-work-export, 백엔드 참고). */}
+              <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-work-export', 'attendance-work-export.xlsx')}>
+                📊 근태·작업시간 엑셀 내려받기
               </button>
             </div>
           </div>
@@ -690,11 +687,8 @@ export default function AdminReportsPage() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <h2>📊 근무시간 누계 (주52시간제 기준) — {rangeLabel}</h2>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-export', 'attendance-export.csv')}>
-                CSV 내려받기
-              </button>
-              <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/client-work-daily-export', 'client-work-daily-export.csv')}>
-                📊 일별 고객사 작업시간 CSV
+              <button style={{ width: 'auto', margin: 0 }} className="secondary" onClick={() => apiDownload('/reports/attendance-work-export', 'attendance-work-export.xlsx')}>
+                📊 근태·작업시간 엑셀 내려받기
               </button>
             </div>
           </div>

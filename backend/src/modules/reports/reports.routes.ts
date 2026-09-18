@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import ExcelJS from 'exceljs';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { realDayWindow, computeTimelineSegments, computeClockInMismatch } from '../../common/attendance-helpers';
@@ -464,6 +465,164 @@ reportsRouter.get('/attendance-export', async (req, res) => {
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="attendance-export.csv"');
   return res.send(CSV_BOM + toCSV(rows, ATTENDANCE_EXPORT_HEADERS));
+});
+
+// 2026-09-19: "CSV 내려받기"와 "일별 고객사 작업시간 CSV" 버튼 2개가 따로 있어서 헷갈린다는
+// 요청 — 두 데이터(출퇴근시간 + 고객사별 작업시간)를 엑셀 한 파일에 합치고, 일별 상세 외에
+// 주별·월별 누계까지 시트로 같이 담는다(CSV는 시트 개념이 없어서 xlsx로 전환). 기존
+// /attendance-export, /client-work-daily-export CSV 엔드포인트는 그대로 남겨둔다(다른 곳에서
+// 이 원본 CSV가 필요할 수 있어 하위호환 목적으로 유지 — 화면의 다운로드 버튼만 이걸로 교체).
+function mondayOf(dateStr: string): Date {
+  const d = new Date(`${dateStr}T00:00:00.000Z`);
+  const day = d.getUTCDay(); // 0=일 .. 6=토
+  const diffToMonday = day === 0 ? 6 : day - 1;
+  const monday = new Date(d);
+  monday.setUTCDate(d.getUTCDate() - diffToMonday);
+  return monday;
+}
+function weekLabelOf(dateStr: string): string {
+  const monday = mondayOf(dateStr);
+  const sunday = new Date(monday);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
+  const f = (x: Date) => x.toISOString().slice(0, 10);
+  return `${f(monday)} ~ ${f(sunday)}`;
+}
+
+reportsRouter.get('/attendance-work-export', async (_req, res) => {
+  const [records, logs] = await Promise.all([
+    prisma.attendanceRecord.findMany({
+      where: { user: { includedInBoard: true } },
+      include: { user: { select: { name: true, employeeNo: true } } },
+      orderBy: { workDate: 'desc' },
+      take: 1000,
+    }),
+    prisma.effortLog.findMany({
+      where: { minutes: { not: null } },
+      include: { user: { select: { name: true, employeeNo: true } } },
+      orderBy: { workDate: 'desc' },
+      take: 5000,
+    }),
+  ]);
+
+  const userInfo = new Map<string, { employeeNo: string; name: string }>();
+  for (const r of records) userInfo.set(r.userId, { employeeNo: r.user.employeeNo, name: r.user.name });
+  for (const l of logs) userInfo.set(l.userId, { employeeNo: l.user.employeeNo, name: l.user.name });
+
+  interface DailyRow {
+    workDate: string; userId: string; clockInAt: Date | null; clockOutAt: Date | null;
+    totalWorkedMinutes: number | null; clientMinutes: Map<string, number>;
+  }
+  const dailyKey = (workDate: string, userId: string) => `${workDate}::${userId}`;
+  const dailyMap = new Map<string, DailyRow>();
+
+  for (const r of records) {
+    const workDate = r.workDate.toISOString().slice(0, 10);
+    dailyMap.set(dailyKey(workDate, r.userId), {
+      workDate, userId: r.userId, clockInAt: r.clockInAt, clockOutAt: r.clockOutAt,
+      totalWorkedMinutes: r.totalWorkedMinutes, clientMinutes: new Map(),
+    });
+  }
+  for (const l of logs) {
+    const clientName = l.clientName?.trim();
+    if (!clientName) continue; // client-work-daily-export와 동일한 기준(고객사명 없는 사내업무 등은 제외)
+    const workDate = l.workDate.toISOString().slice(0, 10);
+    const key = dailyKey(workDate, l.userId);
+    let row = dailyMap.get(key);
+    if (!row) {
+      row = { workDate, userId: l.userId, clockInAt: null, clockOutAt: null, totalWorkedMinutes: null, clientMinutes: new Map() };
+      dailyMap.set(key, row);
+    }
+    row.clientMinutes.set(clientName, (row.clientMinutes.get(clientName) ?? 0) + effectiveEffortMinutes(l));
+  }
+
+  interface AggRow { workedMinutes: number; clientMinutes: number }
+  const weeklyMap = new Map<string, AggRow>();
+  const monthlyMap = new Map<string, AggRow>();
+  for (const row of dailyMap.values()) {
+    const clientTotal = Array.from(row.clientMinutes.values()).reduce((a, b) => a + b, 0);
+    const wKey = `${weekLabelOf(row.workDate)}::${row.userId}`;
+    const wAgg = weeklyMap.get(wKey) ?? { workedMinutes: 0, clientMinutes: 0 };
+    wAgg.workedMinutes += row.totalWorkedMinutes ?? 0;
+    wAgg.clientMinutes += clientTotal;
+    weeklyMap.set(wKey, wAgg);
+
+    const mKey = `${row.workDate.slice(0, 7)}::${row.userId}`;
+    const mAgg = monthlyMap.get(mKey) ?? { workedMinutes: 0, clientMinutes: 0 };
+    mAgg.workedMinutes += row.totalWorkedMinutes ?? 0;
+    mAgg.clientMinutes += clientTotal;
+    monthlyMap.set(mKey, mAgg);
+  }
+
+  const workbook = new ExcelJS.Workbook();
+
+  const dailySheet = workbook.addWorksheet('일별');
+  dailySheet.columns = [
+    { header: '사번', key: 'employeeNo', width: 12 },
+    { header: '이름', key: 'name', width: 10 },
+    { header: '근무일자', key: 'workDate', width: 12 },
+    { header: '출근시각', key: 'clockInAt', width: 16 },
+    { header: '퇴근시각', key: 'clockOutAt', width: 16 },
+    { header: '실근무시간(시간)', key: 'totalWorkedHours', width: 14 },
+    { header: '고객사별 작업시간', key: 'clientBreakdown', width: 44 },
+    { header: '고객사작업 합계(시간)', key: 'clientTotalHours', width: 18 },
+  ];
+  const dailyRowsSorted = Array.from(dailyMap.values()).sort((a, b) =>
+    b.workDate.localeCompare(a.workDate) ||
+    (userInfo.get(a.userId)?.name ?? '').localeCompare(userInfo.get(b.userId)?.name ?? '', 'ko')
+  );
+  for (const row of dailyRowsSorted) {
+    const info = userInfo.get(row.userId);
+    const clientTotalMinutes = Array.from(row.clientMinutes.values()).reduce((a, b) => a + b, 0);
+    const breakdown = Array.from(row.clientMinutes.entries())
+      .map(([name, min]) => `${name}:${minutesToHours(min)}h`)
+      .join('; ');
+    dailySheet.addRow({
+      employeeNo: info?.employeeNo ?? '',
+      name: info?.name ?? '',
+      workDate: row.workDate,
+      clockInAt: kstDateTime(row.clockInAt),
+      clockOutAt: kstDateTime(row.clockOutAt),
+      totalWorkedHours: minutesToHours(row.totalWorkedMinutes),
+      clientBreakdown: breakdown,
+      clientTotalHours: minutesToHours(clientTotalMinutes),
+    });
+  }
+  dailySheet.getRow(1).font = { bold: true };
+
+  function addAggSheet(sheetName: string, map: Map<string, AggRow>, periodHeader: string) {
+    const sheet = workbook.addWorksheet(sheetName);
+    sheet.columns = [
+      { header: '사번', key: 'employeeNo', width: 12 },
+      { header: '이름', key: 'name', width: 10 },
+      { header: periodHeader, key: 'periodLabel', width: 24 },
+      { header: '총근무시간(시간)', key: 'workedHours', width: 16 },
+      { header: '고객사작업 합계(시간)', key: 'clientHours', width: 18 },
+    ];
+    const rows = Array.from(map.entries())
+      .map(([key, agg]) => {
+        const sep = key.lastIndexOf('::');
+        const periodLabel = key.slice(0, sep);
+        const userId = key.slice(sep + 2);
+        const info = userInfo.get(userId);
+        return {
+          periodLabel,
+          employeeNo: info?.employeeNo ?? '',
+          name: info?.name ?? '',
+          workedHours: minutesToHours(agg.workedMinutes),
+          clientHours: minutesToHours(agg.clientMinutes),
+        };
+      })
+      .sort((a, b) => b.periodLabel.localeCompare(a.periodLabel) || a.name.localeCompare(b.name, 'ko'));
+    for (const r of rows) sheet.addRow(r);
+    sheet.getRow(1).font = { bold: true };
+  }
+  addAggSheet('주별 누계', weeklyMap, '주간(월~일)');
+  addAggSheet('월별 누계', monthlyMap, '월');
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="attendance-work-export.xlsx"');
+  const buffer = await workbook.xlsx.writeBuffer();
+  return res.send(Buffer.from(buffer));
 });
 
 reportsRouter.get('/night-work-export', async (req, res) => {
