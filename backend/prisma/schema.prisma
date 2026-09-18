@@ -121,6 +121,8 @@ enum AuditActionType {
   CORRECT
   POLICY_CHANGE
   LOCATION_DETAIL_VIEW
+  // 2026-09-18: 다우오피스 "전사 휴가현황" 스크래핑 수동/자동 실행 기록용.
+  DAUOFFICE_LEAVE_SCRAPE
 }
 
 model Department {
