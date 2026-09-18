@@ -37,6 +37,11 @@ services:
       DAUOFFICE_CLIENT_SECRET: ${DAUOFFICE_CLIENT_SECRET:-}
       DAUOFFICE_API_URL: ${DAUOFFICE_API_URL:-https://api.daouoffice.com}
       DAUOFFICE_TLS_INSECURE: ${DAUOFFICE_TLS_INSECURE:-false}
+      # 2026-09-18: 다우오피스 "전사 휴가현황" 스크래핑용 로그인 계정. .env.prod에 값을 채워도
+      # 여기 등록되어 있지 않으면 컨테이너 안으로 전달되지 않는다(다른 다우오피스 변수들과 동일한 이유).
+      DAUOFFICE_SCRAPE_USERNAME: ${DAUOFFICE_SCRAPE_USERNAME:-}
+      DAUOFFICE_SCRAPE_PASSWORD: ${DAUOFFICE_SCRAPE_PASSWORD:-}
+      DAUOFFICE_PORTAL_URL: ${DAUOFFICE_PORTAL_URL:-https://dsti.daouoffice.com}
       CORS_ORIGIN: ${CORS_ORIGIN:-}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
