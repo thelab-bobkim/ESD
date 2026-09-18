@@ -9,15 +9,34 @@ import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN', 'TEAM_LEAD'));
 
+// 2026-09-18: CSV로 다운받은 엑셀 파일에서 한글(이름 등)이 "源?蟲?" 식으로 깨져 보인다는 문의로
+// 원인 확인 — 내용 자체는 UTF-8로 정상 생성되고 있었지만, 파일 맨 앞에 BOM(Byte Order Mark)이
+// 없어서 한글 Windows 엑셀이 파일을 시스템 기본 코드페이지(CP949)로 잘못 해석해 벌어진 문제였다
+// (인코딩 문제일 뿐 실제 데이터 자체는 처음부터 정상 저장돼 있었음). res.send() 쪽에서 BOM을 붙인다.
+// 필드 이스케이프도 함께 정리: 기존에는 JSON.stringify로 감쌌는데, 이는 큰따옴표를 백슬래시(\")로
+// 이스케이프해서 CSV 표준(큰따옴표를 두 번 반복 "")과 달라 엑셀이 잘못 해석할 여지가 있었다
+// (예: 비고란에 큰따옴표나 줄바꿈이 들어간 경우). RFC4180 방식으로 교체.
+function csvField(value: unknown): string {
+  const s = value == null ? '' : String(value);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
 function toCSV(rows: Record<string, unknown>[]): string {
   if (rows.length === 0) return '';
   const headers = Object.keys(rows[0]);
   const lines = [headers.join(',')];
   for (const row of rows) {
-    lines.push(headers.map((h) => JSON.stringify(row[h] ?? '')).join(','));
+    lines.push(headers.map((h) => csvField(row[h])).join(','));
   }
   return lines.join('\n');
 }
+
+// 엑셀(특히 한글 Windows)이 BOM 없는 UTF-8 CSV를 CP949로 오인해서 한글이 깨지는 것을 막기 위한
+// BOM. res.send()에 이 값 + toCSV(...) 결과를 그대로 넘긴다.
+const CSV_BOM = '﻿';
 
 const rangeSchema = z.object({
   from: z.string().min(1),
@@ -276,7 +295,7 @@ reportsRouter.get('/effort-export', async (req, res) => {
   }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="effort-export.csv"');
-  return res.send(toCSV(rows));
+  return res.send(CSV_BOM + toCSV(rows));
 });
 
 reportsRouter.get('/attendance-export', async (req, res) => {
@@ -296,7 +315,7 @@ reportsRouter.get('/attendance-export', async (req, res) => {
   }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="attendance-export.csv"');
-  return res.send(toCSV(rows));
+  return res.send(CSV_BOM + toCSV(rows));
 });
 
 reportsRouter.get('/night-work-export', async (req, res) => {
@@ -317,7 +336,7 @@ reportsRouter.get('/night-work-export', async (req, res) => {
   }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="night-work-export.csv"');
-  return res.send(toCSV(rows));
+  return res.send(CSV_BOM + toCSV(rows));
 });
 
 const daySchema = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
