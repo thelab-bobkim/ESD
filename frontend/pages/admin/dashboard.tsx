@@ -173,6 +173,7 @@ export default function AdminDashboard() {
   interface ThreadMessage { id: string; message: string; senderIsAdmin: boolean; sentByName: string; createdAt: string }
   const [unreadReplies, setUnreadReplies] = useState<UnreadReply[] | null>(null);
   const [showUnreadReplies, setShowUnreadReplies] = useState(false);
+  const [showLeaveToday, setShowLeaveToday] = useState(false);
   const [messageThread, setMessageThread] = useState<ThreadMessage[] | null>(null);
   const [loadingThread, setLoadingThread] = useState(false);
 
@@ -534,12 +535,26 @@ export default function AdminDashboard() {
             {showUnreadReplies ? '목록 접기 ▴' : '명단 보기 ▾'}
           </button>
         </div>
+        {/* 2026-09-18: 다우오피스 "전사 휴가현황" 스크래핑 결과. 직원의 실시간 상태(status)와는
+            완전히 분리된 별도 카드 — "안 읽은 답장" 옆에 배치해서 관리자가 한눈에 오늘 휴가자
+            수를 보고, 필요할 때만 명단을 펼쳐보게 한다. */}
+        <div className="cc-stat-card" style={{ borderColor: leaveToday && leaveToday.length ? '#3a2340' : undefined }}>
+          <div className="cc-stat-label">🌴 오늘의 휴가자</div>
+          <div className="cc-stat-value" style={{ color: leaveToday && leaveToday.length ? '#868e96' : undefined }}>
+            {leaveToday ? leaveToday.length : '-'}<small>{leaveToday ? '명' : ''}</small>
+          </div>
+          <button
+            className="secondary"
+            style={{ marginTop: 10, width: '100%' }}
+            disabled={!leaveToday || leaveToday.length === 0}
+            onClick={() => setShowLeaveToday((v) => !v)}
+          >
+            {showLeaveToday ? '목록 접기 ▴' : '명단 보기 ▾'}
+          </button>
+        </div>
       </div>
 
-      {/* 2026-09-18: 다우오피스 "전사 휴가현황" 스크래핑 결과 — 직원의 실시간 상태(status)와는
-          완전히 분리된 별도 섹션이다. 오늘 매칭된 휴가자가 있을 때만 표시하고, 없으면 아무것도
-          렌더링하지 않는다(관리자가 매번 빈 섹션을 볼 필요 없게). */}
-      {leaveToday && leaveToday.length > 0 && (
+      {showLeaveToday && leaveToday && leaveToday.length > 0 && (
         <>
           <div className="cc-section-title">🌴 오늘의 휴가자 <span className="cnt">{leaveToday.length}</span></div>
           <div className="cc-alert-grid">
