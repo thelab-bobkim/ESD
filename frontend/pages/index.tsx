@@ -461,9 +461,12 @@ export default function EmployeeHome() {
   const detailFormRef = useRef<HTMLDivElement | null>(null);
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
-  // 알림을 아직 안 켠 직원에게 먼저 물어봐서 옵트인율을 올리기 위한 배너(2026-09-03 추가) —
-  // 화면 아래 작은 버튼만으로는 존재조차 모르는 직원이 많았을 것으로 보여 추가.
-  const [showPushPrompt, setShowPushPrompt] = useState(false);
+  // 2026-09-03 추가, 2026-09-19 변경: 처음엔 "네, 알림 받을게요" 배너로 먼저 동의를 구했는데,
+  // 그 배너를 안 누르고 넘어가는 직원이 많아 알림 미설정 인원이 계속 쌓였다("앱 열 때마다 기본으로
+  // 켜져 있고, 끄고 싶으면 직접 끄게 해달라"는 요청) — 이제 앱을 열면 자동으로 알림 켜기를
+  // 시도하고, 끄는 것만 사용자가 직접 선택하게 한다. iOS(사파리)는 홈 화면에 추가한 앱이 아니면
+  // 애초에 PushManager 자체가 없어서 자동으로 켤 수 없으므로, 그 경우에만 설치 안내 배너를 남긴다.
+  const [showIosInstallPrompt, setShowIosInstallPrompt] = useState(false);
   // 2026-09-04: 아이폰 사파리는 홈 화면에 추가한 앱(standalone)에서만 알림을 지원한다(iOS 정책).
   // 이 경우 알림 켜기 버튼을 눌러도 항상 실패하므로, 미리 감지해서 버튼 문구/동작을 안내로 바꾼다.
   const [iosNeedsInstall, setIosNeedsInstall] = useState(false);
@@ -487,35 +490,33 @@ export default function EmployeeHome() {
     setIosNeedsInstall(needsInstall);
     isPushSubscribed().then((subscribed) => {
       setPushSubscribed(subscribed);
-      // 이미 켜져 있거나, 브라우저 알림권한을 이미 허용/거부해서 결론이 난 경우엔 배너를 안 띄운다
-      // (거부한 사람에게 다시 물어봐도 브라우저가 자동으로 막아서 의미가 없다). 이번 방문(세션)에서
-      // 이미 "나중에요"를 눌렀으면 같은 세션 안에서는 다시 안 띄운다. 아이폰인데 아직 홈 화면
-      // 앱으로 안 열었으면(needsInstall) 어차피 알림을 켤 수 없으니, "네, 알림 받을게요" 배너
-      // 대신 설치 안내 배너를 보여준다(아래 JSX에서 분기).
       if (subscribed || typeof window === 'undefined') return;
-      if (!needsInstall && (!('Notification' in window) || Notification.permission !== 'default')) return;
-      try {
-        if (sessionStorage.getItem('pushPromptDismissed')) return;
-      } catch {
-        // sessionStorage 접근 불가(사파리 프라이빗 모드 등)해도 배너는 그냥 보여준다.
+      if (needsInstall) {
+        // 아이폰 사파리는 홈 화면에 추가한 앱이 아니면 PushManager 자체가 없어 자동으로 켤 수
+        // 없다 — 설치 안내만 보여준다(세션당 한 번, "알겠어요"로 닫으면 다시 안 뜸).
+        try {
+          if (sessionStorage.getItem('iosInstallPromptDismissed')) return;
+        } catch {}
+        setShowIosInstallPrompt(true);
+        return;
       }
-      setShowPushPrompt(true);
+      // 브라우저 알림권한이 아직 한 번도 물어본 적 없는 상태(default)일 때만 자동으로 켠다 —
+      // 이미 거부(denied)한 사람에게는 브라우저가 재요청 자체를 막으므로 어차피 조용히 실패하고,
+      // 이미 허용(granted)된 상태인데 구독만 없으면 subscribeToPush()가 팝업 없이 바로 구독한다.
+      if (!('Notification' in window) || Notification.permission !== 'default') return;
+      subscribeToPush()
+        .then(() => setPushSubscribed(true))
+        // 자동 시도라 실패해도(권한 거부 등) 매번 에러 메시지를 띄우지 않는다 — 알림 끄기/켜기는
+        // 화면 하단 버튼으로 언제든 다시 시도할 수 있다.
+        .catch(() => {});
     }).catch(() => {});
   }, []);
 
-  function dismissPushPrompt() {
-    setShowPushPrompt(false);
+  function dismissIosInstallPrompt() {
+    setShowIosInstallPrompt(false);
     try {
-      sessionStorage.setItem('pushPromptDismissed', '1');
+      sessionStorage.setItem('iosInstallPromptDismissed', '1');
     } catch {}
-  }
-
-  async function acceptPushPrompt() {
-    setShowPushPrompt(false);
-    try {
-      sessionStorage.setItem('pushPromptDismissed', '1');
-    } catch {}
-    await togglePush();
   }
 
   async function togglePush() {
@@ -1415,28 +1416,15 @@ export default function EmployeeHome() {
 
       <PastDayCorrectionCard rows={pendingCorrections} onSubmitted={refreshMyStatus} />
 
-      {showPushPrompt && iosNeedsInstall && (
+      {showIosInstallPrompt && (
         // 2026-09-04: 아이폰 사파리는 홈 화면에 추가한 앱에서만 알림이 되므로(애플 정책), 여기서는
         // 알림을 "켜는" 버튼 대신 설치 방법만 안내한다 — 버튼을 눌러도 실패할 게 뻔한데 누르게
         // 하는 건 의미가 없다.
         <div className="card col-full notice-tint-blue">
           🍎 아이폰에서 출근/퇴근 알림을 받으시려면, 먼저 하단 공유 버튼(⬆️) → <strong>&quot;홈 화면에 추가&quot;</strong>로 앱을 설치하신 뒤, 그 아이콘으로 다시 열어서 알림을 켜주세요.
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={dismissPushPrompt}>
+            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={dismissIosInstallPrompt}>
               알겠어요
-            </button>
-          </div>
-        </div>
-      )}
-      {showPushPrompt && !iosNeedsInstall && (
-        <div className="card col-full notice-tint-blue">
-          🔔 출근/퇴근 등록을 깜빡하실 때 알려드릴까요? 오전 9시까지 출근 등록이 없거나 저녁에 퇴근을 안 누르시면, 등록하실 때까지 알림을 보내드려요.
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button style={{ width: 'auto', margin: 0 }} disabled={pushLoading} onClick={acceptPushPrompt}>
-              {pushLoading ? '처리 중...' : '네, 알림 받을게요'}
-            </button>
-            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={dismissPushPrompt}>
-              나중에요
             </button>
           </div>
         </div>
