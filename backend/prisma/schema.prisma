@@ -346,6 +346,14 @@ model StatusChangeLog {
   // 오차범위 자체가 컸는지"를 구분해 보여주는 데 쓴다. 좌표와 마찬가지로 판정에만 쓰는 값이라 그대로
   // 남겨도 원본 위치를 역추적할 수 없어 위치정보 최소수집 원칙에 어긋나지 않는다.
   locationAccuracyMeters Int?     @map("location_accuracy_meters")
+  // 2026-09-18: 근무 태만(위치 확인 회피) 방지를 위한 정책 변경 — "불일치 건만 좌표 저장".
+  // 기존 원칙(원본 좌표 미저장)은 유지하되, locationMatch가 명백히 false인 경우에 한해서만
+  // 관리자가 실제 위치를 확인할 수 있도록 원본 좌표를 예외적으로 남긴다. 일치/미확인(null)
+  // 케이스에는 절대 채우지 않는다(common/location.ts의 buildMismatchCoords 참고).
+  // 관리자 화면에서만 노출하고, 보관기간이 지나면 자동 삭제한다(mismatch-coord-purge-scheduler.ts,
+  // MISMATCH_COORD_RETENTION_DAYS). 위치정보보호법상 목적 달성 시 즉시파기 원칙에 대응하기 위함.
+  mismatchLatitude  Float? @map("mismatch_latitude")
+  mismatchLongitude Float? @map("mismatch_longitude")
   // 원격/현장 여부 — 고객사미팅/고객사작업/야간작업 등록 시 필수 입력.
   // 상태 종류와 무관하게 이 테이블 하나로 조회하므로(EffortLog/NightWorkSession은 상태별로 나뉘어 있음),
   // "직출/직퇴 시 최종 퇴근 위치 필수" 판단(퇴근 처리 로직)이 여기 값을 기준으로 한다.
@@ -378,6 +386,10 @@ model ResidentCheckin {
   locationDistanceMeters Int?     @map("location_distance_meters")
   // 2026-09-16: StatusChangeLog와 동일한 목적 — GPS 오차범위를 판정에 반영하기 위해 추가.
   locationAccuracyMeters Int?     @map("location_accuracy_meters")
+  // 2026-09-18: StatusChangeLog와 동일한 목적/원칙 — 불일치 건만 예외적으로 원본 좌표 보관(관리자 전용,
+  // 보관기간 경과 시 자동삭제). 상세 설명은 StatusChangeLog의 동일 필드 주석 참고.
+  mismatchLatitude  Float? @map("mismatch_latitude")
+  mismatchLongitude Float? @map("mismatch_longitude")
 
   @@map("resident_checkins")
 }

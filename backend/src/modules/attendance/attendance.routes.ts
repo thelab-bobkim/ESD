@@ -7,7 +7,7 @@ import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 import { recordNightWork } from '../../common/night-work-helpers';
 import { recordEffort, findOpenEffort } from '../../common/effort-helpers';
-import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS } from '../../common/location';
+import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, buildMismatchCoords } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
 
 /** "123.45.67.0/24" 형태의 CIDR 표기를 IPv4 대역으로 해석해 clientIp가 그 안에 속하는지 본다. */
@@ -221,6 +221,7 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   const { start: dayStartReal, end: dayEndReal } = realDayWindow(workDate);
   const todayStatus = await prisma.statusChangeLog.findFirst({ where: { userId, changedAt: { gte: dayStartReal, lt: dayEndReal } } });
   if (!todayStatus) {
+    const hqMismatchCoords = buildMismatchCoords(location, hqLocationResult);
     await prisma.statusChangeLog.create({
       data: {
         userId,
@@ -231,6 +232,8 @@ attendanceRouter.post('/clock-in', async (req, res) => {
         locationDistanceMeters: hqLocationResult?.locationDistanceMeters ?? null,
         locationAccuracyMeters: hqLocationResult ? (accuracyMeters ?? null) : null,
         locationCaptureStatus: location ? 'OK' : null,
+        mismatchLatitude: hqMismatchCoords.mismatchLatitude,
+        mismatchLongitude: hqMismatchCoords.mismatchLongitude,
       },
     });
   }
@@ -707,6 +710,7 @@ attendanceRouter.post('/status', async (req, res) => {
     }
   }
 
+  const statusMismatchCoords = buildMismatchCoords(location, locationResult ?? hqLocationResult);
   const log = await prisma.statusChangeLog.create({
     data: {
       userId,
@@ -720,6 +724,8 @@ attendanceRouter.post('/status', async (req, res) => {
       locationAccuracyMeters: (locationResult ?? hqLocationResult) ? (accuracyMeters ?? null) : null,
       siteType: siteType ?? null,
       locationCaptureStatus: (LOCATION_CHECK_STATUSES.has(status) || status === 'HQ_WORKING') ? (locationCaptureStatus ?? null) : null,
+      mismatchLatitude: statusMismatchCoords.mismatchLatitude,
+      mismatchLongitude: statusMismatchCoords.mismatchLongitude,
     },
   });
 

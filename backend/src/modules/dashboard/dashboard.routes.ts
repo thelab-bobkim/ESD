@@ -15,6 +15,11 @@ const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 
 // 위치대조를 실제로 시도하는 상태 — 프론트 admin/dashboard.tsx의 동명 상수와 동일하게 유지.
 const LOCATION_CHECK_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
 
+// 2026-09-18: "불일치 건만 좌표 저장" 정책 — 원본 GPS 좌표는 상황판을 볼 수 있는 모든 역할
+// (TEAM_LEAD/PILOT_MANAGER 포함)이 아니라, 더 좁은 관리자 역할에만 노출한다(사용자 승인 사항:
+// "관리자 전용 노출"). 상황판 자체(위치 불일치 여부/거리)는 기존과 동일하게 전 역할에 내려간다.
+const MISMATCH_COORD_VIEW_ROLES = new Set(['HR_ADMIN', 'SYSTEM_ADMIN']);
+
 export const dashboardRouter = Router();
 dashboardRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'));
 
@@ -33,7 +38,7 @@ function dateOnlyUTC(d?: Date): Date {
  * 사용자별 "그 날짜"의 마지막 상태 변경 로그를 모아 상황판을 만든다 (간단한 MVP 집계 방식).
  * forDate를 안 넘기면 오늘 기준(라이브 상황판), 과거 날짜를 넘기면 그날의 스냅샷(캘린더 조회용)이 된다.
  */
-async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC()) {
+async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(), includeMismatchCoords = false) {
   const workDateLabel = forDate;
   const { start: dayStart, end: dayEnd } = realDayWindow(workDateLabel);
 
@@ -106,6 +111,19 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
       const effectiveLocationAccuracyMeters = bestLocationLogToday
         ? bestLocationLogToday.locationAccuracyMeters
         : (statusOnDay?.locationAccuracyMeters ?? checkinOnDay?.locationAccuracyMeters ?? null);
+      // 2026-09-18: "불일치 건만 좌표 저장" 정책 — 위와 동일한 방식으로 "그 시점 판정에 쓰인 기록"
+      // 기준으로 뽑는다(호출부(includeMismatchCoords=false)에서는 아예 안 내려줘서 관리자 외
+      // 역할에는 응답 자체에 포함되지 않는다).
+      const effectiveMismatchLatitude = includeMismatchCoords
+        ? (bestLocationLogToday
+            ? bestLocationLogToday.mismatchLatitude
+            : (statusOnDay?.mismatchLatitude ?? checkinOnDay?.mismatchLatitude ?? null))
+        : undefined;
+      const effectiveMismatchLongitude = includeMismatchCoords
+        ? (bestLocationLogToday
+            ? bestLocationLogToday.mismatchLongitude
+            : (statusOnDay?.mismatchLongitude ?? checkinOnDay?.mismatchLongitude ?? null))
+        : undefined;
 
       // 2026-09-17: "위치 미확인"이 매일 10명 넘게 반복된다는 지적으로 원인을 다시 살펴보니,
       // 상당수가 GPS 정확도 문제가 아니라 그날 등록한 고객사 자체가 아직 시스템에 없거나(오타/신규
@@ -160,6 +178,11 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
         // 성공 이력 기준(대개 'OK')으로 맞춰 내려간다 — 실제로는 확인됐는데 문구만 미확인으로
         // 보이는 걸 막기 위함.)
         locationCaptureStatus: effectiveLocationCaptureStatus,
+        // 2026-09-18: 관리자(HR_ADMIN/SYSTEM_ADMIN) 요청일 때만 값이 채워진다(그 외엔 undefined라
+        // 응답 JSON에서 아예 빠짐) — "위치 불일치" 건에 한해서만 값이 있고, 일치/미확인 건은 항상
+        // null이다(buildMismatchCoords 원칙, common/location.ts 참고).
+        mismatchLatitude: effectiveMismatchLatitude,
+        mismatchLongitude: effectiveMismatchLongitude,
         // 2026-09-17: 위에서 계산한 "왜 위치대조가 아예 불가능했는지" 진단 — null이면 이 원인이
         // 아니라는 뜻(GPS 캡처 실패 등 기존 사유로 봐야 함).
         clientLocationDiagnosis,
@@ -185,8 +208,14 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
   return board;
 }
 
-dashboardRouter.get('/company', async (_req, res) => {
-  const board = await buildStatusBoard();
+/** 요청한 사용자가 원본 좌표(불일치 건 한정)까지 볼 수 있는 관리자 역할인지 판단한다. */
+function canViewMismatchCoords(req: import('express').Request): boolean {
+  const roles = req.authUser?.roles ?? [];
+  return roles.some((r) => MISMATCH_COORD_VIEW_ROLES.has(r));
+}
+
+dashboardRouter.get('/company', async (req, res) => {
+  const board = await buildStatusBoard(undefined, undefined, canViewMismatchCoords(req));
   const summary: Record<string, number> = {};
   for (const row of board) {
     const key = row.status ?? 'UNKNOWN';
@@ -197,13 +226,13 @@ dashboardRouter.get('/company', async (_req, res) => {
 
 dashboardRouter.get('/department/:id', async (req, res) => {
   const users = await prisma.user.findMany({ where: { departmentId: req.params.id }, select: { id: true } });
-  const board = await buildStatusBoard(users.map((u) => u.id));
+  const board = await buildStatusBoard(users.map((u) => u.id), undefined, canViewMismatchCoords(req));
   return res.json({ success: true, data: board });
 });
 
 dashboardRouter.get('/client/:id', async (req, res) => {
   const users = await prisma.user.findMany({ where: { assignedClientId: req.params.id }, select: { id: true } });
-  const board = await buildStatusBoard(users.map((u) => u.id));
+  const board = await buildStatusBoard(users.map((u) => u.id), undefined, canViewMismatchCoords(req));
   return res.json({ success: true, data: board });
 });
 
@@ -216,7 +245,7 @@ dashboardRouter.get('/day', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'date(YYYY-MM-DD)가 필요합니다.' } });
   }
   const forDate = new Date(`${parsed.data.date}T00:00:00.000Z`);
-  const board = await buildStatusBoard(undefined, forDate);
+  const board = await buildStatusBoard(undefined, forDate, canViewMismatchCoords(req));
   const summary: Record<string, number> = {};
   for (const row of board) {
     const key = row.status ?? 'UNKNOWN';

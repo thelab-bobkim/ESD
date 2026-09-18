@@ -77,6 +77,11 @@ interface EmployeeRow {
   // 아니라는 뜻(기존 GPS 캡처 실패 등으로 봐야 함).
   clientLocationDiagnosis: 'NO_CLIENT_MATCH' | 'CLIENT_NO_COORDS' | null;
   clientLocationDiagnosisName: string | null;
+  // 2026-09-18: "불일치 건만 좌표 저장" 정책 — HR_ADMIN/SYSTEM_ADMIN으로 로그인한 경우에만 서버가
+  // 값을 채워서 내려준다(그 외 역할은 필드 자체가 응답에 없어 undefined). locationMatch가 false인
+  // 건에만 값이 있고, 그 외(일치/미확인)에는 항상 null이다(dashboard.routes.ts 참고).
+  mismatchLatitude?: number | null;
+  mismatchLongitude?: number | null;
 }
 interface CompanyBoard { summary: Record<string, number>; employees: EmployeeRow[]; }
 
@@ -665,6 +670,22 @@ export default function AdminDashboard() {
                         : `⚠ '${e.clientLocationDiagnosisName}' 고객사에 좌표가 아직 등록되지 않아 위치 대조를 할 수 없어요 — 고객사 위치관리에서 좌표를 추가해주세요.`}
                     </div>
                   )}
+                  {/* 2026-09-18: "불일치 건만 좌표 저장" 정책(HR_ADMIN/SYSTEM_ADMIN 전용) — 명백한
+                      위치 불일치 건에 한해서만, 직원이 실제로 어디 있었는지 지도로 바로 확인할 수 있게
+                      링크를 보여준다. mismatchLatitude/Longitude는 그 외 역할에는 응답에서 아예 빠지고,
+                      일치/미확인 건에는 항상 null이라 이 조건에서 자연히 걸러진다. */}
+                  {e.locationMatch === false && e.mismatchLatitude != null && e.mismatchLongitude != null && (
+                    <div className="cc-alert-note" style={{ marginTop: 4 }}>
+                      <a
+                        href={`https://www.google.com/maps?q=${e.mismatchLatitude},${e.mismatchLongitude}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ color: '#4263eb', fontWeight: 600, textDecoration: 'none' }}
+                      >
+                        🗺️ 실제 위치 지도에서 보기
+                      </a>
+                    </div>
+                  )}
                   <div className="cc-stat-foot" style={{ marginTop: 8 }}>{timeAgo(e.statusChangedAt)} 등록</div>
                 </div>
               );
@@ -770,6 +791,19 @@ export default function AdminDashboard() {
                       return badge && (
                         <div className="meta" style={{ color: badge.color, fontWeight: 600 }} title={e.locationCaptureStatus ?? undefined}>
                           {badge.text}
+                          {e.locationMatch === false && e.mismatchLatitude != null && e.mismatchLongitude != null && (
+                            <>
+                              {' '}
+                              <a
+                                href={`https://www.google.com/maps?q=${e.mismatchLatitude},${e.mismatchLongitude}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{ color: '#4263eb', fontWeight: 600, textDecoration: 'none' }}
+                              >
+                                🗺️ 지도
+                              </a>
+                            </>
+                          )}
                         </div>
                       );
                     })()}

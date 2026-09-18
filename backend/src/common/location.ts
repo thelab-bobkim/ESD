@@ -64,3 +64,30 @@ export function checkLocationMatch(
     effectiveRadiusMeters: Math.round(effectiveRadiusMeters),
   };
 }
+
+// 2026-09-18: "불일치 건만 좌표 저장" 정책 — 며칠 뒤 자동삭제할지(보관기간). 위치정보보호법의
+// 목적 달성 시 즉시파기 원칙에 대응하기 위해 짧게(30일) 잡는다. 실제 삭제는
+// modules/push/mismatch-coord-purge-scheduler.ts가 매일 수행한다.
+export const MISMATCH_COORD_RETENTION_DAYS = 30;
+
+/**
+ * "불일치 건만 좌표 저장" 정책(2026-09-18, 사용자 승인) 전용 헬퍼.
+ *
+ * 근무 태만(위치 확인이 안 되는 허점을 이용한 무단 이탈 등) 방지를 위해, 딱 하나의 예외만
+ * 둔다: checkLocationMatch()의 결과가 "명백히 불일치"(locationMatch === false)인 경우에만
+ * 관리자가 직접 원본 좌표를 확인할 수 있도록 남긴다.
+ * - locationMatch가 true(일치)이거나 결과 자체가 null(확인 불가/미동의)인 경우에는
+ *   항상 null을 반환한다 — 호출하는 쪽이 실수로라도 불필요하게 좌표를 저장하지 않도록,
+ *   판단 로직을 호출부마다 반복하지 않고 여기 한 곳에 모아둔다.
+ * - 반환된 좌표는 반드시 mismatchLatitude/mismatchLongitude 컬럼에만 저장하고(보관기간 있음,
+ *   관리자 전용 노출), 그 외에는 기존 원칙(원본 좌표 미저장)을 그대로 유지한다.
+ */
+export function buildMismatchCoords(
+  location: { lat: number; lng: number } | undefined,
+  locationResult: { locationMatch: boolean } | null | undefined
+): { mismatchLatitude: number | null; mismatchLongitude: number | null } {
+  if (!location || !locationResult || locationResult.locationMatch !== false) {
+    return { mismatchLatitude: null, mismatchLongitude: null };
+  }
+  return { mismatchLatitude: location.lat, mismatchLongitude: location.lng };
+}

@@ -4,7 +4,7 @@ import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { ensureClockIn } from '../../common/attendance-helpers';
-import { checkLocationMatch } from '../../common/location';
+import { checkLocationMatch, buildMismatchCoords } from '../../common/location';
 
 export const residentRouter = Router();
 residentRouter.use(requireAuth);
@@ -34,6 +34,7 @@ residentRouter.post('/checkin', async (req, res) => {
   }
 
   const locationResult = checkLocationMatch(location, user.assignedClient, undefined, accuracyMeters);
+  const mismatchCoords = buildMismatchCoords(location, locationResult);
 
   const checkin = await prisma.residentCheckin.create({
     data: {
@@ -44,6 +45,8 @@ residentRouter.post('/checkin', async (req, res) => {
       locationMatch: locationResult?.locationMatch ?? null,
       locationDistanceMeters: locationResult?.locationDistanceMeters ?? null,
       locationAccuracyMeters: locationResult ? (accuracyMeters ?? null) : null,
+      mismatchLatitude: mismatchCoords.mismatchLatitude,
+      mismatchLongitude: mismatchCoords.mismatchLongitude,
     },
   });
   await prisma.statusChangeLog.create({
@@ -54,6 +57,8 @@ residentRouter.post('/checkin', async (req, res) => {
       locationMatch: locationResult?.locationMatch ?? null,
       locationDistanceMeters: locationResult?.locationDistanceMeters ?? null,
       locationAccuracyMeters: locationResult ? (accuracyMeters ?? null) : null,
+      mismatchLatitude: mismatchCoords.mismatchLatitude,
+      mismatchLongitude: mismatchCoords.mismatchLongitude,
     },
   });
   await ensureClockIn(userId);
