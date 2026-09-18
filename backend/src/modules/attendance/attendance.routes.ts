@@ -5,8 +5,8 @@ import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
-import { recordNightWork } from '../../common/night-work-helpers';
-import { recordEffort, findOpenEffort } from '../../common/effort-helpers';
+import { recordNightWork, willResumeNightWork } from '../../common/night-work-helpers';
+import { recordEffort, findOpenEffort, willUpdateExistingEffort } from '../../common/effort-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, buildMismatchCoords } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
 
@@ -710,35 +710,21 @@ attendanceRouter.post('/status', async (req, res) => {
     }
   }
 
-  const statusMismatchCoords = buildMismatchCoords(location, locationResult ?? hqLocationResult);
-  const log = await prisma.statusChangeLog.create({
-    data: {
-      userId,
-      status,
-      note,
-      source: 'WEB',
-      locationMatch: (locationResult ?? hqLocationResult)?.locationMatch ?? null,
-      locationDistanceMeters: (locationResult ?? hqLocationResult)?.locationDistanceMeters ?? null,
-      // 2026-09-16: 대조가 실제로 이뤄진 경우(locationResult/hqLocationResult가 있는 경우)에만
-      // 남긴다 — 위치대조 자체를 안 하는 상태(재택 등)에는 accuracyMeters가 와도 의미가 없다.
-      locationAccuracyMeters: (locationResult ?? hqLocationResult) ? (accuracyMeters ?? null) : null,
-      siteType: siteType ?? null,
-      locationCaptureStatus: (LOCATION_CHECK_STATUSES.has(status) || status === 'HQ_WORKING') ? (locationCaptureStatus ?? null) : null,
-      mismatchLatitude: statusMismatchCoords.mismatchLatitude,
-      mismatchLongitude: statusMismatchCoords.mismatchLongitude,
-    },
-  });
-
-  if (WORK_START_STATUSES.has(status)) {
-    await ensureClockIn(userId);
-  }
-
-  let effortLog = null;
+  // 2026-09-18: "같은 고객사작업을 여러 번 저장하면 그때마다 타임라인에 새 줄이 쌓인다"(관리자
+  // 지적 — 상세폼을 고쳐서 다시 저장하거나 저장 버튼을 두 번 누르면, 완료시간까지 이미 채워진
+  // 기록은 "진행중 이어받기" 대상이 아니라서 매번 새 StatusChangeLog+공수기록이 생겼다). 공수
+  // 기록 쪽(recordEffort)이 "새로 만들지 않고 기존 기록을 갱신"하기로 판단하는 경우와 정확히
+  // 같은 기준으로, 상태변경 로그도 새 줄을 추가하는 대신 방금 그 상태였던 로그를 그대로 갱신한다
+  // — 두 테이블이 "같은 저장"을 서로 다르게(하나는 갱신, 하나는 새로 생성) 처리해 어긋나는 일이
+  // 없도록 여기서 먼저 판단해두고, 아래 공수기록/야간작업 기록에도 그대로 적용한다.
+  let effortData: { workDate: Date; clientName: string; projectName: string; workType: string; startTime: Date; endTime: Date | null; description?: string } | null = null;
+  let nightWorkTimes: { startTime: Date; endTime: Date | null; description?: string } | null = null;
+  let isSessionResubmit = false;
   if (EFFORT_STATUSES.has(status) && effort) {
     const workDate = todayDateOnly();
     const startTime = effort.startTime ? combineDateTime(workDate, effort.startTime) : new Date();
     const endTime = effort.endTime ? resolveEndTime(startTime, combineDateTime(workDate, effort.endTime)) : null;
-    const effortData = {
+    effortData = {
       workDate,
       clientName: effort.clientName || '',
       projectName: effort.projectName || '',
@@ -747,6 +733,55 @@ attendanceRouter.post('/status', async (req, res) => {
       endTime,
       description: composeEffortDescription(effort),
     };
+    // 본사근무는 "완료"라는 개념이 없는 하루단위 상태라 이 판단 자체를 하지 않는다(기존과 동일).
+    if (EFFORT_CONTINUATION_STATUSES.has(status)) {
+      isSessionResubmit = await willUpdateExistingEffort(userId, status, effortData);
+    }
+  }
+  if (status === 'NIGHT_WORK' && effort) {
+    const workDate = todayDateOnly();
+    const startTime = effort.startTime ? combineDateTime(workDate, effort.startTime) : new Date();
+    const endTime = effort.endTime ? resolveEndTime(startTime, combineDateTime(workDate, effort.endTime)) : null;
+    nightWorkTimes = { startTime, endTime, description: composeEffortDescription(effort) };
+    isSessionResubmit = await willResumeNightWork(userId, startTime, endTime);
+  }
+
+  const statusMismatchCoords = buildMismatchCoords(location, locationResult ?? hqLocationResult);
+  const statusLogFields = {
+    status,
+    note,
+    source: 'WEB' as const,
+    locationMatch: (locationResult ?? hqLocationResult)?.locationMatch ?? null,
+    locationDistanceMeters: (locationResult ?? hqLocationResult)?.locationDistanceMeters ?? null,
+    // 2026-09-16: 대조가 실제로 이뤄진 경우(locationResult/hqLocationResult가 있는 경우)에만
+    // 남긴다 — 위치대조 자체를 안 하는 상태(재택 등)에는 accuracyMeters가 와도 의미가 없다.
+    locationAccuracyMeters: (locationResult ?? hqLocationResult) ? (accuracyMeters ?? null) : null,
+    siteType: siteType ?? null,
+    locationCaptureStatus: (LOCATION_CHECK_STATUSES.has(status) || status === 'HQ_WORKING') ? (locationCaptureStatus ?? null) : null,
+    mismatchLatitude: statusMismatchCoords.mismatchLatitude,
+    mismatchLongitude: statusMismatchCoords.mismatchLongitude,
+  };
+
+  // 방금 판단한 "재저장"이 맞더라도, 직전 로그가 정말 같은 상태였을 때만 그 로그를 갱신한다 —
+  // 그 사이에 실제로 다른 상태를 거쳐 왔다면(예: 다른 고객사를 먼저 갔다 옴) 이건 새로운 구간이므로
+  // 그대로 새 로그를 남긴다.
+  let log = null;
+  if (isSessionResubmit) {
+    const lastLog = await prisma.statusChangeLog.findFirst({ where: { userId }, orderBy: { changedAt: 'desc' } });
+    if (lastLog && lastLog.status === status) {
+      log = await prisma.statusChangeLog.update({ where: { id: lastLog.id }, data: statusLogFields });
+    }
+  }
+  if (!log) {
+    log = await prisma.statusChangeLog.create({ data: { userId, ...statusLogFields } });
+  }
+
+  if (WORK_START_STATUSES.has(status)) {
+    await ensureClockIn(userId);
+  }
+
+  let effortLog = null;
+  if (effortData) {
     // 2026-09-15: "진행중"으로 남겨둔 기록이 있으면 새로 만들지 않고 이어받아 완료 처리한다
     // (effort-helpers.ts recordEffort 참고, 박준영/이보용 피드백). 본사근무는 이 개념이 없어 제외.
     effortLog = EFFORT_CONTINUATION_STATUSES.has(status)
@@ -755,11 +790,8 @@ attendanceRouter.post('/status', async (req, res) => {
   }
 
   let nightWork = null;
-  if (status === 'NIGHT_WORK' && effort) {
-    const workDate = todayDateOnly();
-    const startTime = effort.startTime ? combineDateTime(workDate, effort.startTime) : new Date();
-    const endTime = effort.endTime ? resolveEndTime(startTime, combineDateTime(workDate, effort.endTime)) : null;
-    nightWork = await recordNightWork(userId, startTime, endTime, composeEffortDescription(effort));
+  if (nightWorkTimes) {
+    nightWork = await recordNightWork(userId, nightWorkTimes.startTime, nightWorkTimes.endTime, nightWorkTimes.description);
   }
 
   let businessTripLog = null;
