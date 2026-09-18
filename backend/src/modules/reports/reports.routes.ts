@@ -24,10 +24,14 @@ function csvField(value: unknown): string {
   return s;
 }
 
-function toCSV(rows: Record<string, unknown>[]): string {
+// 2026-09-18: "CSV 상위 메뉴(헤더)를 한글로 해달라"는 요청 반영 — headerLabels를 넘기면 헤더 줄만
+// 한글 라벨로 바꿔서 출력하고, 실제 값을 꺼내는 키(row[h])는 원래 영문 필드명 그대로 쓴다(코드
+// 안에서 데이터를 다루는 방식은 그대로 두고, 사람이 보는 화면만 한글화).
+function toCSV(rows: Record<string, unknown>[], headerLabels?: Record<string, string>): string {
   if (rows.length === 0) return '';
   const headers = Object.keys(rows[0]);
-  const lines = [headers.join(',')];
+  const headerRow = headers.map((h) => headerLabels?.[h] ?? h);
+  const lines = [headerRow.map(csvField).join(',')];
   for (const row of rows) {
     lines.push(headers.map((h) => csvField(row[h])).join(','));
   }
@@ -37,6 +41,73 @@ function toCSV(rows: Record<string, unknown>[]): string {
 // 엑셀(특히 한글 Windows)이 BOM 없는 UTF-8 CSV를 CP949로 오인해서 한글이 깨지는 것을 막기 위한
 // BOM. res.send()에 이 값 + toCSV(...) 결과를 그대로 넘긴다.
 const CSV_BOM = '﻿';
+
+// 2026-09-18: CSV의 시각 컬럼이 그동안 UTC ISO 문자열("2026-09-17T23:59:40.655Z")로 그대로
+// 나가서, 회사가 실제 쓰는 KST 기준 시각과 9시간 차이가 나 헷갈린다는(관리자가 "왜 출근시각이
+// 자정 근처로 몰려있냐"고 오해할 수 있는) 문제가 있었다 — 화면(대시보드)에서는 이미 KST로 보여주고
+// 있었는데 CSV만 원본 UTC를 그대로 내보내고 있었음. "YYYY-MM-DD HH:mm"(KST) 형태로 통일한다.
+function kstDateTime(d: Date | null | undefined): string {
+  if (!d) return '';
+  const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  const y = kst.getUTCFullYear();
+  const mo = String(kst.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(kst.getUTCDate()).padStart(2, '0');
+  const hh = String(kst.getUTCHours()).padStart(2, '0');
+  const mm = String(kst.getUTCMinutes()).padStart(2, '0');
+  return `${y}-${mo}-${day} ${hh}:${mm}`;
+}
+
+// 2026-09-18: "일별로 어떤 고객사에 몇 시간 일했는지 쉽게 보고 싶다" 요청 반영 — 분 단위만 있으면
+// 매번 암산해야 해서, 시간 단위(소수 첫째자리)로 바로 계산되는 컬럼을 추가로 내려준다. 분 컬럼은
+// 정확한 원본 값 확인용으로 그대로 남겨둔다(둘 다 있으면 엑셀에서 합계 낼 때도 시간 컬럼을 바로
+// SUM 하면 되니 더 편하다).
+function minutesToHours(minutes: number | null | undefined): number | '' {
+  if (minutes == null) return '';
+  return Math.round((minutes / 60) * 10) / 10;
+}
+
+const LEAVE_CONVERSION_STATUS_LABELS: Record<string, string> = {
+  NONE: '해당없음',
+  DRAFT: '임시저장',
+  PENDING: '승인대기',
+  APPROVED: '승인됨',
+  REJECTED: '반려됨',
+};
+
+const ATTENDANCE_EXPORT_HEADERS: Record<string, string> = {
+  employeeNo: '사번',
+  name: '이름',
+  workDate: '근무일자',
+  clockInAt: '출근시각',
+  clockOutAt: '퇴근시각',
+  totalWorkedMinutes: '실근무시간(분)',
+  totalWorkedHours: '실근무시간(시간)',
+};
+
+const EFFORT_EXPORT_HEADERS: Record<string, string> = {
+  employeeNo: '사번',
+  name: '이름',
+  workDate: '근무일자',
+  clientName: '고객사',
+  projectName: '프로젝트',
+  workType: '작업유형',
+  startTime: '시작시각',
+  endTime: '종료시각',
+  minutes: '근무시간(분)',
+  hours: '근무시간(시간)',
+  description: '비고',
+};
+
+const NIGHT_WORK_EXPORT_HEADERS: Record<string, string> = {
+  employeeNo: '사번',
+  name: '이름',
+  startedAt: '시작시각',
+  endedAt: '종료시각',
+  workedMinutes: '근무시간(분)',
+  workedHours: '근무시간(시간)',
+  conversionStatus: '대체휴가 전환상태',
+  convertedMinutes: '전환된시간(분)',
+};
 
 const rangeSchema = z.object({
   from: z.string().min(1),
@@ -288,14 +359,15 @@ reportsRouter.get('/effort-export', async (req, res) => {
     clientName: l.clientName,
     projectName: l.projectName,
     workType: l.workType,
-    startTime: l.startTime.toISOString(),
-    endTime: l.endTime?.toISOString() ?? '',
+    startTime: kstDateTime(l.startTime),
+    endTime: kstDateTime(l.endTime),
     minutes: l.minutes ?? '',
+    hours: minutesToHours(l.minutes),
     description: l.description ?? '',
   }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="effort-export.csv"');
-  return res.send(CSV_BOM + toCSV(rows));
+  return res.send(CSV_BOM + toCSV(rows, EFFORT_EXPORT_HEADERS));
 });
 
 reportsRouter.get('/attendance-export', async (req, res) => {
@@ -309,13 +381,14 @@ reportsRouter.get('/attendance-export', async (req, res) => {
     employeeNo: r.user.employeeNo,
     name: r.user.name,
     workDate: r.workDate.toISOString().slice(0, 10),
-    clockInAt: r.clockInAt?.toISOString() ?? '',
-    clockOutAt: r.clockOutAt?.toISOString() ?? '',
+    clockInAt: kstDateTime(r.clockInAt),
+    clockOutAt: kstDateTime(r.clockOutAt),
     totalWorkedMinutes: r.totalWorkedMinutes ?? '',
+    totalWorkedHours: minutesToHours(r.totalWorkedMinutes),
   }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="attendance-export.csv"');
-  return res.send(CSV_BOM + toCSV(rows));
+  return res.send(CSV_BOM + toCSV(rows, ATTENDANCE_EXPORT_HEADERS));
 });
 
 reportsRouter.get('/night-work-export', async (req, res) => {
@@ -328,15 +401,16 @@ reportsRouter.get('/night-work-export', async (req, res) => {
   const rows = sessions.map((s) => ({
     employeeNo: s.user.employeeNo,
     name: s.user.name,
-    startedAt: s.startedAt.toISOString(),
-    endedAt: s.endedAt?.toISOString() ?? '',
+    startedAt: kstDateTime(s.startedAt),
+    endedAt: kstDateTime(s.endedAt),
     workedMinutes: s.workedMinutes ?? '',
-    conversionStatus: s.leaveConversionRequest?.status ?? 'NONE',
+    workedHours: minutesToHours(s.workedMinutes),
+    conversionStatus: LEAVE_CONVERSION_STATUS_LABELS[s.leaveConversionRequest?.status ?? 'NONE'] ?? (s.leaveConversionRequest?.status ?? '해당없음'),
     convertedMinutes: s.leaveConversionRequest?.convertedMinutes ?? '',
   }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="night-work-export.csv"');
-  return res.send(CSV_BOM + toCSV(rows));
+  return res.send(CSV_BOM + toCSV(rows, NIGHT_WORK_EXPORT_HEADERS));
 });
 
 const daySchema = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
