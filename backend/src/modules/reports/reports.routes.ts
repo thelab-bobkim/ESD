@@ -488,25 +488,41 @@ function weekLabelOf(dateStr: string): string {
   return `${f(monday)} ~ ${f(sunday)}`;
 }
 
+// 2026-09-19: "영업부/기술부 등으로 구분해달라, 다우오피스 조직도 데이터를 기본으로" 요청 —
+// frontend/src/lib/deptGroup.ts의 classifyDeptGroup과 동일한 기준을 백엔드에도 그대로 옮겨왔다
+// (이 엑셀은 서버에서 만들어서, 프론트 쪽 분류 함수를 그대로 재사용할 수 없다 — 두 파일을 같이
+// 고쳐야 함에 유의). department는 다우오피스 조직도 동기화로 채워지는 User.department.name을
+// 그대로 쓴다(수동 입력이 아니라 조직도 기준).
+type DeptGroup = 'sales' | 'tech' | 'other';
+const TECH_DEPT_KEYWORDS = ['솔루션', '엔지니어', '기술지원', '클라우드', 'back-up', 'cluster'];
+function classifyDeptGroup(department: string): DeptGroup {
+  if (department.includes('사업')) return 'sales';
+  const lower = department.toLowerCase();
+  if (TECH_DEPT_KEYWORDS.some((kw) => lower.includes(kw))) return 'tech';
+  return 'other';
+}
+const DEPT_GROUP_LABELS: Record<DeptGroup, string> = { sales: '영업부', tech: '기술부', other: '기타' };
+const DEPT_GROUP_ORDER: Record<DeptGroup, number> = { sales: 0, tech: 1, other: 2 };
+
 reportsRouter.get('/attendance-work-export', async (_req, res) => {
   const [records, logs] = await Promise.all([
     prisma.attendanceRecord.findMany({
       where: { user: { includedInBoard: true } },
-      include: { user: { select: { name: true, employeeNo: true } } },
+      include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
       orderBy: { workDate: 'desc' },
       take: 1000,
     }),
     prisma.effortLog.findMany({
       where: { minutes: { not: null } },
-      include: { user: { select: { name: true, employeeNo: true } } },
+      include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
       orderBy: { workDate: 'desc' },
       take: 5000,
     }),
   ]);
 
-  const userInfo = new Map<string, { employeeNo: string; name: string }>();
-  for (const r of records) userInfo.set(r.userId, { employeeNo: r.user.employeeNo, name: r.user.name });
-  for (const l of logs) userInfo.set(l.userId, { employeeNo: l.user.employeeNo, name: l.user.name });
+  const userInfo = new Map<string, { employeeNo: string; name: string; department: string }>();
+  for (const r of records) userInfo.set(r.userId, { employeeNo: r.user.employeeNo, name: r.user.name, department: r.user.department.name });
+  for (const l of logs) userInfo.set(l.userId, { employeeNo: l.user.employeeNo, name: l.user.name, department: l.user.department.name });
 
   interface DailyRow {
     workDate: string; userId: string; clockInAt: Date | null; clockOutAt: Date | null;
@@ -557,6 +573,8 @@ reportsRouter.get('/attendance-work-export', async (_req, res) => {
 
   const dailySheet = workbook.addWorksheet('일별');
   dailySheet.columns = [
+    { header: '구분', key: 'deptGroupLabel', width: 10 },
+    { header: '부서', key: 'department', width: 18 },
     { header: '사번', key: 'employeeNo', width: 12 },
     { header: '이름', key: 'name', width: 10 },
     { header: '근무일자', key: 'workDate', width: 12 },
@@ -566,10 +584,18 @@ reportsRouter.get('/attendance-work-export', async (_req, res) => {
     { header: '고객사별 작업시간', key: 'clientBreakdown', width: 44 },
     { header: '고객사작업 합계(시간)', key: 'clientTotalHours', width: 18 },
   ];
-  const dailyRowsSorted = Array.from(dailyMap.values()).sort((a, b) =>
-    b.workDate.localeCompare(a.workDate) ||
-    (userInfo.get(a.userId)?.name ?? '').localeCompare(userInfo.get(b.userId)?.name ?? '', 'ko')
-  );
+  // 날짜(최신순)를 1순위로 유지하면서, 같은 날짜 안에서는 구분(영업부/기술부/기타)→부서→이름
+  // 순으로 묶어서 조직도 기준으로 한눈에 보이게 정렬한다.
+  const dailyRowsSorted = Array.from(dailyMap.values()).sort((a, b) => {
+    if (a.workDate !== b.workDate) return b.workDate.localeCompare(a.workDate);
+    const deptA = userInfo.get(a.userId)?.department ?? '';
+    const deptB = userInfo.get(b.userId)?.department ?? '';
+    const groupOrderDiff = DEPT_GROUP_ORDER[classifyDeptGroup(deptA)] - DEPT_GROUP_ORDER[classifyDeptGroup(deptB)];
+    if (groupOrderDiff !== 0) return groupOrderDiff;
+    const deptDiff = deptA.localeCompare(deptB, 'ko');
+    if (deptDiff !== 0) return deptDiff;
+    return (userInfo.get(a.userId)?.name ?? '').localeCompare(userInfo.get(b.userId)?.name ?? '', 'ko');
+  });
   for (const row of dailyRowsSorted) {
     const info = userInfo.get(row.userId);
     const clientTotalMinutes = Array.from(row.clientMinutes.values()).reduce((a, b) => a + b, 0);
@@ -577,6 +603,8 @@ reportsRouter.get('/attendance-work-export', async (_req, res) => {
       .map(([name, min]) => `${name}:${minutesToHours(min)}h`)
       .join('; ');
     dailySheet.addRow({
+      deptGroupLabel: DEPT_GROUP_LABELS[classifyDeptGroup(info?.department ?? '')],
+      department: info?.department ?? '',
       employeeNo: info?.employeeNo ?? '',
       name: info?.name ?? '',
       workDate: row.workDate,
@@ -592,6 +620,8 @@ reportsRouter.get('/attendance-work-export', async (_req, res) => {
   function addAggSheet(sheetName: string, map: Map<string, AggRow>, periodHeader: string) {
     const sheet = workbook.addWorksheet(sheetName);
     sheet.columns = [
+      { header: '구분', key: 'deptGroupLabel', width: 10 },
+      { header: '부서', key: 'department', width: 18 },
       { header: '사번', key: 'employeeNo', width: 12 },
       { header: '이름', key: 'name', width: 10 },
       { header: periodHeader, key: 'periodLabel', width: 24 },
@@ -604,15 +634,24 @@ reportsRouter.get('/attendance-work-export', async (_req, res) => {
         const periodLabel = key.slice(0, sep);
         const userId = key.slice(sep + 2);
         const info = userInfo.get(userId);
+        const department = info?.department ?? '';
         return {
           periodLabel,
+          deptGroup: classifyDeptGroup(department),
+          deptGroupLabel: DEPT_GROUP_LABELS[classifyDeptGroup(department)],
+          department,
           employeeNo: info?.employeeNo ?? '',
           name: info?.name ?? '',
           workedHours: minutesToHours(agg.workedMinutes),
           clientHours: minutesToHours(agg.clientMinutes),
         };
       })
-      .sort((a, b) => b.periodLabel.localeCompare(a.periodLabel) || a.name.localeCompare(b.name, 'ko'));
+      .sort((a, b) =>
+        b.periodLabel.localeCompare(a.periodLabel) ||
+        (DEPT_GROUP_ORDER[a.deptGroup] - DEPT_GROUP_ORDER[b.deptGroup]) ||
+        a.department.localeCompare(b.department, 'ko') ||
+        a.name.localeCompare(b.name, 'ko')
+      );
     for (const r of rows) sheet.addRow(r);
     sheet.getRow(1).font = { bold: true };
   }
