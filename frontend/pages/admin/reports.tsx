@@ -53,6 +53,12 @@ interface AttendanceDetailRow {
 }
 interface AttendanceDetail { date: string; rows: AttendanceDetailRow[]; }
 
+// 다우오피스 "전사 휴가현황" 스크래핑 결과 한 명분 — GET /dashboard/leave-today 응답 형태와 동일.
+interface LeaveTodayEntry {
+  userId: string | null; name: string; department: string | null; leaveType: string;
+  durationLabel: string; startTime: string | null; endTime: string | null;
+}
+
 interface ClockInMismatch { firstWorkStatus: string; firstWorkAt: string; diffMinutes: number | null; }
 
 interface TimelineEntry {
@@ -294,8 +300,10 @@ export default function AdminReportsPage() {
   const [attendanceDetail, setAttendanceDetail] = useState<AttendanceDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   // 2026-09-19: 다우오피스 휴가현황 스크래핑이 과거/미래 날짜도 잘 가져오는지, 관리자가 날짜를
-  // 넘겨가며 바로 확인할 수 있게 "일별" 요약 카드에 그날의 휴가자 수를 같이 보여준다.
-  const [leaveCountForDay, setLeaveCountForDay] = useState<number | null>(null);
+  // 넘겨가며 바로 확인할 수 있게 "일별" 요약 카드에 그날의 휴가자 수를 같이 보여준다. 카드를
+  // 누르면 누가 휴가인지 모달로 바로 보여준다(스크롤해서 아래 출퇴근 목록까지 안 내려가도 되게).
+  const [leaveEntriesForDay, setLeaveEntriesForDay] = useState<LeaveTodayEntry[] | null>(null);
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
   // 년/월/일을 직접 선택하는 기간 — 지정하면 위 탭(일/주/월/년)보다 우선한다. 출퇴근·근로시간 공통 적용.
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
@@ -384,12 +392,14 @@ export default function AdminReportsPage() {
   // 지원하도록 이미 만들어져 있다(원래는 "오늘" 기본값이지만 과거 날짜도 그대로 조회 가능).
   useEffect(() => {
     if (!isSingleDay) {
-      setLeaveCountForDay(null);
+      setLeaveEntriesForDay(null);
+      setShowLeaveModal(false);
       return;
     }
-    apiFetch<unknown[]>(`/dashboard/leave-today?date=${effectiveFrom}`)
-      .then((rows) => setLeaveCountForDay(rows.length))
-      .catch(() => setLeaveCountForDay(null));
+    setShowLeaveModal(false);
+    apiFetch<LeaveTodayEntry[]>(`/dashboard/leave-today?date=${effectiveFrom}`)
+      .then(setLeaveEntriesForDay)
+      .catch(() => setLeaveEntriesForDay(null));
   }, [effectiveFrom, isSingleDay]);
 
   function selectTab(p: Period) {
@@ -530,9 +540,47 @@ export default function AdminReportsPage() {
             <div className="stat-label">✅ 퇴근 완료</div>
             <div className="stat-value" style={{ color: '#2f9e44' }}>{daySummary.done}</div>
           </div>
-          <div className="stat-card">
+          <div
+            className="stat-card"
+            style={{ cursor: leaveEntriesForDay && leaveEntriesForDay.length > 0 ? 'pointer' : undefined }}
+            role="button"
+            tabIndex={0}
+            onClick={() => { if (leaveEntriesForDay && leaveEntriesForDay.length > 0) setShowLeaveModal(true); }}
+            onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && leaveEntriesForDay && leaveEntriesForDay.length > 0) setShowLeaveModal(true); }}
+          >
             <div className="stat-label">🌴 휴가자</div>
-            <div className="stat-value" style={{ color: '#868e96' }}>{leaveCountForDay ?? '-'}</div>
+            <div className="stat-value" style={{ color: '#868e96' }}>{leaveEntriesForDay ? leaveEntriesForDay.length : '-'}</div>
+            {leaveEntriesForDay && leaveEntriesForDay.length > 0 && (
+              <div style={{ fontSize: 12, color: '#868e96', marginTop: 4 }}>눌러서 명단 보기 ▾</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showLeaveModal && leaveEntriesForDay && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 20, maxWidth: 480, width: '100%', maxHeight: '85vh', overflowY: 'auto' }}>
+            <h2 style={{ marginTop: 0 }}>🌴 {effectiveFrom} 휴가자 <span style={{ color: '#868e96', fontWeight: 400 }}>{leaveEntriesForDay.length}명</span></h2>
+            {leaveEntriesForDay.length === 0 && <div className="board-empty">이 날짜에 휴가자가 없습니다.</div>}
+            {leaveEntriesForDay.map((l, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #f1f3f5' }}>
+                <div>
+                  <strong>{l.name}</strong>
+                  <span style={{ color: '#868e96', marginLeft: 8, fontSize: 13 }}>{l.department ?? '-'}</span>
+                </div>
+                <div style={{ textAlign: 'right', fontSize: 13, color: '#495057' }}>
+                  <div>{l.leaveType} · {l.durationLabel}</div>
+                  {l.startTime && l.endTime && (
+                    <div style={{ color: '#868e96' }}>
+                      {new Date(l.startTime).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+                      {'~'}
+                      {new Date(l.endTime).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            <button className="secondary" style={{ marginTop: 12 }} onClick={() => setShowLeaveModal(false)}>닫기</button>
           </div>
         </div>
       )}
