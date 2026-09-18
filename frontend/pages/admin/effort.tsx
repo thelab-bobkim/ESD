@@ -40,7 +40,7 @@ interface EffortSummary { from: string; to: string; clients: EffortClientRow[]; 
 
 interface TimelineEntry {
   id: string; workDate: string; day: string; clientName: string; projectName: string; workType: string;
-  startLabel: string; endLabel: string | null; minutes: number; description: string; userId: string; userName: string;
+  startLabel: string; endLabel: string | null; minutes: number; actualMinutes: number; description: string; userId: string; userName: string;
 }
 interface TimelineResponse { from: string; to: string; scope: 'client' | 'engineer'; value: string; entries: TimelineEntry[]; }
 
@@ -87,7 +87,13 @@ function pivotByEngineer(clients: EffortClientRow[]): EngineerAggRow[] {
   return [...map.values()];
 }
 
-/** 대상(고객사 또는 엔지니어)이 이 기간에 실제로 수행한 개별 공수기록을, 날짜별로 묶는다. */
+/** 대상(고객사 또는 엔지니어)이 이 기간에 실제로 수행한 개별 공수기록을, 날짜별로 묶는다.
+ *
+ * 2026-09-18: "실 공수시간 자동 산정" 반영 — 배지(durLabel)와 날짜별 합계(totalLabel)는 원본
+ * 등록시간(minutes)이 아니라 점심시간 실제 겹침이 빠진 실공수시간(actualMinutes)을 기준으로
+ * 보여준다(공수비용 산정 등 실제 업무에 쓰이는 값과 화면을 일치시킴). 다만 옆에 보이는
+ * 시작~종료 시각은 원본 그대로이므로, 둘이 달라 보여 헷갈리지 않도록 차감된 경우에만
+ * "(점심 N분 차감)" 표시를 함께 준다. */
 function groupTimeline(entries: TimelineEntry[]) {
   const byDate = new Map<string, TimelineEntry[]>();
   for (const e of entries) {
@@ -98,13 +104,16 @@ function groupTimeline(entries: TimelineEntry[]) {
   return [...byDate.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([workDate, es]) => {
-      const total = es.reduce((s, e) => s + e.minutes, 0);
+      const total = es.reduce((s, e) => s + e.actualMinutes, 0);
       const [, mo, d] = workDate.split('-');
       return {
         workDate,
         dateLabel: `${Number(mo)}월 ${Number(d)}일 (${es[0].day})`,
         totalLabel: hoursLabel(total),
-        entries: es.map((e) => ({ ...e, durLabel: hoursLabel(e.minutes) })),
+        entries: es.map((e) => {
+          const lunchDeducted = Math.max(0, e.minutes - e.actualMinutes);
+          return { ...e, durLabel: hoursLabel(e.actualMinutes), lunchDeducted };
+        }),
       };
     });
 }
@@ -259,7 +268,9 @@ export default function AdminEffortPage() {
   }, [perspective, resolvedKey, effectiveFrom, effectiveTo, workTypeFilter]);
 
   const timelineGroups = useMemo(() => (timeline ? groupTimeline(timeline) : []), [timeline]);
-  const timelineTotalMinutes = useMemo(() => (timeline ? timeline.reduce((s, e) => s + e.minutes, 0) : 0), [timeline]);
+  // 2026-09-18: 점심시간 실제 겹침을 뺀 실공수시간(actualMinutes) 합계 — 공수비용 산정에 쓰이는
+  // 값과 화면 총계를 일치시킨다(원본 등록시간 합계는 CSV 내려받기의 "등록시간(시간)"에서 확인 가능).
+  const timelineTotalMinutes = useMemo(() => (timeline ? timeline.reduce((s, e) => s + e.actualMinutes, 0) : 0), [timeline]);
   const counterpartCount = useMemo(
     () => (timeline ? new Set(timeline.map((e) => (perspective === 'client' ? e.userId : e.clientName))).size : 0),
     [timeline, perspective]
@@ -356,7 +367,7 @@ export default function AdminEffortPage() {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 16 }}>
               <div className="stat-card">
-                <div className="stat-label">총 투입시간</div>
+                <div className="stat-label">총 실공수시간</div>
                 <div className="stat-value">{hoursLabel(timelineTotalMinutes)}</div>
               </div>
               <div className="stat-card">
@@ -403,6 +414,9 @@ export default function AdminEffortPage() {
                           <span style={{ fontWeight: 800 }}>{perspective === 'client' ? e.userName : `🏢 ${e.clientName}`}</span>
                           <span style={{ fontSize: 12, color: '#868e96', fontVariantNumeric: 'tabular-nums' }}>
                             {e.workType} · {e.startLabel} ~ {e.endLabel ?? '진행중'}
+                            {e.lunchDeducted > 0 && (
+                              <span style={{ color: '#f08c00', fontWeight: 600 }}> (점심 {e.lunchDeducted}분 차감)</span>
+                            )}
                           </span>
                           <span style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 700, borderRadius: 999, padding: '2px 8px', background: meta.soft, color: meta.color }}>
                             {e.durLabel}

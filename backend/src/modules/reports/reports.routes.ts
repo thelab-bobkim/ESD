@@ -67,6 +67,14 @@ function minutesToHours(minutes: number | null | undefined): number | '' {
   return Math.round((minutes / 60) * 10) / 10;
 }
 
+// 2026-09-18: "실 공수시간 자동 산정"(경영관리부 요청) — EffortLog.actualMinutes(점심시간 실제
+// 겹침만큼 뺀 값)가 있으면 그 값을, 없으면(이 필드 추가 이전의 과거 기록) 원본(minutes)을 그대로
+// 쓴다. 고객사별 공수 집계(effort-summary)와 CSV 내보내기 모두 이 함수 하나로 통일해서, 한쪽만
+// 실공수시간을 반영하고 다른 쪽은 원본을 쓰는 불일치가 생기지 않게 한다.
+function effectiveEffortMinutes(l: { minutes: number | null; actualMinutes?: number | null }): number {
+  return l.actualMinutes ?? l.minutes ?? 0;
+}
+
 const LEAVE_CONVERSION_STATUS_LABELS: Record<string, string> = {
   NONE: '해당없음',
   DRAFT: '임시저장',
@@ -93,7 +101,11 @@ const EFFORT_EXPORT_HEADERS: Record<string, string> = {
   workType: '작업유형',
   startTime: '시작시각',
   endTime: '종료시각',
-  hours: '근무시간(시간)',
+  hours: '등록시간(시간)',
+  // 2026-09-18: "실 공수시간 자동 산정"(경영관리부 요청) — 등록시간(원본)에서 정책에 정한
+  // 점심시간대와 실제로 겹치는 만큼 뺀 값. 비용 산정 등 실제 업무에는 이 컬럼을 쓰고, 등록시간은
+  // 감사·검증용으로 남겨둔다(effectiveEffortMinutes, attendance-helpers.ts lunchOverlapMinutes 참고).
+  actualHours: '실공수시간(시간)',
   description: '비고',
 };
 
@@ -117,7 +129,9 @@ const CLIENT_WORK_DAILY_EXPORT_HEADERS: Record<string, string> = {
   employeeNo: '사번',
   name: '이름',
   clientName: '고객사',
-  hours: '근무시간(시간)',
+  // 2026-09-18: "실 공수시간 자동 산정" 요청 — 이 리포트는 애초에 고객사 비용/공수 산정이 목적이라,
+  // 점심시간을 뺀 실공수시간을 바로 이 컬럼에 담는다(등록 원본을 보려면 effort-export CSV 참고).
+  hours: '실공수시간(시간)',
 };
 
 const rangeSchema = z.object({
@@ -196,7 +210,7 @@ reportsRouter.get('/effort-summary', async (req, res) => {
   const prevByClient = new Map<string, number>();
   for (const l of prevLogs) {
     const key = l.clientName;
-    prevByClient.set(key, (prevByClient.get(key) ?? 0) + (l.minutes ?? 0));
+    prevByClient.set(key, (prevByClient.get(key) ?? 0) + effectiveEffortMinutes(l));
   }
 
   interface ProjectGroup {
@@ -210,10 +224,10 @@ reportsRouter.get('/effort-summary', async (req, res) => {
   for (const l of logs) {
     const key = `${l.clientName}::${l.projectName}`;
     const group = byProject.get(key) ?? { projectName: l.projectName || '(미지정)', clientName: l.clientName || '(미지정)', totalMinutes: 0, workTypes: new Set<string>(), byUser: new Map() };
-    group.totalMinutes += l.minutes ?? 0;
+    group.totalMinutes += effectiveEffortMinutes(l);
     group.workTypes.add(l.workType);
     const u = group.byUser.get(l.userId) ?? { userId: l.userId, name: l.user.name, department: l.user.department.name, minutes: 0 };
-    u.minutes += l.minutes ?? 0;
+    u.minutes += effectiveEffortMinutes(l);
     group.byUser.set(l.userId, u);
     byProject.set(key, group);
   }
@@ -349,6 +363,10 @@ reportsRouter.get('/effort-timeline', async (req, res) => {
       startLabel: kstHHmm(l.startTime),
       endLabel: l.endTime ? kstHHmm(l.endTime) : null,
       minutes: l.minutes ?? 0,
+      // 2026-09-18: "실 공수시간 자동 산정" — 등록한 원본(minutes, 화면에 보이는 시작~종료 시각과
+      // 정확히 일치)과 별도로, 점심시간 실제 겹침을 뺀 실공수시간도 같이 내려준다. 프론트가 둘이
+      // 다를 때만("점심시간 N분 차감") 표시해서, 왜 시간이 줄었는지 숨기지 않고 보여준다.
+      actualMinutes: effectiveEffortMinutes(l),
       description: l.description ?? '',
       userId: l.userId,
       userName: l.user.name,
@@ -373,6 +391,7 @@ reportsRouter.get('/effort-export', async (req, res) => {
     startTime: kstDateTime(l.startTime),
     endTime: kstDateTime(l.endTime),
     hours: minutesToHours(l.minutes),
+    actualHours: minutesToHours(effectiveEffortMinutes(l)),
     description: l.description ?? '',
   }));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -408,7 +427,7 @@ reportsRouter.get('/client-work-daily-export', async (_req, res) => {
     const workDate = l.workDate.toISOString().slice(0, 10);
     const key = `${workDate}::${l.userId}::${clientName}`;
     const group = byKey.get(key) ?? { workDate, employeeNo: l.user.employeeNo, name: l.user.name, clientName, minutes: 0 };
-    group.minutes += l.minutes ?? 0;
+    group.minutes += effectiveEffortMinutes(l);
     byKey.set(key, group);
   }
 

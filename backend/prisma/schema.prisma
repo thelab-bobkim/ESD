@@ -603,7 +603,13 @@ model EffortLog {
   workType    String    @map("work_type") // 정기점검/신규설치/장애대응/미팅/기타
   startTime   DateTime  @map("start_time")
   endTime     DateTime? @map("end_time")
-  minutes     Int?      // endTime이 없으면(진행중) null
+  minutes     Int?      // endTime이 없으면(진행중) null — 직원이 등록한 원본 시간, 점심/이동시간 미차감
+  // 2026-09-18: "실 공수시간 자동 산정"(경영관리부 요청) — minutes(원본)에서 정책에 정한 점심시간대와
+  // 실제로 겹치는 시간만큼 뺀 값(effort-helpers.ts recordEffort, attendance-helpers.ts
+  // lunchOverlapMinutes 참고). 원본은 감사·검증용으로 그대로 두고, 공수비용 산정 등 실제 업무에는
+  // 이 값을 우선 쓴다(reports.routes.ts). 이 필드 추가 이전 기록은 null이며, 그 경우 화면/집계에서
+  // minutes(원본)로 자동 대체한다.
+  actualMinutes Int?    @map("actual_minutes")
   description String?
   createdAt   DateTime  @default(now()) @map("created_at")
   // 2026-09-15: 이 기록이 어떤 상태(고객사작업/고객사미팅/재택/주말작업)에서 등록됐는지 남긴다.

@@ -1,8 +1,21 @@
 import { prisma } from './prisma';
+import { getLunchWindowKST, lunchOverlapMinutes } from './attendance-helpers';
 
 // 24시간이 지난 "진행중" 기록은 이어받지 않는다 — 그만큼 오래됐으면 실수로 못 끝낸 옛 기록일
 // 가능성이 높다. 그런 경우는 이어받지 않고 새 기록으로 등록된다(기존과 동일한 동작으로 안전하게 폴백).
 const CONTINUE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 2026-09-18: "실 공수시간 자동 산정"(경영관리부 요청) — 원본 소요시간(rawMinutes)에서 정책에 정한
+ * 점심시간대와 실제로 겹치는 만큼만 뺀다. rawMinutes를 초과해서 빼지는 않는다(자정을 넘기는 등
+ * 극단적인 경우를 대비한 방어). endTime이 없으면(진행중) 계산할 수 없으므로 null.
+ */
+async function computeActualMinutes(startTime: Date, endTime: Date | null, rawMinutes: number | null): Promise<number | null> {
+  if (!endTime || rawMinutes == null) return null;
+  const lunchWindow = await getLunchWindowKST();
+  const overlap = lunchOverlapMinutes(startTime, endTime, lunchWindow);
+  return Math.max(0, rawMinutes - Math.min(overlap, rawMinutes));
+}
 
 export interface EffortInput {
   workDate: Date;
@@ -34,6 +47,7 @@ export async function recordEffort(userId: string, status: string, data: EffortI
 
   if (openEntry) {
     const minutes = data.endTime ? Math.max(0, Math.round((data.endTime.getTime() - openEntry.startTime.getTime()) / 60000)) : null;
+    const actualMinutes = await computeActualMinutes(openEntry.startTime, data.endTime, minutes);
     return prisma.effortLog.update({
       where: { id: openEntry.id },
       data: {
@@ -42,12 +56,14 @@ export async function recordEffort(userId: string, status: string, data: EffortI
         workType: data.workType,
         endTime: data.endTime,
         minutes,
+        actualMinutes,
         description: data.description,
       },
     });
   }
 
   const minutes = data.endTime ? Math.max(0, Math.round((data.endTime.getTime() - data.startTime.getTime()) / 60000)) : null;
+  const actualMinutes = await computeActualMinutes(data.startTime, data.endTime, minutes);
   return prisma.effortLog.create({
     data: {
       userId,
@@ -58,6 +74,7 @@ export async function recordEffort(userId: string, status: string, data: EffortI
       startTime: data.startTime,
       endTime: data.endTime,
       minutes,
+      actualMinutes,
       description: data.description,
       sourceStatus: status,
     },

@@ -1,5 +1,5 @@
 import { prisma } from './prisma';
-import { getPolicyNumber, getPolicyJSON } from './policy-engine/policy-engine';
+import { getPolicyNumber, getPolicyJSON, getPolicyString } from './policy-engine/policy-engine';
 
 /**
  * 주말(토=6,일=0, KST) 여부 — attendance.routes.ts("주말엔 주말작업만" 게이트)와
@@ -116,6 +116,63 @@ export function resolveEndTime(startTime: Date, endTime: Date): Date {
  */
 export async function getLunchBreakMinutes(): Promise<number> {
   return getPolicyNumber('LUNCH_BREAK_DEDUCTION_MINUTES', 60);
+}
+
+// 2026-09-18: 경영관리부 요청 — 공수(고객사별 청구시간)에서 "실 공수시간"을 자동 산정할 때는
+// 근태처럼 "하루 1회 무조건 60분"이 아니라, 정책에 정한 점심시간대(기본 12:00~13:00, KST)와
+// 그 공수기록의 시작~종료 시각이 실제로 겹치는 만큼만 뺀다(사용자 확인 완료 — "정책에 정한
+// 점심시간대와 실제로 겹칠 때만 차감" 선택). 예: 09~11시 단독 등록엔 안 빠지고, 11~14시 등록엔
+// 겹치는 1시간만 빠진다. effort-helpers.ts recordEffort()가 이 값을 실공수시간(actualMinutes)
+// 계산에 쓴다.
+export async function getLunchWindowKST(): Promise<{ startHHMM: string; endHHMM: string }> {
+  const startHHMM = await getPolicyString('LUNCH_BREAK_START_HHMM', '12:00');
+  const endHHMM = await getPolicyString('LUNCH_BREAK_END_HHMM', '13:00');
+  return { startHHMM, endHHMM };
+}
+
+function hhmmToMinutesOfDay(hhmm: string): number {
+  const parts = hhmm.split(':').map((v) => Number(v));
+  const h = parts[0];
+  const m = parts[1];
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
+  return h * 60 + m;
+}
+
+/**
+ * [start, end) 구간(실제 Date, UTC 내부값)이 KST 기준 점심시간대와 겹치는 분(minute) 수를 계산한다.
+ * 대부분의 공수기록은 하루 안에서 끝나지만, 혹시 자정을 넘기는 기록(예: 심야 재택근무)이 있어도
+ * 안전하게 계산되도록 날짜별로 훑으면서 그날그날의 점심시간 구간과 겹치는 만큼을 합산한다.
+ */
+export function lunchOverlapMinutes(
+  start: Date,
+  end: Date,
+  lunchWindow: { startHHMM: string; endHHMM: string }
+): number {
+  if (!start || !end || end <= start) return 0;
+  const lunchStartMin = hhmmToMinutesOfDay(lunchWindow.startHHMM);
+  const lunchEndMin = hhmmToMinutesOfDay(lunchWindow.endHHMM);
+  if (lunchEndMin <= lunchStartMin) return 0; // 잘못된 정책값(끝이 시작보다 빠름) 방어
+
+  const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+  let totalOverlap = 0;
+  let cursor = new Date(start);
+  // 무한루프 방지 겸 비정상적으로 긴 구간(수년치 등)에 대비한 안전장치.
+  let guard = 0;
+  while (cursor < end && guard < 3650) {
+    guard += 1;
+    const kst = new Date(cursor.getTime() + KST_OFFSET_MS);
+    const dayStartKST = Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate());
+    const lunchStartUTC = new Date(dayStartKST + lunchStartMin * 60000 - KST_OFFSET_MS);
+    const lunchEndUTC = new Date(dayStartKST + lunchEndMin * 60000 - KST_OFFSET_MS);
+    const overlapStart = start > lunchStartUTC ? start : lunchStartUTC;
+    const overlapEnd = end < lunchEndUTC ? end : lunchEndUTC;
+    if (overlapEnd > overlapStart) {
+      totalOverlap += Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 60000);
+    }
+    // 다음 날 KST 자정(=UTC로 환산한 시각)으로 이동.
+    cursor = new Date(dayStartKST + 24 * 60 * 60 * 1000 - KST_OFFSET_MS);
+  }
+  return totalOverlap;
 }
 
 /**
