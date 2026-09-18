@@ -1158,6 +1158,48 @@ attendanceRouter.get('/clients', async (_req, res) => {
   return res.json({ success: true, data: clients });
 });
 
+/**
+ * 2026-09-18: "고객사 목록이 항상 가나다순이라, 같은 고객사를 하루에 여러 번 등록해야 하는
+ * 직원도 매번 스크롤/검색해서 찾아야 한다"(관리자 지적) — 이 직원이 최근에 실제로 등록했던
+ * 고객사를 최신순으로 몇 개 뽑아서, 프론트가 검색창 위 원탭 칩으로 보여주거나 목록 맨 위에
+ * 고정하는 데 쓴다. 사용자마다 다른 개인화된 목록이라 로그인한 본인 것만 조회한다.
+ */
+const RECENT_CLIENT_LIMIT = 5;
+attendanceRouter.get('/clients-recent', async (req, res) => {
+  const userId = req.authUser!.userId;
+  // 같은 고객사가 하루에도 여러 번 나올 수 있어(오늘 대화의 발단이 된 그 상황) 넉넉히 가져온 뒤,
+  // 등장한 순서(=최근 등록순) 그대로 두고 이름 중복만 앞에서부터 걸러 상위 N개를 뽑는다.
+  const recentLogs = await prisma.effortLog.findMany({
+    where: { userId, clientName: { not: '' } },
+    orderBy: { startTime: 'desc' },
+    select: { clientName: true },
+    take: 50,
+  });
+  const orderedNames: string[] = [];
+  const seen = new Set<string>();
+  for (const l of recentLogs) {
+    const name = l.clientName.trim();
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    orderedNames.push(name);
+    if (orderedNames.length >= RECENT_CLIENT_LIMIT) break;
+  }
+  if (orderedNames.length === 0) {
+    return res.json({ success: true, data: [] });
+  }
+  // 목록 콤보박스(clientOptions)와 같은 고객사를 가리키도록 id까지 붙여서 내려준다 — 자유입력으로
+  // 남아있던 옛 이름이라 등록된 고객사 목록에 없으면(예: 그 사이 관리자가 삭제) 조용히 건너뛴다.
+  const matched = await prisma.client.findMany({
+    where: { name: { in: orderedNames, mode: 'insensitive' } },
+    select: { id: true, name: true },
+  });
+  const byLowerName = new Map(matched.map((c: { id: string; name: string }) => [c.name.toLowerCase(), c]));
+  const data = orderedNames
+    .map((name) => byLowerName.get(name.toLowerCase()))
+    .filter((c): c is { id: string; name: string } => Boolean(c));
+  return res.json({ success: true, data });
+});
+
 const createClientSchema = z.object({ name: z.string().min(1) });
 
 /**

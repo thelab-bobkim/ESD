@@ -337,6 +337,10 @@ export default function EmployeeHome() {
   // 2026-09-04: 목록을 못 불러온 건지(네트워크 오류) 아니면 진짜로 등록된 고객사가 없는 건지
   // 화면에서 구분이 안 돼서 "목록이 안 보여요" 문의가 들어옴 — 원인 파악용으로 구분해서 보여준다.
   const [clientOptionsError, setClientOptionsError] = useState(false);
+  // 2026-09-18: "최근 등록한 고객사가 매번 위로 오면 좋겠다"(관리자 요청) — 이 직원이 최근에
+  // 실제로 등록했던 고객사(본인 것만, 최신순)를 검색창 위 원탭 칩으로도, 목록 맨 위 고정으로도
+  // 쓴다(recentClientOptions, filteredClientOptions 참고).
+  const [recentClients, setRecentClients] = useState<{ id: string; name: string }[]>([]);
   const [clientQuery, setClientQuery] = useState('');
   const [clientPickerOpen, setClientPickerOpen] = useState(false);
   const [addingClientBusy, setAddingClientBusy] = useState(false);
@@ -621,6 +625,10 @@ export default function EmployeeHome() {
     apiFetch<{ id: string; name: string }[]>('/attendance/clients')
       .then(setClientOptions)
       .catch(() => setClientOptionsError(true));
+    // 최근 등록한 고객사 — 없으면(신규 입사자 등) 그냥 빈 배열로 두고 기존처럼 전체 목록만 보여준다.
+    apiFetch<{ id: string; name: string }[]>('/attendance/clients-recent')
+      .then(setRecentClients)
+      .catch(() => {});
   }, []);
 
   // 이 상태들은 이미 "고객사에 있다"고 등록된 상태라, 고객사 도착 제안이나 이탈 감지를 또 띄울
@@ -1250,21 +1258,43 @@ export default function EmployeeHome() {
     router.push('/login');
   }
 
+  // 2026-09-18: 최근에 등록한 고객사(recentClients, 본인 것만 최신순) 중 지금도 목록에 있는
+  // 것만 골라, 검색창 위 원탭 칩과 목록 맨 위 "최근 등록" 구간에 함께 쓴다.
+  const recentClientOptions = useMemo(() => {
+    const byId = new Map(clientOptions.map((c) => [c.id, c]));
+    return recentClients.map((c) => byId.get(c.id)).filter((c): c is typeof clientOptions[number] => Boolean(c));
+  }, [clientOptions, recentClients]);
+
   // 고객사미팅/고객사작업 검색창에 입력한 글자로 등록된 고객사 목록을 걸러준다(2026-09-02).
   // 2026-09-04: 검색어가 없을 때 20개로 잘라서 보여주던 게 "고객사 목록이 일부만 나온다"는
   // 문제였다 — 목록 영역이 이미 스크롤(max-height 220px, overflow-y auto) 처리돼 있어서 자를
   // 이유가 없었다. 이제 전체를 보여주고, 목록이 너무 길면 검색으로 좁히면 된다.
+  // 2026-09-18: 검색어가 없을 때(=목록을 그냥 훑어보는 상황)는 최근 등록한 고객사를 이 목록에서
+  // 빼둔다 — 위에서 "최근 등록" 구간으로 따로 먼저 보여주고, 그 아래에 이 목록(전체, 가나다순)을
+  // 이어붙이는 방식으로 화면에서 중복 없이 표시한다(렌더링 부분 참고).
   const filteredClientOptions = useMemo(() => {
     const q = clientQuery.trim().toLowerCase();
-    if (!q) return clientOptions;
+    if (!q) {
+      if (recentClientOptions.length === 0) return clientOptions;
+      const recentIds = new Set(recentClientOptions.map((c) => c.id));
+      return clientOptions.filter((c) => !recentIds.has(c.id));
+    }
     return clientOptions.filter((c) => c.name.toLowerCase().includes(q));
-  }, [clientOptions, clientQuery]);
+  }, [clientOptions, clientQuery, recentClientOptions]);
   // 입력한 글자가 등록된 고객사명과 완전히 같으면(대소문자 무관) "새로 등록" 버튼을 안 보여준다 —
   // 이미 있는 고객사를 실수로 중복 등록하는 걸 막기 위함.
   const exactClientMatch = useMemo(
     () => clientOptions.some((c) => c.name.toLowerCase() === clientQuery.trim().toLowerCase()),
     [clientOptions, clientQuery]
   );
+
+  /** 검색 목록/최근 고객사 칩 어디서 골랐든 동일하게 선택 상태로 확정한다. */
+  function selectClient(c: { id: string; name: string }) {
+    setClientName(c.name);
+    setClientId(c.id);
+    setClientQuery(c.name);
+    setClientPickerOpen(false);
+  }
 
   /** 목록에 없는 새 고객사를 그 자리에서 등록하고 바로 선택 상태로 만든다. */
   async function addNewClientAndSelect() {
@@ -1974,6 +2004,23 @@ export default function EmployeeHome() {
               </label>
               {LOCATION_CHECK_STATUSES.has(detailStatus) ? (
                 <div className="client-combobox">
+                  {/* 2026-09-18: "최근 등록한 고객사가 매번 위로 오면 좋겠다" 요청 — 검색창을 열지
+                      않고도 자주 가는 고객사를 원탭으로 바로 고를 수 있게 한다(반복 방문일수록
+                      효과가 큼). 검색창 안 목록에도 "최근 등록" 구간으로 한 번 더 보여준다. */}
+                  {recentClientOptions.length > 0 && (
+                    <div className="recent-client-chips">
+                      {recentClientOptions.map((c) => (
+                        <button
+                          type="button"
+                          key={`recent-chip-${c.id}`}
+                          className={`recent-client-chip${clientId === c.id ? ' active' : ''}`}
+                          onClick={() => selectClient(c)}
+                        >
+                          🕘 {c.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <input
                     value={clientQuery}
                     onChange={(e) => {
@@ -1994,8 +2041,27 @@ export default function EmployeeHome() {
                       {clientOptionsError && (
                         <div className="client-combobox-empty">⚠ 고객사 목록을 불러오지 못했습니다. 인터넷 연결을 확인하고 화면을 새로고침 해주세요.</div>
                       )}
-                      {!clientOptionsError && filteredClientOptions.length === 0 && !clientQuery.trim() && (
+                      {!clientOptionsError && filteredClientOptions.length === 0 && recentClientOptions.length === 0 && !clientQuery.trim() && (
                         <div className="client-combobox-empty">등록된 고객사가 없습니다. 아래에 이름을 입력해 새로 등록해주세요.</div>
+                      )}
+                      {!clientQuery.trim() && recentClientOptions.length > 0 && (
+                        <>
+                          <div className="client-combobox-section-label">🕘 최근 등록</div>
+                          {recentClientOptions.map((c) => (
+                            <button
+                              type="button"
+                              key={`recent-${c.id}`}
+                              className="client-combobox-item"
+                              onMouseDown={(e) => {
+                                e.preventDefault(); // onBlur보다 먼저 선택이 처리되게(안 그러면 목록이 먼저 닫혀버림).
+                                selectClient(c);
+                              }}
+                            >
+                              <span className="client-combobox-name">{c.name}</span>
+                            </button>
+                          ))}
+                          {filteredClientOptions.length > 0 && <div className="client-combobox-section-label">전체 고객사</div>}
+                        </>
                       )}
                       {filteredClientOptions.map((c) => (
                         <button
@@ -2004,10 +2070,7 @@ export default function EmployeeHome() {
                           className="client-combobox-item"
                           onMouseDown={(e) => {
                             e.preventDefault(); // onBlur보다 먼저 선택이 처리되게(안 그러면 목록이 먼저 닫혀버림).
-                            setClientName(c.name);
-                            setClientId(c.id);
-                            setClientQuery(c.name);
-                            setClientPickerOpen(false);
+                            selectClient(c);
                           }}
                         >
                           <span className="client-combobox-name">{c.name}</span>
@@ -2078,28 +2141,50 @@ export default function EmployeeHome() {
                 // 항상 시작~완료를 같이 보여준다(2026-09-14).
                 detailStatus === 'CLIENT_MEETING' && !showMoreFields ? (
                   <>
-                    <label className="field-label">미팅시작</label>
+                    <div className="field-label-row">
+                      <label className="field-label">미팅시작</label>
+                      <button type="button" className="now-fill-button" onClick={() => setWorkStart(nowHHMM())}>🕐 지금</button>
+                    </div>
                     <TimeSelectInput value={workStart} onChange={setWorkStart} />
                   </>
                 ) : (
                   <div style={{ display: 'flex', gap: 8 }}>
                     <div style={{ flex: 1 }}>
-                      <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅시작' : '작업시작'}</label>
+                      <div className="field-label-row">
+                        <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅시작' : '작업시작'}</label>
+                        <button type="button" className="now-fill-button" onClick={() => setWorkStart(nowHHMM())}>🕐 지금</button>
+                      </div>
                       <TimeSelectInput value={workStart} onChange={setWorkStart} />
                     </div>
                     <div style={{ flex: 1 }}>
-                      <label className="field-label">
-                        {detailStatus === 'CLIENT_MEETING'
-                          ? '미팅완료(선택 — 진행중이면 비워두세요)'
-                          : END_TIME_REQUIRED_STATUSES.has(detailStatus)
-                            ? (stillInProgress ? '작업완료 (진행중 — 완료되면 다시 등록해주세요)' : '작업완료 (필수)')
-                            : '작업완료(선택 — 진행중이면 비워두세요)'}
-                      </label>
+                      <div className="field-label-row">
+                        <label className="field-label">
+                          {detailStatus === 'CLIENT_MEETING'
+                            ? '미팅완료(선택)'
+                            : END_TIME_REQUIRED_STATUSES.has(detailStatus)
+                              ? (stillInProgress ? '작업완료 (진행중)' : '작업완료 (필수)')
+                              : '작업완료(선택)'}
+                        </label>
+                        {/* 2026-09-18: "완료시간을 직접 골라야 해서 번거롭다" — 지금 막 끝난 경우가
+                            대부분이라, 시/분을 일일이 고르지 않고 현재시각을 바로 채우는 버튼을
+                            추가한다. "진행중" 체크박스를 켠 상태에서 이 버튼을 누르면 그건 사실상
+                            "지금 끝났다"는 뜻이므로 체크를 자동으로 풀어준다. */}
+                        <button
+                          type="button"
+                          className="now-fill-button"
+                          onClick={() => { setWorkEnd(nowHHMM()); setStillInProgress(false); }}
+                        >
+                          🕐 지금
+                        </button>
+                      </div>
                       <TimeSelectInput
                         value={workEnd}
                         onChange={setWorkEnd}
                         allowEmpty={!END_TIME_REQUIRED_STATUSES.has(detailStatus) || stillInProgress}
                       />
+                      {!END_TIME_REQUIRED_STATUSES.has(detailStatus) && (
+                        <p style={{ fontSize: 12, color: '#6b7594', marginTop: 4 }}>* 진행중이면 비워두세요.</p>
+                      )}
                       {/* 2026-09-15: 박준영/이보용 피드백 — 고객사작업 등은 완료시간이 필수라서,
                           "언제 끝날지 모르는" 진행중인 작업은 애초에 등록 자체를 못 했다. 이 체크박스를
                           켜면 이번만 완료시간 없이 "진행중" 상태로 등록할 수 있다(작업이 끝나면 그때

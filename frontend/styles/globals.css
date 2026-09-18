@@ -70,6 +70,16 @@ input {
   font-size: 14px; font-family: inherit; resize: vertical;
 }
 .field-label { display: block; font-size: 12px; color: #495057; margin-bottom: 4px; font-weight: 600; }
+/* 2026-09-18: 시작/완료 시간을 시·분 드롭다운으로 직접 고르는 대신, 대부분(막 시작·막 끝난
+   시점)에는 한 번에 현재시각을 채울 수 있게 하는 "지금" 버튼(now-fill-button)과, 그 버튼을
+   라벨과 한 줄에 나란히 두기 위한 래퍼(field-label-row). */
+.field-label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.field-label-row .field-label { margin-bottom: 4px; }
+.now-fill-button {
+  width: auto; margin: 0 0 4px; padding: 3px 10px; font-size: 12px; font-weight: 700;
+  background: #eef1f6; color: #2f6feb; border: 1px solid #c7d2fe; border-radius: 999px;
+}
+.tsb-dark .now-fill-button { background: #151c34; color: var(--dsti-primary); border: 1px solid var(--dsti-border); }
 .field-select {
   width: 100%; padding: 10px; border: 1px solid #d7dbe0; border-radius: 8px; margin-bottom: 12px;
   font-size: 14px; font-family: inherit; background: #fff;
@@ -399,6 +409,22 @@ body.tsb-dark-body { background: #090d18; }
 .tsb-dark .client-combobox-add { color: var(--dsti-primary); }
 .tsb-dark .client-combobox-empty { color: var(--dsti-text-faint); }
 .tsb-dark .client-combobox-address { color: #000; }
+
+/* 2026-09-18: "최근 등록한 고객사가 매번 위로 오면 좋겠다" 요청 — 검색창을 열지 않고도 원탭으로
+   고를 수 있는 최근 고객사 칩(recent-client-chip), 그리고 검색창을 열었을 때 목록 안에서
+   "최근 등록"/"전체 고객사" 구간을 나누는 소제목(client-combobox-section-label). */
+.recent-client-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.recent-client-chip {
+  width: auto; margin: 0; padding: 6px 12px; font-size: 12.5px; font-weight: 600;
+  background: #eef1f6; color: #1c1f24; border: 1px solid #d7dbe0; border-radius: 999px;
+}
+.recent-client-chip.active { background: #2f6feb; color: #fff; border-color: #2f6feb; }
+.tsb-dark .recent-client-chip { background: #151c34; color: var(--dsti-text); border: 1px solid var(--dsti-border); }
+.tsb-dark .recent-client-chip.active { background: var(--dsti-primary); color: #06101f; border-color: var(--dsti-primary); }
+.client-combobox-section-label {
+  padding: 6px 10px 2px; font-size: 11px; font-weight: 700; color: #868e96; text-transform: uppercase; letter-spacing: 0.02em;
+}
+.tsb-dark .client-combobox-section-label { color: var(--dsti-text-faint); }
 
 /* 히어로 카드 */
 .tsb-dark .hero-card { background: linear-gradient(135deg, #10162a 0%, #161d3a 100%); border: 1px solid var(--dsti-border); }
