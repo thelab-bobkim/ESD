@@ -293,6 +293,9 @@ export default function AdminReportsPage() {
   const [worktime, setWorktime] = useState<WorktimeSummary | null>(null);
   const [attendanceDetail, setAttendanceDetail] = useState<AttendanceDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 2026-09-19: 다우오피스 휴가현황 스크래핑이 과거/미래 날짜도 잘 가져오는지, 관리자가 날짜를
+  // 넘겨가며 바로 확인할 수 있게 "일별" 요약 카드에 그날의 휴가자 수를 같이 보여준다.
+  const [leaveCountForDay, setLeaveCountForDay] = useState<number | null>(null);
   // 년/월/일을 직접 선택하는 기간 — 지정하면 위 탭(일/주/월/년)보다 우선한다. 출퇴근·근로시간 공통 적용.
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
@@ -375,6 +378,19 @@ export default function AdminReportsPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveFrom, effectiveTo, isSingleDay]);
+
+  // 휴가자 수는 "일별" 보기일 때만 의미가 있다(주/월/년 합산은 다른 화면의 몫). 날짜를 옮길 때마다
+  // 그 날짜 기준으로 다시 조회한다 — 서버는 dashboard.routes.ts의 /leave-today가 date 쿼리를
+  // 지원하도록 이미 만들어져 있다(원래는 "오늘" 기본값이지만 과거 날짜도 그대로 조회 가능).
+  useEffect(() => {
+    if (!isSingleDay) {
+      setLeaveCountForDay(null);
+      return;
+    }
+    apiFetch<unknown[]>(`/dashboard/leave-today?date=${effectiveFrom}`)
+      .then((rows) => setLeaveCountForDay(rows.length))
+      .catch(() => setLeaveCountForDay(null));
+  }, [effectiveFrom, isSingleDay]);
 
   function selectTab(p: Period) {
     setCustomFrom('');
@@ -513,6 +529,10 @@ export default function AdminReportsPage() {
           <div className="stat-card">
             <div className="stat-label">✅ 퇴근 완료</div>
             <div className="stat-value" style={{ color: '#2f9e44' }}>{daySummary.done}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">🌴 휴가자</div>
+            <div className="stat-value" style={{ color: '#868e96' }}>{leaveCountForDay ?? '-'}</div>
           </div>
         </div>
       )}
