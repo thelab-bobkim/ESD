@@ -2052,20 +2052,30 @@ export default function EmployeeHome() {
                   )}
                   {/* 2026-09-18: "최근 등록한 고객사가 매번 위로 오면 좋겠다" 요청 — 검색창을 열지
                       않고도 자주 가는 고객사를 원탭으로 바로 고를 수 있게 한다(반복 방문일수록
-                      효과가 큼). 검색창 안 목록에도 "최근 등록" 구간으로 한 번 더 보여준다. */}
+                      효과가 큼). 검색창 안 목록에도 "최근 등록" 구간으로 한 번 더 보여준다.
+                      2026-09-19: "시계 아이콘만 있으니 뭔지 헷갈린다, 최근 방문/검색을 확실히 두
+                      메뉴로 나눠달라" 피드백 — 칩 위에 "최근 방문 고객사"라는 제목을 붙이고, 개수도
+                      5→10곳으로 늘렸다(백엔드 RECENT_CLIENT_LIMIT). 검색창에도 별도 라벨을 붙여서
+                      "최근 방문에서 고르기"와 "검색해서 고르기"가 서로 다른 영역임을 분명히 했다. */}
                   {recentClientOptions.length > 0 && (
-                    <div className="recent-client-chips">
-                      {recentClientOptions.map((c) => (
-                        <button
-                          type="button"
-                          key={`recent-chip-${c.id}`}
-                          className={`recent-client-chip${clientId === c.id ? ' active' : ''}`}
-                          onClick={() => selectClient(c)}
-                        >
-                          🕘 {c.name}
-                        </button>
-                      ))}
-                    </div>
+                    <>
+                      <div className="client-combobox-section-label" style={{ marginBottom: 4 }}>🕘 최근 방문 고객사 (최근 {recentClientOptions.length}곳 · 눌러서 바로 선택)</div>
+                      <div className="recent-client-chips">
+                        {recentClientOptions.map((c) => (
+                          <button
+                            type="button"
+                            key={`recent-chip-${c.id}`}
+                            className={`recent-client-chip${clientId === c.id ? ' active' : ''}`}
+                            onClick={() => selectClient(c)}
+                          >
+                            {c.name}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                  {recentClientOptions.length > 0 && (
+                    <div className="client-combobox-section-label" style={{ marginTop: 10, marginBottom: 4 }}>🔍 이름으로 검색해서 고르기</div>
                   )}
                   <input
                     value={clientQuery}
@@ -2092,7 +2102,7 @@ export default function EmployeeHome() {
                       )}
                       {!clientQuery.trim() && recentClientOptions.length > 0 && (
                         <>
-                          <div className="client-combobox-section-label">🕘 최근 등록</div>
+                          <div className="client-combobox-section-label">🕘 최근 방문 고객사</div>
                           {recentClientOptions.map((c) => (
                             <button
                               type="button"

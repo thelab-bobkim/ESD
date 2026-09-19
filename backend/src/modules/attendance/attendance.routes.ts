@@ -1181,7 +1181,10 @@ attendanceRouter.get('/clients', async (_req, res) => {
  * 고객사를 최신순으로 몇 개 뽑아서, 프론트가 검색창 위 원탭 칩으로 보여주거나 목록 맨 위에
  * 고정하는 데 쓴다. 사용자마다 다른 개인화된 목록이라 로그인한 본인 것만 조회한다.
  */
-const RECENT_CLIENT_LIMIT = 5;
+// 2026-09-19: "포티넷 칩이 시계아이콘 때문에 뭔지 헷갈린다, 최근 방문 10곳/검색 두 메뉴로
+// 나눠달라" 요청 — 개수를 5→10으로 늘리고, 프론트에서 이 목록을 "최근 방문 고객사"라는 명확한
+// 제목이 붙은 별도 영역으로 보여주도록 같이 바꿨다(index.tsx의 recent-client-chips 위 라벨 참고).
+const RECENT_CLIENT_LIMIT = 10;
 attendanceRouter.get('/clients-recent', async (req, res) => {
   const userId = req.authUser!.userId;
   // 같은 고객사가 하루에도 여러 번 나올 수 있어(오늘 대화의 발단이 된 그 상황) 넉넉히 가져온 뒤,
