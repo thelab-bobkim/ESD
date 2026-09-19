@@ -161,7 +161,7 @@ const USER_STATUS_OVERRIDES: Record<string, StatusOverride> = {
 interface MeResponse {
   name: string; email: string; roles: string[]; workType: string; department: string; assignedClient: string | null; mustChangePassword: boolean; locationConsentGiven: boolean; privacyConsentGiven: boolean;
 }
-interface StatusLog { status: string; changedAt: string; source: string; note: string | null; }
+interface StatusLog { status: string; changedAt: string; source: string; note: string | null; siteType: string | null; }
 interface MeAttendance {
   record: { clockInAt: string | null; clockOutAt: string | null } | null;
   latestStatus: StatusLog | null;
@@ -667,7 +667,18 @@ export default function EmployeeHome() {
         const c = findClientCoords(clientLocations, latestEffortClientName);
         return c ? { lat: c.latitude, lng: c.longitude } : null;
       }
-      return null; // 재택/이동중/야간작업/출장은 고정된 근무위치가 없어 이탈감지 대상이 아니다.
+      // 2026-09-20: 주말작업/야간작업은 "현장(ONSITE)"으로 등록된 경우엔 CLIENT_WORK/MEETING과
+      // 마찬가지로 고정된 근무위치가 있다(고객사 현장, 또는 고객사 없이 본사에서 하는 내부업무) —
+      // 대표이사 지적: 현장에서 30분 만에 작업이 끝나도 앱에서 "완료"를 늦게 누르면(예: 밤 10시)
+      // 근무시간이 실제보다 부풀려지는데, 이 상태들은 이탈감지 대상에서 아예 빠져 있어서 다른
+      // 상태(고객사작업/미팅 등)처럼 위치이탈로 자동 정정 제안이 뜨지 않았다. 원격(재택)은 집
+      // 좌표가 없어 이탈감지 자체가 불가능하므로 그대로 제외한다.
+      if ((currentStatus.status === 'NIGHT_WORK' || currentStatus.status === 'WEEKEND_WORK') && currentStatus.siteType === 'ONSITE') {
+        const c = findClientCoords(clientLocations, latestEffortClientName);
+        if (c) return { lat: c.latitude, lng: c.longitude };
+        return hqLocation; // 고객사 없이 "내부업무"로 현장(본사) 등록한 경우 — 본사를 기준 위치로 삼는다.
+      }
+      return null; // 재택/이동중/출장은 고정된 근무위치가 없어 이탈감지 대상이 아니다.
     }
 
     const checkArrival = async () => {

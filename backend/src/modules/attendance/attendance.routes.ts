@@ -133,6 +133,12 @@ async function cancelPendingAutoDepartureSuggestion(attendanceRecordId: string, 
 attendanceRouter.post('/clock-in', async (req, res) => {
   const userId = req.authUser!.userId;
   const workDate = todayDateOnly();
+  // 2026-09-20: "주말엔 주말작업만"이라는 규칙이 POST /status(WEEKEND_ONLY_WEEKEND_WORK 게이트,
+  // 아래 이 파일 다른 곳에 있음)엔 이미 있는데, 정작 이 "출근" 버튼 핸들러는 그 규칙을 모르고
+  // 무조건 본사근무를 잠정 등록해왔다 — 주말에 도착팝업을 못 보고(또는 무시하고) 그냥 저녁에
+  // 퇴근만 누르면, 실제로는 주말작업인데 본사근무 출근~퇴근으로 하루 전체가 남아 주말작업수당
+  // 산정에서 통째로 빠지는 치명적 문제였다(대표이사 지적). 아래에서 이 값으로 분기한다.
+  const isWeekendToday = isWeekendKST();
   // 좌표는 저장하지 않고, 본사와의 거리 비교에만 즉시 사용하고 폐기한다.
   const location = req.body?.location as { lat: number; lng: number } | undefined;
   // 카카오맵 역지오코딩 주소(frontend에서 이미 변환해서 보내줌) — 좌표와 마찬가지로 대조 후 폐기.
@@ -176,8 +182,12 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   // 출근하도록 안내한다 — "출근 버튼만 누르고 방치"로 위치확인 없이 출근이 확정되던 허점을 없앤다.
   // (본사 좌표가 아예 등록 안 되어 있으면 애초에 검증 자체가 불가능하므로, 관리자 설정 누락으로
   // 전 직원의 출근을 막는 사고를 피하기 위해 예전처럼 위치확인 없이 통과시킨다.)
-  const hqLat = await getPolicyString('HQ_LATITUDE', '');
-  const hqLng = await getPolicyString('HQ_LONGITUDE', '');
+  // 2026-09-20: 이 본사 위치확인 블록은 "본사근무" 잠정 등록 자격을 판단하기 위한 것이라, 애초에
+  // 본사근무가 성립할 수 없는 주말엔 실행할 필요가 없다(불필요한 정책 조회와, GPS를 아직 못 받은
+  // 경우의 LOCATION_REQUIRED_FOR_CLOCKIN 오차단으로 주말 출근이 막히는 것도 방지 — 주말작업은
+  // 클라이언트 현장에 실제로 갈 때만 위치를 요구하고, 사무실 원격작업이면 위치 자체가 필요 없다).
+  const hqLat = isWeekendToday ? '' : await getPolicyString('HQ_LATITUDE', '');
+  const hqLng = isWeekendToday ? '' : await getPolicyString('HQ_LONGITUDE', '');
   const hqConfigured = Boolean(hqLat && hqLng);
   let hqLocationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
   // 2026-09-09: 아래 GPS 좌표대조 블록은 hqVerifiedByAlternateMeans가 false일 때만 실행되는데,
@@ -218,24 +228,47 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   // 오늘 아직 상태를 하나도 안 골랐다면 일단 "본사근무"로 채워 넣는다. 위치가 실제로 확인된 경우
   // (locationConfirmed)엔 정식으로 확인된 본사근무로 남기고, 본사 좌표 미설정으로 검증을 못 한
   // 경우에만 예전처럼 "잠정" 표시를 남긴다(직원이 실제 상태를 고르면 그게 우선).
+  // 2026-09-20: 단, 주말엔 "본사근무"라는 값 자체가 성립하지 않는다(POST /status의
+  // WEEKEND_ONLY_WEEKEND_WORK 게이트 참고) — 이 잠정값을 아무도 안 고치고 방치한 채 퇴근을
+  // 누르면 실제로는 주말작업인데 본사근무 하루로 남아 주말작업수당 산정 대상에서 완전히 빠지는
+  // 치명적 문제가 있었다(대표이사 지적). 주말엔 "주말작업"으로 잠정 등록한다 — 위치는 실제
+  // 현장방문(고객사) 여부를 아직 몰라 대조할 대상이 없으므로 시도하지 않고 null로 둔다(직원이
+  // 나중에 실제 상태·고객사·현장여부를 고르면 그때 정식으로 위치대조가 이뤄진다).
   const { start: dayStartReal, end: dayEndReal } = realDayWindow(workDate);
   const todayStatus = await prisma.statusChangeLog.findFirst({ where: { userId, changedAt: { gte: dayStartReal, lt: dayEndReal } } });
   if (!todayStatus) {
-    const hqMismatchCoords = buildMismatchCoords(location, hqLocationResult);
-    await prisma.statusChangeLog.create({
-      data: {
-        userId,
-        status: 'HQ_WORKING',
-        source: 'WEB',
-        note: locationConfirmed ? null : PROVISIONAL_HQ_NOTE,
-        locationMatch: hqLocationResult?.locationMatch ?? null,
-        locationDistanceMeters: hqLocationResult?.locationDistanceMeters ?? null,
-        locationAccuracyMeters: hqLocationResult ? (accuracyMeters ?? null) : null,
-        locationCaptureStatus: location ? 'OK' : null,
-        mismatchLatitude: hqMismatchCoords.mismatchLatitude,
-        mismatchLongitude: hqMismatchCoords.mismatchLongitude,
-      },
-    });
+    if (isWeekendToday) {
+      await prisma.statusChangeLog.create({
+        data: {
+          userId,
+          status: 'WEEKEND_WORK',
+          source: 'WEB',
+          note: PROVISIONAL_HQ_NOTE,
+          locationMatch: null,
+          locationDistanceMeters: null,
+          locationAccuracyMeters: null,
+          locationCaptureStatus: null,
+          mismatchLatitude: null,
+          mismatchLongitude: null,
+        },
+      });
+    } else {
+      const hqMismatchCoords = buildMismatchCoords(location, hqLocationResult);
+      await prisma.statusChangeLog.create({
+        data: {
+          userId,
+          status: 'HQ_WORKING',
+          source: 'WEB',
+          note: locationConfirmed ? null : PROVISIONAL_HQ_NOTE,
+          locationMatch: hqLocationResult?.locationMatch ?? null,
+          locationDistanceMeters: hqLocationResult?.locationDistanceMeters ?? null,
+          locationAccuracyMeters: hqLocationResult ? (accuracyMeters ?? null) : null,
+          locationCaptureStatus: location ? 'OK' : null,
+          mismatchLatitude: hqMismatchCoords.mismatchLatitude,
+          mismatchLongitude: hqMismatchCoords.mismatchLongitude,
+        },
+      });
+    }
   }
 
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockInAt: record.clockInAt, locationConfirmed } });
@@ -1181,10 +1214,11 @@ attendanceRouter.get('/clients', async (_req, res) => {
  * 고객사를 최신순으로 몇 개 뽑아서, 프론트가 검색창 위 원탭 칩으로 보여주거나 목록 맨 위에
  * 고정하는 데 쓴다. 사용자마다 다른 개인화된 목록이라 로그인한 본인 것만 조회한다.
  */
-// 2026-09-19: "포티넷 칩이 시계아이콘 때문에 뭔지 헷갈린다, 최근 방문 10곳/검색 두 메뉴로
-// 나눠달라" 요청 — 개수를 5→10으로 늘리고, 프론트에서 이 목록을 "최근 방문 고객사"라는 명확한
-// 제목이 붙은 별도 영역으로 보여주도록 같이 바꿨다(index.tsx의 recent-client-chips 위 라벨 참고).
-const RECENT_CLIENT_LIMIT = 10;
+// 2026-09-19: "포티넷 칩이 시계아이콘 때문에 뭔지 헷갈린다, 최근 방문/검색을 명확히 나눠달라"는
+// 피드백에 이어 — "엔지니어·영업은 보통 10~15곳을 주로 다닌다"는 현장 기준을 듣고 15로 늘렸다.
+// 화면에는 검색창을 누르기 전까지 항상 떠 있지 않고, 검색창을 눌렀을 때 드롭다운으로만 보이게
+// 바꿨다(index.tsx — 늘 보이던 칩 목록을 없애고 clientPickerOpen 드롭다운에만 남김).
+const RECENT_CLIENT_LIMIT = 15;
 attendanceRouter.get('/clients-recent', async (req, res) => {
   const userId = req.authUser!.userId;
   // 같은 고객사가 하루에도 여러 번 나올 수 있어(오늘 대화의 발단이 된 그 상황) 넉넉히 가져온 뒤,
