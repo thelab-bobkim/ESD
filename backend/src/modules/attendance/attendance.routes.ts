@@ -1200,29 +1200,41 @@ attendanceRouter.get('/clients-recent', async (req, res) => {
   return res.json({ success: true, data });
 });
 
-const createClientSchema = z.object({ name: z.string().min(1) });
+// 2026-09-19: "위치 미확인"이 왜 이렇게 많은지 소스코드/실데이터로 원인을 파헤쳐보니, 이 즉석등록
+// 경로로 만들어진 고객사가 좌표 없이(관리자 후속 조치 누락) 다수 방치돼 있었다(관리자 확인 완료 —
+// 실제로 좌표 없는 고객사가 전부 이 경로로 만들어진 것이었음). "나중에 관리자가 채운다"는 기존
+// 방식이 실제로는 잘 안 지켜졌으므로, 아예 좌표 없이는 고객사 자체를 만들 수 없게 막는다 — 프론트
+// (MapPickerModal.tsx — admin/clients.tsx에서 이미 쓰던 것을 그대로 재사용)가 이름을 입력받은
+// 즉시 지도를 띄워 위치를 찍게 하고, 그 결과로
+// 나온 좌표(및 역지오코딩된 주소)를 여기로 같이 보낸다.
+const createClientSchema = z.object({
+  name: z.string().min(1),
+  latitude: z.number(),
+  longitude: z.number(),
+  address: z.string().optional(),
+});
 
 /**
  * 목록에 없는 새 고객사를 직원이 그 자리에서 등록한다(관리자 승인 대기 없이 즉시 사용 가능해야
- * "귀찮아서 안 적는다"는 원래 문제가 재발하지 않는다). 좌표는 비워두고, 나중에 관리자가
- * clients.routes.ts에서 좌표를 채우면 위치대조 기능도 자동으로 적용된다. 이름이 이미 있으면
+ * "귀찮아서 안 적는다"는 원래 문제가 재발하지 않는다). 2026-09-19부터 위치(지도에서 찍은 좌표)가
+ * 필수라, 이 경로로 만들어지는 고객사는 처음부터 위치대조가 바로 적용된다. 이름이 이미 있으면
  * (대소문자 무관) 새로 만들지 않고 기존 것을 그대로 반환한다 — 같은 고객사가 오타 없이도
- * 중복 등록되는 것을 막기 위함.
+ * 중복 등록되는 것을 막기 위함(이미 있는 고객사는 이번에 찍은 좌표로 덮어쓰지 않는다 — 기존 값이
+ * 관리자가 검증한 값일 수 있어, 좌표를 고치는 건 관리자 화면(clients.routes.ts)의 몫으로 남긴다).
  */
 attendanceRouter.post('/clients', async (req, res) => {
   const parsed = createClientSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '고객사명을 입력하세요.' } });
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '고객사명과 지도에서 위치를 선택해야 합니다.' } });
   }
+  const { latitude, longitude } = parsed.data;
   const name = parsed.data.name.trim();
+  const address = parsed.data.address?.trim() || '';
   const existing = await prisma.client.findFirst({ where: { name: { equals: name, mode: 'insensitive' } } });
   if (existing) {
     return res.json({ success: true, data: { id: existing.id, name: existing.name } });
   }
-  // address는 DB상 필수 컬럼이지만, 직원이 현장에서 급하게 등록하는 상황이라 주소까지 입력받지
-  // 않는다 — 빈 값으로 만들어두고, 나중에 관리자가 admin/clients.tsx에서 주소·좌표를 채워넣으면
-  // 위치대조 기능도 그때부터 적용된다.
-  const created = await prisma.client.create({ data: { name, address: '' } });
+  const created = await prisma.client.create({ data: { name, address, latitude, longitude } });
   return res.json({ success: true, data: { id: created.id, name: created.name } });
 });
 

@@ -7,6 +7,7 @@ import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, rever
 import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greetings';
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
+import MapPickerModal from '@/components/MapPickerModal';
 import SlideToConfirm from '@/components/SlideToConfirm';
 import PastDayCorrectionCard, { type PendingCorrectionRow } from '@/components/PastDayCorrectionCard';
 import CancelClockOutCard, { type CancelClockOutStatus } from '@/components/CancelClockOutCard';
@@ -344,6 +345,10 @@ export default function EmployeeHome() {
   const [clientQuery, setClientQuery] = useState('');
   const [clientPickerOpen, setClientPickerOpen] = useState(false);
   const [addingClientBusy, setAddingClientBusy] = useState(false);
+  // 2026-09-19: 신규 고객사는 이름만으로 바로 등록되지 않고, 이 상태가 채워지면 admin/clients.tsx
+  // 에서도 이미 쓰고 있는 MapPickerModal(카카오맵 검색+클릭 선택)이 뜬다 — "위치 미확인" 원인
+  // 분석 중 발견한 문제(현장 즉석등록 고객사가 좌표 없이 남는 것)를 근본적으로 막기 위한 조치.
+  const [clientLocationPicker, setClientLocationPicker] = useState<{ name: string } | null>(null);
   const hqPromptSnoozedUntilRef = useRef(0);
   const clientPromptSnoozedUntilRef = useRef(0);
   // 마지막 근무위치(본사/고객사) 이탈 감지용 — 계속 벗어나 있는 시간을 재기 위한 시작시각과,
@@ -1297,21 +1302,30 @@ export default function EmployeeHome() {
     setClientPickerOpen(false);
   }
 
-  /** 목록에 없는 새 고객사를 그 자리에서 등록하고 바로 선택 상태로 만든다. */
-  async function addNewClientAndSelect() {
+  /** 목록에 없는 새 고객사 이름을 눌렀을 때 — 바로 등록하지 않고 위치 선택 지도를 띄운다
+   * (2026-09-19: 위치 없이 이름만으로 등록되던 기존 방식이 "위치 미확인" 누적의 큰 원인이었음). */
+  function addNewClientAndSelect() {
     const name = clientQuery.trim();
+    if (!name || addingClientBusy) return;
+    setClientLocationPicker({ name });
+  }
+
+  /** 지도에서 위치를 확정한 뒤 실제로 고객사를 생성하고 바로 선택 상태로 만든다. */
+  async function confirmNewClientWithLocation(lat: number, lng: number, address?: string) {
+    const name = clientLocationPicker?.name;
     if (!name || addingClientBusy) return;
     setAddingClientBusy(true);
     try {
       const created = await apiFetch<{ id: string; name: string }>('/attendance/clients', {
         method: 'POST',
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, latitude: lat, longitude: lng, ...(address ? { address } : {}) }),
       });
       setClientOptions((prev) => (prev.some((c) => c.id === created.id) ? prev : [...prev, created].sort((a, b) => a.name.localeCompare(b.name))));
       setClientName(created.name);
       setClientId(created.id);
       setClientQuery(created.name);
       setClientPickerOpen(false);
+      setClientLocationPicker(null);
     } catch {
       setMessage('고객사 등록에 실패했습니다. 다시 시도해주세요.');
       setMessageIsError(true);
@@ -1738,6 +1752,13 @@ export default function EmployeeHome() {
                   setShowClockOutConfirm(false);
                   setClockOutThenNightWork(false);
                 }}
+              />
+            )}
+            {clientLocationPicker && (
+              <MapPickerModal
+                initialAddress={clientLocationPicker.name}
+                onClose={() => setClientLocationPicker(null)}
+                onSelect={(lat, lng, address) => confirmNewClientWithLocation(lat, lng, address)}
               />
             )}
             <div className="notice-inline-orange">
