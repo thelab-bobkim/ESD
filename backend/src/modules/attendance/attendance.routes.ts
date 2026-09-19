@@ -444,9 +444,19 @@ const statusSchema = z.object({
   siteType: z.enum(['REMOTE', 'ONSITE']).optional(),
 });
 
-// 이 상태들만 GPS 위치대조 대상이다(고객사 위치와 비교할 대상이 있는 경우만).
-// REMOTE(재택)는 집에서 원격 접속하는 게 정상이라 위치대조 대상에 넣지 않는다(의도적 제외).
+// 이 상태들은 고객사를 반드시 알아야 한다(CLIENT_NAME_REQUIRED 판정에만 쓴다) — 위치대조
+// "여부" 판단에는 아래 LOCATION_CHECK_ELIGIBLE_STATUSES를 대신 쓴다(둘을 분리한 이유는 바로
+// 아래 주석 참고). REMOTE(재택)는 집에서 원격 접속하는 게 정상이라 위치대조 대상에 넣지 않는다
+// (의도적 제외).
 const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
+// 2026-09-19: "야간작업은 프리세일즈가 사무실에서 하는 제안작업도 있고, 엔지니어가 고객사를
+// 원격/현장으로 지원하는 경우도 있다"(사용자 피드백) — 고객사미팅/고객사작업과 똑같이 목록에서
+// 고르고(새 고객사는 지도로 등록) 현장방문(ONSITE)이면 위치까지 대조하도록 야간작업/주말작업도
+// 포함한다. 다만 이 둘은 "내부업무(고객사 없음)"도 정상 케이스라 고객사명을 필수로 만들면 안 되므로
+// LOCATION_CHECK_STATUSES(CLIENT_NAME_REQUIRED 판정용)에는 넣지 않고, 위치대조 계산이 이뤄지는
+// 지점들에서만 이 확장 집합을 쓴다 — 고객사명을 실제로 입력한 경우에만 뒤 로직이 동작하므로
+// 내부업무(고객사명 미입력)는 자연히 위치대조를 건너뛴다.
+const LOCATION_CHECK_ELIGIBLE_STATUSES = new Set([...LOCATION_CHECK_STATUSES, 'NIGHT_WORK', 'WEEKEND_WORK']);
 // 이 상태들은 "원격/현장"을 반드시 골라야 한다 — 야간작업 보고서에도 현장 여부가 필요하고
 // (VERITAS 등 상주 백업팀의 야간 현장작업 사례), 고객사미팅/작업은 아래 직출퇴 판단에도 쓰인다.
 const REQUIRE_SITE_TYPE_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
@@ -667,7 +677,7 @@ attendanceRouter.post('/status', async (req, res) => {
   // 필요가 없으므로, 이 경우엔 위치대조 자체를 하지 않는다(현장/ONSITE만 기존처럼 대조).
   let locationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
   let matchedClientForLocation: { latitude: number | null; longitude: number | null } | null = null;
-  if (LOCATION_CHECK_STATUSES.has(status) && effort?.clientName && siteType !== 'REMOTE') {
+  if (LOCATION_CHECK_ELIGIBLE_STATUSES.has(status) && effort?.clientName && siteType !== 'REMOTE') {
     matchedClientForLocation = effort.clientId
       ? await prisma.client.findUnique({ where: { id: effort.clientId } })
       : await prisma.client.findFirst({
@@ -684,16 +694,23 @@ attendanceRouter.post('/status', async (req, res) => {
   //   있으면서도 계속 막히는 사례가 실제로 발생해(관리자 확인 요청) 막지는 않되, locationMatch=false·
   //   거리값을 그대로 기록해 상황판에 "위치 불일치"로 표시되게 한다 — 관리자가 필요시 사후 확인.
   let locationMismatchException = false;
-  if (LOCATION_CHECK_STATUSES.has(status) && matchedClientForLocation?.latitude != null && matchedClientForLocation?.longitude != null) {
+  if (LOCATION_CHECK_ELIGIBLE_STATUSES.has(status) && matchedClientForLocation?.latitude != null && matchedClientForLocation?.longitude != null) {
     if (locationResult && !locationResult.locationMatch) {
       locationMismatchException = true;
     }
     if (!locationResult) {
       const { start: dayStartForLocation, end: dayEndForLocation } = realDayWindow(todayDateOnly());
+      // 2026-09-19: 야간작업/주말작업도 이 대상에 포함됐으니, "오늘 첫 실패는 봐준다" 집계도
+      // 이 상태들의 실패까지 같이 세야 한다(고객사미팅/작업만 세면 야간작업 쪽은 매번 0건으로 나와
+      // 봐주기가 무한정 적용되는 허점이 생긴다). LOCATION_CHECK_ELIGIBLE_STATUSES를 그대로 spread
+      // 하면 string[]로 넓혀져 Prisma의 AttendanceStatus enum 타입과 안 맞을 수 있어(로컬 Prisma
+      // 스텁은 못 잡고 실제 서버 빌드에서만 걸리는 유형의 문제 — 과거에도 한 번 겪음), 여기서는
+      // 안전하게 리터럴로 그대로 나열한다(이 네 상태는 위 LOCATION_CHECK_ELIGIBLE_STATUSES 정의와
+      // 반드시 같이 유지되어야 한다).
       const priorLocationFailures = await prisma.statusChangeLog.count({
         where: {
           userId,
-          status: { in: ['CLIENT_MEETING', 'CLIENT_WORK'] },
+          status: { in: ['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK'] },
           changedAt: { gte: dayStartForLocation, lt: dayEndForLocation },
           locationCaptureStatus: { notIn: ['OK'] },
         },
@@ -757,7 +774,7 @@ attendanceRouter.post('/status', async (req, res) => {
     // 남긴다 — 위치대조 자체를 안 하는 상태(재택 등)에는 accuracyMeters가 와도 의미가 없다.
     locationAccuracyMeters: (locationResult ?? hqLocationResult) ? (accuracyMeters ?? null) : null,
     siteType: siteType ?? null,
-    locationCaptureStatus: (LOCATION_CHECK_STATUSES.has(status) || status === 'HQ_WORKING') ? (locationCaptureStatus ?? null) : null,
+    locationCaptureStatus: (LOCATION_CHECK_ELIGIBLE_STATUSES.has(status) || status === 'HQ_WORKING') ? (locationCaptureStatus ?? null) : null,
     mismatchLatitude: statusMismatchCoords.mismatchLatitude,
     mismatchLongitude: statusMismatchCoords.mismatchLongitude,
   };

@@ -58,8 +58,13 @@ const SIMPLE_CLIENT_STATUSES = new Set(['RESIDENT_ONSITE']);
 // 백업팀 등의 야간/고객사 작업 보고서 형식(예: VERITAS 야간작업 보고 메일)을 참고해 추가한 필드.
 // 백엔드 attendance.routes.ts의 REQUIRE_SITE_TYPE_STATUSES와 반드시 같은 값을 유지해야 한다.
 const SITE_DETAIL_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
-// 백엔드 LOCATION_CHECK_STATUSES와 동일 — 이 상태들만 등록 순간 좌표를 등록된 고객사와 대조한다.
+// 백엔드 LOCATION_CHECK_STATUSES와 동일 — 이 상태들은 고객사명이 필수다(비워두면 등록 자체가 막힘).
 const LOCATION_CHECK_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK']);
+// 2026-09-19: 백엔드 LOCATION_CHECK_ELIGIBLE_STATUSES와 동일 — 야간작업/주말작업도 고객사미팅/
+// 작업과 똑같은 "목록에서 선택 + 새 고객사는 지도로 등록" 화면을 쓰고, 고객사를 실제로 골랐고
+// 현장(ONSITE)이면 위치까지 대조한다. 다만 이 둘은 고객사명이 필수는 아니라서(내부업무 허용)
+// LOCATION_CHECK_STATUSES에는 넣지 않고, "이 화면을 보여줄지/위치캡처를 시도할지" 판단에만 쓴다.
+const LOCATION_CHECK_ELIGIBLE_STATUSES = new Set([...LOCATION_CHECK_STATUSES, 'NIGHT_WORK', 'WEEKEND_WORK']);
 // 2026-09-14: "고객작업과 야간작업 주말작업은 모두 시작시간과 끝나는 시간이 있어야 됩니다" 요청
 // 반영 — 이 세 상태는 완료시간도 필수다(백엔드 REQUIRE_END_TIME_STATUSES와 동일하게 유지).
 // 고객사미팅은 요청에서 제외되어 있어 기존처럼 완료시간 선택(진행중 허용)을 유지한다.
@@ -1186,7 +1191,14 @@ export default function EmployeeHome() {
     }
     // 고객사미팅/고객사작업은 등록 순간 위치를 확인해서 등록된 고객사 위치와 대조한다(동의한 경우에만).
     // 위치 확보 실패 사유(locationStatus)까지 같이 보내야 서버가 "오늘 첫 실패는 봐준다" 판단을 할 수 있다.
-    const needsLocationCheck = LOCATION_CHECK_STATUSES.has(code) || code === 'HQ_WORKING';
+    // 2026-09-19: 야간작업/주말작업은 고객사를 실제로 골랐고(내부업무면 clientName이 비어있음) 현장
+    // (ONSITE)으로 등록한 경우에만 시도한다 — 원격지원/내부업무까지 매번 GPS 권한을 물어보면
+    // 번거로우니, 서버가 실제로 대조를 시도하는 조건(effort.clientName && siteType!=='REMOTE')과
+    // 똑같이 맞춘다(backend attendance.routes.ts 참고).
+    const needsLocationCheck =
+      LOCATION_CHECK_STATUSES.has(code) ||
+      code === 'HQ_WORKING' ||
+      (LOCATION_CHECK_ELIGIBLE_STATUSES.has(code) && Boolean(clientName.trim()) && siteType === 'ONSITE');
     // 본사근무도 고객사작업/미팅과 동일하게 위치 확보 실패 사유까지 같이 보낸다("오늘 첫 실패는 봐준다" 판단용).
     const detailFormLocationMeta: { accuracy: number | null; jumpDetected: boolean } = { accuracy: null, jumpDetected: false };
     const refreshDetailFormLocation = async () => {
@@ -2008,11 +2020,36 @@ export default function EmployeeHome() {
                 </p>
               )}
               <label className="field-label">
-                {detailStatus === 'HQ_WORKING' ? '고객사/관련 프로젝트 (필수)' : detailStatus === 'REMOTE' ? '지원 고객사' : LOCATION_CHECK_STATUSES.has(detailStatus) ? '고객사명 (필수 — 목록에서 선택)' : '고객사명'}
-                {['NIGHT_WORK', 'WEEKEND_WORK'].includes(detailStatus ?? '') ? '(내부 작업이면 비워두세요)' : ''}
+                {detailStatus === 'HQ_WORKING'
+                  ? '고객사/관련 프로젝트 (필수)'
+                  : detailStatus === 'REMOTE'
+                    ? '지원 고객사'
+                    : LOCATION_CHECK_STATUSES.has(detailStatus)
+                      ? '고객사명 (필수 — 목록에서 선택)'
+                      : ['NIGHT_WORK', 'WEEKEND_WORK'].includes(detailStatus ?? '')
+                        ? '고객사명 (목록에서 선택 — 내부 업무면 아래 버튼으로 비워두세요)'
+                        : '고객사명'}
               </label>
-              {LOCATION_CHECK_STATUSES.has(detailStatus) ? (
+              {LOCATION_CHECK_ELIGIBLE_STATUSES.has(detailStatus) ? (
                 <div className="client-combobox">
+                  {/* 2026-09-19: 야간작업/주말작업은 프리세일즈의 사무실 제안작업처럼 고객사가 아예
+                      없는 "내부업무"도 정상 케이스라(사용자 피드백), 검색만으로는 "선택 안 함"을
+                      표현할 수 없어 이 버튼을 따로 둔다 — 누르면 고객사 없이 그대로 등록된다. */}
+                  {['NIGHT_WORK', 'WEEKEND_WORK'].includes(detailStatus ?? '') && (
+                    <button
+                      type="button"
+                      className={`recent-client-chip${!clientName.trim() && !clientQuery.trim() ? ' active' : ''}`}
+                      style={{ marginBottom: 8 }}
+                      onClick={() => {
+                        setClientName('');
+                        setClientId('');
+                        setClientQuery('');
+                        setClientPickerOpen(false);
+                      }}
+                    >
+                      🏢 내부업무(고객사 없음)
+                    </button>
+                  )}
                   {/* 2026-09-18: "최근 등록한 고객사가 매번 위로 오면 좋겠다" 요청 — 검색창을 열지
                       않고도 자주 가는 고객사를 원탭으로 바로 고를 수 있게 한다(반복 방문일수록
                       효과가 큼). 검색창 안 목록에도 "최근 등록" 구간으로 한 번 더 보여준다. */}
@@ -2102,7 +2139,11 @@ export default function EmployeeHome() {
                     </div>
                   )}
                   {!clientName.trim() && (
-                    <p className="hint-box" style={{ marginTop: 4 }}>* 목록에서 고객사를 선택하거나, 목록에 없으면 새로 등록해주세요.</p>
+                    <p className="hint-box" style={{ marginTop: 4 }}>
+                      {['NIGHT_WORK', 'WEEKEND_WORK'].includes(detailStatus ?? '')
+                        ? '* 목록에서 고객사를 선택하거나, 없으면 새로 등록해주세요 — 고객사가 없는 내부업무면 위 "내부업무" 버튼을 눌러주세요.'
+                        : '* 목록에서 고객사를 선택하거나, 목록에 없으면 새로 등록해주세요.'}
+                    </p>
                   )}
                 </div>
               ) : (
