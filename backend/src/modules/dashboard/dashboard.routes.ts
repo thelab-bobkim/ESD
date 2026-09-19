@@ -13,7 +13,10 @@ import { realDayWindow, PROVISIONAL_HQ_NOTE } from '../../common/attendance-help
 const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'WEEKEND_WORK']);
 
 // 위치대조를 실제로 시도하는 상태 — 프론트 admin/dashboard.tsx의 동명 상수와 동일하게 유지.
-const LOCATION_CHECK_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
+// 2026-09-19: 야간작업/주말작업도 현장(ONSITE)+고객사 등록이면 attendance.routes.ts가 위치대조를
+// 하도록 이미 바뀌었는데, 상황판(이 파일)이 여전히 옛 세 상태만 봐서 그 결과가 화면에 전혀 안
+// 나타나는 문제가 있었다(관리자 문의 — 주말작업/야간작업 인원의 위치 배지가 안 보임). 여기 추가.
+const LOCATION_CHECK_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
 
 // 2026-09-18: "불일치 건만 좌표 저장" 정책 — 원본 GPS 좌표는 상황판을 볼 수 있는 모든 역할
 // (TEAM_LEAD/PILOT_MANAGER 포함)이 아니라, 더 좁은 관리자 역할에만 노출한다(사용자 승인 사항:
@@ -90,7 +93,11 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
             where: {
               userId: u.id,
               changedAt: { gte: dayStart, lt: dayEnd },
-              status: { in: ['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK'] },
+              // 2026-09-19: 위 LOCATION_CHECK_STATUSES를 그대로 spread하면 string[]로 넓혀져 Prisma의
+              // AttendanceStatus enum 타입과 안 맞을 수 있어(로컬 스텁은 못 잡고 실제 서버 빌드에서만
+              // 걸리는 유형 — attendance.routes.ts에서도 겪음) 안전하게 리터럴로 나열한다. 이 네 값은
+              // 위 LOCATION_CHECK_STATUSES 정의와 반드시 같이 유지되어야 한다.
+              status: { in: ['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK'] },
               locationMatch: true,
             },
             orderBy: { changedAt: 'desc' },

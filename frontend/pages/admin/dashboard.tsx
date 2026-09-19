@@ -42,7 +42,23 @@ const REFRESH_INTERVAL_MS = 15000; // 15초마다 자동 갱신 (실시간에 �
 // 위치대조를 실제로 시도하는 상태만 — 백엔드 LOCATION_CHECK_STATUSES(고객사미팅/작업) +
 // HQ_WORKING(본사 위치 자체 확인, attendance.routes.ts 참고)과 동일하게 맞춘다. 나머지 상태
 // (재택/출장/이동중 등)는 애초에 위치를 확인하지 않으므로 배지 자체를 안 보여준다.
-const LOCATION_CHECK_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK']);
+// 2026-09-19: 야간작업/주말작업도 현장(ONSITE)+고객사 등록이면 위치대조를 하도록 바뀌었는데
+// (attendance.routes.ts LOCATION_CHECK_ELIGIBLE_STATUSES) 여기 상수가 안 따라와서 그 결과가
+// 상황판에 전혀 안 보였다(관리자 지적 — 주말작업/야간작업 현장 근무자 위치확인 필요). 추가.
+// 단, 이 두 상태는 고객사 없이 등록하는 "내부업무"도 정상적으로 존재하고 그 경우 애초에 위치대조를
+// 시도하지 않으므로(clientName 없음), 아래 각 사용처에서 locationCaptureStatus도 같이 확인해서
+// "시도 자체를 안 한 경우"까지 위치미확인으로 잘못 집계되지 않게 걸러낸다.
+const LOCATION_CHECK_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK']);
+// 위 두 상태는 고객사 선택이 선택사항(내부업무 허용)이라, locationMatch/locationCaptureStatus가
+// 둘 다 null이면 "위치대조를 시도조차 안 한 것"(내부업무)과 "확인 결과가 아직 없는 것"을 구분할 수
+// 없다 — 원격(REMOTE)과 동일하게 집계·배지 표시에서 제외한다.
+const NO_CLIENT_OPTIONAL_LOCATION_STATUSES = new Set(['NIGHT_WORK', 'WEEKEND_WORK']);
+function isLocationCheckSkippedForRow(e: EmployeeRow): boolean {
+  return (
+    e.siteType === 'REMOTE' ||
+    (NO_CLIENT_OPTIONAL_LOCATION_STATUSES.has(e.status ?? '') && e.locationMatch === null && e.locationCaptureStatus === null)
+  );
+}
 
 // "한눈에 보는 동선"용 대분류 — 9개 세부상태를 4개 그룹으로 묶어서 즉시 파악되게 한다.
 const MACRO_GROUPS: { key: string; label: string; icon: string; color: string; statuses: string[] }[] = [
@@ -356,8 +372,9 @@ export default function AdminDashboard() {
     for (const e of filteredEmployees) {
       if (e.clockedOut) continue;
       if (!e.status || !LOCATION_CHECK_STATUSES.has(e.status)) continue;
-      // "원격"으로 등록된 건 위치대조 자체를 안 하므로 확인/불일치/미확인 어느 쪽으로도 세지 않는다.
-      if (e.siteType === 'REMOTE') continue;
+      // "원격"으로 등록된 건, 그리고 야간작업/주말작업의 "내부업무"(고객사 없음) 등록건은 위치대조
+      // 자체를 안 하므로 확인/불일치/미확인 어느 쪽으로도 세지 않는다.
+      if (isLocationCheckSkippedForRow(e)) continue;
       if (!e.locationConsentGiven || !e.privacyConsentGiven) { noConsent += 1; continue; }
       if (e.locationMatch === true) matched += 1;
       else if (e.locationMatch === false) mismatched += 1;
@@ -372,9 +389,10 @@ export default function AdminDashboard() {
     return filteredEmployees.filter((e) => {
       if (e.clockedOut) return false;
       if (!e.status || !LOCATION_CHECK_STATUSES.has(e.status)) return false;
-      // "원격"으로 등록된 건 위치대조 자체를 안 해서 locationMatch가 항상 null인 게 정상이다 —
-      // 이 경우까지 "확인 필요"로 띄우면 관리자가 매번 확인해도 해소되지 않는 항목이 계속 남는다.
-      if (e.siteType === 'REMOTE') return false;
+      // "원격"으로 등록된 건, 그리고 야간작업/주말작업의 "내부업무"(고객사 없음) 등록건은 위치대조
+      // 자체를 안 해서 locationMatch가 항상 null인 게 정상이다 — 이 경우까지 "확인 필요"로 띄우면
+      // 관리자가 매번 확인해도 해소되지 않는 항목이 계속 남는다.
+      if (isLocationCheckSkippedForRow(e)) return false;
       if (!e.locationConsentGiven || !e.privacyConsentGiven) return true;
       return e.locationMatch !== true;
     });
@@ -851,7 +869,7 @@ export default function AdminDashboard() {
                     {code === 'CLOCKED_OUT' && e.status && STATUS_META[e.status] && (
                       <div className="meta">마지막 상태: {STATUS_META[e.status].icon} {STATUS_META[e.status].label}</div>
                     )}
-                    {e.status && LOCATION_CHECK_STATUSES.has(e.status) && e.siteType !== 'REMOTE' && (() => {
+                    {e.status && LOCATION_CHECK_STATUSES.has(e.status) && !isLocationCheckSkippedForRow(e) && (() => {
                       const badge = locationBadge(e);
                       return badge && (
                         <div className="meta" style={{ color: badge.color, fontWeight: 600 }} title={e.locationCaptureStatus ?? undefined}>
