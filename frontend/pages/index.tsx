@@ -2050,33 +2050,12 @@ export default function EmployeeHome() {
                       🏢 내부업무(고객사 없음)
                     </button>
                   )}
-                  {/* 2026-09-18: "최근 등록한 고객사가 매번 위로 오면 좋겠다" 요청 — 검색창을 열지
-                      않고도 자주 가는 고객사를 원탭으로 바로 고를 수 있게 한다(반복 방문일수록
-                      효과가 큼). 검색창 안 목록에도 "최근 등록" 구간으로 한 번 더 보여준다.
-                      2026-09-19: "시계 아이콘만 있으니 뭔지 헷갈린다, 최근 방문/검색을 확실히 두
-                      메뉴로 나눠달라" 피드백 — 칩 위에 "최근 방문 고객사"라는 제목을 붙이고, 개수도
-                      5→10곳으로 늘렸다(백엔드 RECENT_CLIENT_LIMIT). 검색창에도 별도 라벨을 붙여서
-                      "최근 방문에서 고르기"와 "검색해서 고르기"가 서로 다른 영역임을 분명히 했다. */}
-                  {recentClientOptions.length > 0 && (
-                    <>
-                      <div className="client-combobox-section-label" style={{ marginBottom: 4 }}>🕘 최근 방문 고객사 (최근 {recentClientOptions.length}곳 · 눌러서 바로 선택)</div>
-                      <div className="recent-client-chips">
-                        {recentClientOptions.map((c) => (
-                          <button
-                            type="button"
-                            key={`recent-chip-${c.id}`}
-                            className={`recent-client-chip${clientId === c.id ? ' active' : ''}`}
-                            onClick={() => selectClient(c)}
-                          >
-                            {c.name}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                  {recentClientOptions.length > 0 && (
-                    <div className="client-combobox-section-label" style={{ marginTop: 10, marginBottom: 4 }}>🔍 이름으로 검색해서 고르기</div>
-                  )}
+                  {/* 2026-09-18: "최근 등록한 고객사가 매번 위로 오면 좋겠다" 요청으로 검색창 위에
+                      칩을 항상 띄웠었는데, 2026-09-19 피드백 — "포티넷 칩이 뭔지 헷갈린다, 검색창을
+                      누르기 전엔 숨겨뒀다가 누르면 드롭다운으로 보여달라"는 요청으로 늘 보이던 칩을
+                      없애고, 아래 드롭다운(clientPickerOpen)의 "최근 방문 고객사" 구간으로만 보여
+                      준다 — 엔지니어/영업이 보통 10~15곳을 다닌다고 해서 개수도 15로 늘렸다
+                      (백엔드 RECENT_CLIENT_LIMIT). */}
                   <input
                     value={clientQuery}
                     onChange={(e) => {
@@ -2087,7 +2066,7 @@ export default function EmployeeHome() {
                     }}
                     onFocus={() => setClientPickerOpen(true)}
                     onBlur={() => setTimeout(() => setClientPickerOpen(false), 150)}
-                    placeholder="고객사명 검색 (예: OO상사)"
+                    placeholder="눌러서 최근 방문 고객사 보기 · 검색은 이름 입력 (예: OO상사)"
                   />
                   {/* 2026-09-04: position:absolute로 입력창 아래 띄우던 걸 일반 흐름으로 바꿨다 —
                       모바일에서 화면키보드가 뜨면 절대좌표로 겹쳐 그려지는 목록이 키보드에 가려져
