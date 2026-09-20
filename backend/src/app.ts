@@ -21,6 +21,7 @@ import { pushRouter } from './modules/push/push.routes';
 import { clientsRouter } from './modules/clients/clients.routes';
 import { weatherRouter } from './modules/weather/weather.routes';
 import { messagesRouter } from './modules/messages/messages.routes';
+import { auditLocationRouter } from './modules/audit-location/audit-location.routes';
 
 export function createApp() {
   const app = express();
@@ -77,6 +78,7 @@ export function createApp() {
   app.use('/api/v1/clients', clientsRouter);
   app.use('/api/v1/weather', weatherRouter);
   app.use('/api/v1/messages', messagesRouter);
+  app.use('/api/v1/audit-location', auditLocationRouter);
 
   // 공통 에러 핸들러
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

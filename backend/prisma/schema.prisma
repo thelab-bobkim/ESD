@@ -41,6 +41,12 @@ enum RoleCode {
   HR_ADMIN
   SYSTEM_ADMIN
   PILOT_MANAGER
+  // 2026-09-20: "감사인" 권한(대표이사 요청) — 재택(REMOTE) 근무 등록 시 캡처된 원본 GPS 좌표를
+  // 열람할 수 있는 유일한 권한. HR_ADMIN/SYSTEM_ADMIN을 포함한 일반 관리자도 이 권한이 따로
+  // 없으면 볼 수 없다("특정 감사인만" — 관리자 전체가 아니라 지정된 소수만). SYSTEM_ADMIN이
+  // /admin/auditors 화면에서 특정 계정에 개별 부여/회수한다(common/ensure-roles.ts가 이 코드값의
+  // Role 행 존재를 서버 시작 시 보장함).
+  AUDITOR
 }
 
 enum AttendanceStatus {
@@ -364,6 +370,15 @@ model StatusChangeLog {
   // "GPS 확보 실패는 하루 1회만 봐주고, 그 다음부터는 위치가 실제로 일치해야 등록을 허용"하는
   // 정책 판단에 쓴다(attendance.routes.ts 참고) — clock_out_location_status와 같은 목적.
   locationCaptureStatus LocationCaptureStatus? @map("location_capture_status")
+  // 2026-09-20: "GPS 캡처만 필수화" 정책(대표이사 승인)의 후속 — 재택(REMOTE) 등록은 대조할 등록된
+  // 좌표가 없어(집 주소를 서버에 저장하지 않기로 함) locationMatch/mismatchLatitude 방식이 적용되지
+  // 않는다. 그 대신 "감사인" 권한자만 열람 가능한 별도 컬럼에 원본 좌표를 남긴다 — 근무태만 의심
+  // 등으로 사후 확인이 필요할 때만 감사팀이 확인하고, 일반 관리자(HR_ADMIN/SYSTEM_ADMIN 포함)에게는
+  // 노출하지 않는다(audit-location.routes.ts, requireRole('AUDITOR')). mismatchLatitude/Longitude와
+  // 동일하게 보관기간이 지나면 자동삭제한다(REMOTE_AUDIT_COORD_RETENTION_DAYS,
+  // mismatch-coord-purge-scheduler.ts).
+  remoteAuditLatitude  Float? @map("remote_audit_latitude")
+  remoteAuditLongitude Float? @map("remote_audit_longitude")
 
   @@map("status_change_logs")
 }

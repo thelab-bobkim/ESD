@@ -1,5 +1,5 @@
 import { prisma } from '../../common/prisma';
-import { MISMATCH_COORD_RETENTION_DAYS } from '../../common/location';
+import { MISMATCH_COORD_RETENTION_DAYS, REMOTE_AUDIT_COORD_RETENTION_DAYS } from '../../common/location';
 
 /**
  * "불일치 건만 좌표 저장" 정책(2026-09-18, 사용자 승인)의 짝 — 보관기간 자동삭제 스케줄러.
@@ -17,7 +17,12 @@ export function startMismatchCoordPurgeScheduler() {
 
   const runPurge = async () => {
     const cutoff = new Date(Date.now() - MISMATCH_COORD_RETENTION_DAYS * 24 * 60 * 60 * 1000);
-    const [statusLogResult, residentCheckinResult] = await Promise.all([
+    // 2026-09-20: "감사인 전용 재택 위치" 좌표(remoteAuditLatitude/Longitude)도 같은 원칙(위치정보
+    // 보호법상 목적 달성 시 즉시파기)으로 별도 보관기간이 지나면 자동삭제한다 — 지금은 두 보관기간
+    // 값이 같지만(REMOTE_AUDIT_COORD_RETENTION_DAYS), 나중에 감사 목적상 서로 달라질 수 있어
+    // cutoff 계산을 분리해뒀다.
+    const remoteAuditCutoff = new Date(Date.now() - REMOTE_AUDIT_COORD_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    const [statusLogResult, residentCheckinResult, remoteAuditResult] = await Promise.all([
       prisma.statusChangeLog.updateMany({
         where: {
           changedAt: { lt: cutoff },
@@ -32,11 +37,18 @@ export function startMismatchCoordPurgeScheduler() {
         },
         data: { mismatchLatitude: null, mismatchLongitude: null },
       }),
+      prisma.statusChangeLog.updateMany({
+        where: {
+          changedAt: { lt: remoteAuditCutoff },
+          OR: [{ remoteAuditLatitude: { not: null } }, { remoteAuditLongitude: { not: null } }],
+        },
+        data: { remoteAuditLatitude: null, remoteAuditLongitude: null },
+      }),
     ]);
-    if (statusLogResult.count > 0 || residentCheckinResult.count > 0) {
+    if (statusLogResult.count > 0 || residentCheckinResult.count > 0 || remoteAuditResult.count > 0) {
       // eslint-disable-next-line no-console
       console.log(
-        `[MismatchCoordPurge] 보관기간(${MISMATCH_COORD_RETENTION_DAYS}일) 경과 좌표 삭제: statusChangeLog=${statusLogResult.count}건, residentCheckin=${residentCheckinResult.count}건`
+        `[MismatchCoordPurge] 보관기간 경과 좌표 삭제: statusChangeLog(불일치)=${statusLogResult.count}건, residentCheckin=${residentCheckinResult.count}건, 재택위치감사(${REMOTE_AUDIT_COORD_RETENTION_DAYS}일)=${remoteAuditResult.count}건`
       );
     }
   };

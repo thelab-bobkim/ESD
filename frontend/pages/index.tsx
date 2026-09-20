@@ -397,6 +397,9 @@ export default function EmployeeHome() {
   );
   // 관리자 권한 계정은 퇴근 후에도 테스트할 수 있게 상태변경 잠금에서 예외로 둔다.
   const isAdminAccount = Boolean(me?.roles?.some((r) => ['SYSTEM_ADMIN', 'HR_ADMIN'].includes(r)));
+  // 2026-09-20: "감사인" 권한(대표이사 요청) — 재택 위치 열람 화면(admin/audit-location)은 일반
+  // 관리자(SYSTEM_ADMIN/HR_ADMIN)에게도 안 보이고, 이 권한을 개별로 부여받은 계정에만 보인다.
+  const isAuditorAccount = Boolean(me?.roles?.includes('AUDITOR'));
   // 부서별/개인별 상태 아이콘·입력폼 커스터마이징(DEPARTMENT_STATUS_OVERRIDES, USER_STATUS_OVERRIDES
   // 참고) — 개인별 설정이 있으면 그게 우선이고, 없으면 부서 설정을 쓴다. 둘 다 없으면 undefined이고,
   // 그 경우 아래 로직은 전부 기존 동작(9개 전부 + 세부폼) 그대로다.
@@ -1419,6 +1422,15 @@ export default function EmployeeHome() {
               onClick={() => router.push('/admin/dashboard')}
             >
               관리자 화면
+            </button>
+          )}
+          {isAuditorAccount && (
+            <button
+              className="secondary"
+              style={{ width: 'auto', margin: 0, whiteSpace: 'nowrap' }}
+              onClick={() => router.push('/admin/audit-location')}
+            >
+              감사 기록
             </button>
           )}
           <button

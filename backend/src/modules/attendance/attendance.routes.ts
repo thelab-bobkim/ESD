@@ -853,6 +853,13 @@ attendanceRouter.post('/status', async (req, res) => {
     locationCaptureStatus: (LOCATION_CHECK_ELIGIBLE_STATUSES.has(status) || status === 'HQ_WORKING' || status === 'REMOTE') ? (locationCaptureStatus ?? null) : null,
     mismatchLatitude: statusMismatchCoords.mismatchLatitude,
     mismatchLongitude: statusMismatchCoords.mismatchLongitude,
+    // 2026-09-20: "감사인 전용 재택 위치 열람"(대표이사 승인) — 재택은 대조할 등록된 좌표가 없어
+    // 위 mismatchLatitude/Longitude(불일치 판정이 있어야만 채워짐)에는 절대 값이 남지 않는다.
+    // 근무태만 의심 등 사후 확인이 필요할 때 감사인이 확인할 수 있도록, 재택으로 좌표가 실제로
+    // 잡힌 경우에 한해 별도 컬럼에 원본 좌표를 남긴다(관리자 화면에는 노출 안 함 — AUDITOR
+    // 권한 전용 조회 API인 audit-location.routes.ts에서만 사용, 보관기간 지나면 자동삭제).
+    remoteAuditLatitude: status === 'REMOTE' && location ? location.lat : null,
+    remoteAuditLongitude: status === 'REMOTE' && location ? location.lng : null,
   };
 
   // 방금 판단한 "재저장"이 맞더라도, 직전 로그가 정말 같은 상태였을 때만 그 로그를 갱신한다 —

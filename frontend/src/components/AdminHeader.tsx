@@ -12,6 +12,11 @@ const NAV_ITEMS = [
   { href: '/admin/board-scope', label: '표시 대상 관리', icon: '🎯' },
   { href: '/admin/feedback', label: '피드백함', icon: '💬' },
   { href: '/admin/messages', label: '메시지함', icon: '📨' },
+  // 2026-09-20: "감사인" 권한(대표이사 요청) — 아래 두 항목은 role 필터를 통과한 계정에게만
+  // 보인다(다른 항목들과 달리, 존재 자체를 다른 관리자에게 노출하지 않기 위함 — "특정 감사인만"
+  // 볼 수 있어야 한다는 원칙을 메뉴 노출에도 적용).
+  { href: '/admin/auditors', label: '감사인 권한 관리', icon: '🛡️', requiresRole: 'SYSTEM_ADMIN' as const },
+  { href: '/admin/audit-location', label: '재택 위치 감사', icon: '🛰️', requiresRole: 'AUDITOR' as const },
 ];
 
 interface Props {
@@ -35,6 +40,17 @@ export default function AdminHeader({ title, eyebrow = 'DSTI-TSB 관리자', dar
   // 않아도 처리할 게 있는지 한눈에 알 수 있게. 승인 권한이 없는 계정(일반 직원)이면 API가
   // 403을 주는데, 그때는 그냥 배지를 안 보여주고 조용히 넘어간다.
   const [pendingApprovals, setPendingApprovals] = useState(0);
+  // 2026-09-20: "감사인" 권한(대표이사 요청) — 위 NAV_ITEMS의 requiresRole 필터링에 쓴다.
+  // 실패(권한 없는 계정 등)해도 조용히 빈 배열로 넘어간다(다른 배지 로딩과 동일한 관례).
+  const [myRoles, setMyRoles] = useState<string[]>([]);
+
+  useEffect(() => {
+    apiFetch<{ roles: string[] }>('/auth/me')
+      .then((me) => setMyRoles(Array.isArray(me.roles) ? me.roles : []))
+      .catch(() => {});
+  }, []);
+
+  const visibleNavItems = NAV_ITEMS.filter((item) => !item.requiresRole || myRoles.includes(item.requiresRole));
 
   useEffect(() => {
     function loadPendingCount() {
@@ -75,7 +91,7 @@ export default function AdminHeader({ title, eyebrow = 'DSTI-TSB 관리자', dar
         <h1>{title}</h1>
       </div>
       <nav className="admin-nav">
-        {NAV_ITEMS.map((item) => (
+        {visibleNavItems.map((item) => (
           <button
             key={item.href}
             type="button"

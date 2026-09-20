@@ -70,6 +70,12 @@ export function checkLocationMatch(
 // modules/push/mismatch-coord-purge-scheduler.ts가 매일 수행한다.
 export const MISMATCH_COORD_RETENTION_DAYS = 30;
 
+// 2026-09-20: "감사인 전용 재택 위치 열람"(대표이사 승인)의 보관기간 — 위와 동일한 이유
+// (위치정보보호법 목적 달성 시 즉시파기 원칙)로 같은 기간을 쓴다. 상수를 분리해둔 이유는
+// 재택 위치는 "명백한 불일치 건"이 아니라 매번(정상 등록 포함) 남기는 값이라 성격이 달라서 —
+// 나중에 감사 목적상 더 길게(또는 짧게) 가져가야 하면 이 값만 따로 조정할 수 있게 했다.
+export const REMOTE_AUDIT_COORD_RETENTION_DAYS = 30;
+
 /**
  * "불일치 건만 좌표 저장" 정책(2026-09-18, 사용자 승인) 전용 헬퍼.
  *
