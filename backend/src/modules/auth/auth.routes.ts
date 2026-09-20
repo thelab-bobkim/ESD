@@ -252,6 +252,18 @@ async function findAuditorAccount(identifier: string) {
   return { user, isAuditor };
 }
 
+// enroll-confirm/verify 단계는 (이메일/사번이 아니라) 서명된 임시 토큰 안의 userId로 계정을
+// 다시 확인해야 한다 — findAuditorAccount(identifier)를 그대로 userId로 호출하면 email/employeeNo
+// 둘 다와 일치하지 않아 항상 null이 되어 "권한이 없습니다"로 잘못 거절되는 버그가 있었다.
+async function findAuditorAccountById(userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { userRoles: { include: { role: true } } },
+  });
+  const isAuditor = Boolean(user?.userRoles.some((ur: { role: { code: string } }) => ur.role.code === 'AUDITOR'));
+  return { user, isAuditor };
+}
+
 authRouter.post('/audit-login', async (req, res) => {
   const parsed = auditLoginSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -323,7 +335,7 @@ authRouter.post('/audit-login/enroll-confirm', async (req, res) => {
   if (!payload || payload.purpose !== 'AUDIT_ENROLL' || !payload.secret) {
     return res.status(401).json({ success: false, error: { code: 'INVALID_TOKEN', message: '등록 세션이 만료되었습니다. 처음부터 다시 시도해주세요.' } });
   }
-  const { user, isAuditor } = await findAuditorAccount(payload.userId);
+  const { user, isAuditor } = await findAuditorAccountById(payload.userId);
   // 등록 화면을 열어둔 사이(최대 5분)에 관리자가 감사인 권한을 회수했을 수도 있으니 한 번 더 확인한다.
   if (!user || user.id !== payload.userId || !isAuditor) {
     return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '권한이 없습니다.' } });
@@ -346,7 +358,7 @@ authRouter.post('/audit-login/verify', async (req, res) => {
   if (!payload || payload.purpose !== 'AUDIT_VERIFY') {
     return res.status(401).json({ success: false, error: { code: 'INVALID_TOKEN', message: '인증 세션이 만료되었습니다. 처음부터 다시 시도해주세요.' } });
   }
-  const { user, isAuditor } = await findAuditorAccount(payload.userId);
+  const { user, isAuditor } = await findAuditorAccountById(payload.userId);
   if (!user || user.id !== payload.userId || !isAuditor || !user.auditorTotpSecret) {
     return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '권한이 없습니다.' } });
   }
