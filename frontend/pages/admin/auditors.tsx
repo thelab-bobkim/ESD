@@ -14,8 +14,10 @@ interface AuditorCandidate {
  * "감사인" 권한 관리 화면(2026-09-20, 대표이사 요청).
  *
  * 재택(원격) 근무 등록 시 캡처되는 GPS 좌표는 일반 관리자(HR_ADMIN/SYSTEM_ADMIN)에게도 보이지
- * 않고, 여기서 개별로 지정한 계정만 볼 수 있다(/admin/audit-location 화면). SYSTEM_ADMIN 전용
- * 화면이며, board-scope.tsx와 같은 형태(검색 + 체크박스 토글)로 구성했다.
+ * 않고, 여기서 지정한 "딱 한 명"만 완전히 분리된 별도 로그인(/audit-login → /audit)으로 볼 수
+ * 있다. 서버가 감사인을 항상 1명으로 강제하므로(users.routes.ts, 새로 지정하면 기존 보유자는
+ * 자동 회수), 체크박스를 켜면 다른 사람의 체크는 자동으로 꺼진다 — 그래서 저장 후 매번 전체
+ * 목록을 새로고침해서 그 결과를 그대로 보여준다. SYSTEM_ADMIN 전용 화면이다.
  */
 export default function AdminAuditorsPage() {
   const [users, setUsers] = useState<AuditorCandidate[] | null>(null);
@@ -44,13 +46,16 @@ export default function AdminAuditorsPage() {
   async function toggleAuditor(id: string, granted: boolean) {
     setSavingIds((prev) => new Set(prev).add(id));
     setNotice(null);
+    setError(null);
     try {
       const res = await apiFetch<{ note?: string }>('/users/auditors', {
         method: 'POST',
         body: JSON.stringify({ userId: id, granted }),
       });
-      setUsers((prev) => (prev ? prev.map((u) => (u.id === id ? { ...u, isAuditor: granted } : u)) : prev));
       if (res.note) setNotice(res.note);
+      // 감사인은 서버가 항상 1명으로 강제한다 — 이 토글로 다른 사람이 자동으로 회수됐을 수
+      // 있으니, 낙관적으로 이 행만 바꾸지 않고 전체를 다시 불러와 실제 결과를 그대로 반영한다.
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : '저장에 실패했습니다.');
     } finally {
@@ -75,9 +80,10 @@ export default function AdminAuditorsPage() {
     <div className="admin-shell">
       <AdminHeader title="감사인 권한 관리" />
       <p className="admin-page-subtitle">
-        재택(원격) 근무 등록 시 캡처되는 GPS 좌표는 일반 관리자에게도 보이지 않습니다. 여기서 개별로 지정한
-        계정만 "재택 위치 감사" 화면에서 열람할 수 있습니다. 권한을 새로 부여받은 사람은 다시 로그인해야
-        적용됩니다.
+        재택(원격) 근무 등록 시 캡처되는 GPS 좌표는 일반 관리자에게도 보이지 않습니다. 여기서 체크한 딱
+        한 명만, 완전히 분리된 별도 로그인 화면(/audit-login)에서 아이디·비번과 OTP 인증앱 코드를
+        확인해야 열람할 수 있습니다. 다른 사람을 새로 지정하면 기존 감사인의 권한과 OTP 등록은
+        자동으로 해제되고, 새로 지정된 사람은 처음 로그인할 때 인증앱을 새로 등록해야 합니다.
       </p>
       {error && <div className="error">{error}</div>}
       {notice && <div className="notice-inline-orange">{notice}</div>}

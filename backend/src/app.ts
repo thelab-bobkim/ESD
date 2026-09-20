@@ -56,6 +56,11 @@ export function createApp() {
   });
   app.use('/api/v1/auth/login', loginLimiter);
   app.use('/api/v1/auth/register-password', loginLimiter);
+  // 2026-09-20: "감사인 전용 로그인" — 비번 확인·OTP 확인 두 단계 모두 무차별 대입 대상이라
+  // 일반 로그인과 동일한 제한을 건다.
+  app.use('/api/v1/auth/audit-login', loginLimiter);
+  app.use('/api/v1/auth/audit-login/enroll-confirm', loginLimiter);
+  app.use('/api/v1/auth/audit-login/verify', loginLimiter);
 
   app.get('/api/v1/health', (_req, res) => res.json({ success: true, data: { status: 'ok' } }));
 

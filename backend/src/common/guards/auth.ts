@@ -27,6 +27,38 @@ export function signAccessToken(payload: AuthUser): string {
 }
 
 /**
+ * 2026-09-20: "감사인 전용 로그인"(대표이사 요청) — 아이디+비번 확인과 OTP 코드 확인 사이의
+ * 짧은 중간 상태를 서버에 아무것도 저장하지 않고 표현하기 위한 용도. 서명된 토큰 자체가
+ * "이 사람이 방금 비번까지는 맞혔다"는 증거이고, 5분 안에 OTP까지 맞혀야 실제 접근 토큰
+ * (signAccessToken)으로 교환된다. purpose가 'AUDIT_ENROLL'일 때만 secret을 담는데, 이는
+ * 아직 DB에 저장하지 않은 새 TOTP 비밀키를 임시로 실어나르기 위함이다(코드 확인에 성공해야
+ * 비로소 DB에 저장됨 — auth.routes.ts의 /audit-login/enroll-confirm 참고).
+ */
+export interface AuditPendingPayload {
+  userId: string;
+  purpose: 'AUDIT_ENROLL' | 'AUDIT_VERIFY';
+  secret?: string;
+}
+
+const AUDIT_PENDING_EXPIRES_IN = '5m';
+
+export function signAuditPendingToken(payload: AuditPendingPayload): string {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: AUDIT_PENDING_EXPIRES_IN });
+}
+
+/** 서명/만료/purpose를 모두 확인한다. 하나라도 안 맞으면 null(호출하는 쪽에서 401 처리). */
+export function verifyAuditPendingToken(token: string): AuditPendingPayload | null {
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as AuditPendingPayload;
+    if (decoded.purpose !== 'AUDIT_ENROLL' && decoded.purpose !== 'AUDIT_VERIFY') return null;
+    if (!decoded.userId) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 로그인 필수 미들웨어. 서명/만료 검증뿐 아니라, 토큰 속 tokenVersion이 DB의 현재 값과 같은지도
  * 매 요청마다 확인한다 — 비밀번호를 바꾸면 서버가 tokenVersion을 올리므로, 그 이전에 발급된 토큰은
  * 만료 전이라도 여기서 즉시 막힌다(2026-08-30 보안점검, JWT 자체엔 폐기 기능이 없어서 추가).

@@ -94,6 +94,19 @@ const auditorGrantSchema = z.object({
   granted: z.boolean(),
 });
 
+/**
+ * 감사인 권한(UserRole)과 OTP 등록 상태(User.auditorTotpSecret/auditorTotpEnabledAt)를 함께
+ * 지운다. 권한이 없어진 계정에 예전 OTP 비밀키가 남아있으면, 나중에 그 사람에게 권한을 다시
+ * 줬을 때 재등록 없이 옛 인증앱이 그대로 통과되어 버린다 — 감사인이 바뀔 때마다 새 사람이
+ * 반드시 자기 인증앱으로 새로 등록하게 하려면 항상 같이 지워야 한다.
+ */
+async function clearAuditorAccess(userId: string, auditorRoleId: string) {
+  await prisma.$transaction([
+    prisma.userRole.deleteMany({ where: { userId, roleId: auditorRoleId } }),
+    prisma.user.update({ where: { id: userId }, data: { auditorTotpSecret: null, auditorTotpEnabledAt: null } }),
+  ]);
+}
+
 usersRouter.post('/auditors', requireRole('SYSTEM_ADMIN'), async (req, res) => {
   const parsed = auditorGrantSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -104,11 +117,21 @@ usersRouter.post('/auditors', requireRole('SYSTEM_ADMIN'), async (req, res) => {
   if (!auditorRole) {
     return res.status(500).json({ success: false, error: { code: 'ROLE_NOT_READY', message: 'AUDITOR 역할이 아직 준비되지 않았습니다. 서버를 재시작한 뒤 다시 시도해주세요.' } });
   }
+  let replacedUserNames: string[] = [];
   if (granted) {
+    // 2026-09-20: "감사인은 딱 지정된 한 명만"(대표이사 요청) — 새로 지정하기 전에 기존
+    // 보유자가 있으면(보통 0~1명) 먼저 회수한다. 동시에 두 명 이상이 감사인일 수 없다.
+    const others = await prisma.userRole.findMany({
+      where: { roleId: auditorRole.id, userId: { not: userId } },
+      select: { userId: true, user: { select: { name: true } } },
+    });
+    for (const other of others) {
+      await clearAuditorAccess(other.userId, auditorRole.id);
+    }
+    replacedUserNames = others.map((o: { user: { name: string } }) => o.user.name);
     // 2026-09-20: UserRole의 복합 유니크(userId+roleId+scopeDepartmentId)는 scopeDepartmentId가
     // nullable이라 Prisma upsert의 where 타입과 맞추기가 번거롭다 — 직접 존재 여부를 확인하고
-    // 없을 때만 생성하는 방식으로 단순하게 처리한다(레이스 컨디션은 SYSTEM_ADMIN 소수만 쓰는
-    // 저빈도 관리 화면이라 실질적 위험이 없다).
+    // 없을 때만 생성하는 방식으로 단순하게 처리한다.
     const existingGrant = await prisma.userRole.findFirst({
       where: { userId, roleId: auditorRole.id, scopeDepartmentId: null },
     });
@@ -116,18 +139,25 @@ usersRouter.post('/auditors', requireRole('SYSTEM_ADMIN'), async (req, res) => {
       await prisma.userRole.create({ data: { userId, roleId: auditorRole.id } });
     }
   } else {
-    await prisma.userRole.deleteMany({ where: { userId, roleId: auditorRole.id } });
+    await clearAuditorAccess(userId, auditorRole.id);
   }
   await recordAuditLog({
     actorUserId: req.authUser!.userId,
     actionType: 'POLICY_CHANGE',
     targetType: 'user.auditorRole',
     targetId: userId,
-    afterValue: { granted },
+    afterValue: { granted, replacedUserNames },
   });
-  // 2026-09-20: 권한은 로그인 시 JWT에 그대로 실려서 발급되므로(7일 유효), 이미 로그인해 있던
-  // 계정은 재로그인 전까지는 새 권한이 반영되지 않는다 — 프론트에서 이 사실을 안내한다.
-  return res.json({ success: true, data: { userId, granted, note: '대상자가 이미 로그인해 있다면, 다시 로그인해야 권한이 적용됩니다.' } });
+  const notes: string[] = [];
+  if (granted) {
+    if (replacedUserNames.length > 0) {
+      notes.push(`기존 감사인(${replacedUserNames.join(', ')})의 권한과 OTP 등록이 함께 해제되었습니다.`);
+    }
+    notes.push('대상자는 별도의 /audit-login 화면에서 로그인 후 OTP 인증앱을 새로 등록해야 합니다.');
+  } else {
+    notes.push('OTP 등록 정보도 함께 삭제되어, 나중에 다시 권한을 받으면 인증앱을 새로 등록해야 합니다.');
+  }
+  return res.json({ success: true, data: { userId, granted, note: notes.join(' ') } });
 });
 
 /**
