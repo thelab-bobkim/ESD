@@ -79,6 +79,10 @@ const EFFORT_CONTINUATION_STATUSES_FRONT = new Set(['CLIENT_MEETING', 'CLIENT_WO
 // 동일한 기준(REMOTE는 이동이 필요 없는 근무형태라 제외). 이 상태들 사이를 "이동중" 없이 곧장
 // 넘나들면(예: 본사근무에서 바로 고객사작업으로) 잘못 누른 게 아닌지 한 번 되물어본다(2026-09-14).
 const LOCATION_TIED_STATUSES_FRONT = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_WORK', 'CLIENT_MEETING']);
+// 2026-09-20: 백엔드 attendance-helpers.ts의 WORK_START_STATUSES와 동일 — "그날 첫 근무상태
+// 등록(=사실상 출근)"을 판단하는 기준. "GPS 캡처만 필수화"(대표이사 지침) 정책에 따라, 이
+// 상태들 중 하나로 오늘 첫 등록을 할 때는 재택을 포함해 전부 GPS 캡처를 먼저 시도한다.
+const WORK_START_STATUSES_FRONT = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK', 'BUSINESS_TRIP', 'REMOTE']);
 // 2026-09-01: 직원들이 등록을 귀찮아해서(항목이 너무 많음) 본사근무/고객사미팅/고객사작업 세 가지는
 // 입력폼을 간소화했다 — 프로젝트명/목적·사유/진행률·차수 같은 부가 항목을 없애고, 실제로 꼭 필요한
 // 항목(고객사·관련프로젝트, 수행업무)만 채우면 바로 등록되게 했다. 야간작업/재택은 기존 그대로 유지.
@@ -1001,9 +1005,18 @@ export default function EmployeeHome() {
           delete body.locationAccuracyMeters;
         }
       };
-      if (code === 'HQ_WORKING') {
+      // 2026-09-20: "직원 출근은 무조건 위치 대조를 강제해야 한다"(대표이사 지침) — 예전엔
+      // 본사근무만 GPS를 미리 캡처했는데, 이제 재택을 포함한 모든 근무형태에서 "오늘 첫 등록"
+      // 시점엔 GPS 캡처를 먼저 시도한다(서버도 동일하게 강제하므로, 여기서 안 하면 서버에서
+      // 막혀 사용자가 다시 눌러야 하는 번거로움이 생긴다 — attemptWithLocationRetry가 실패 시
+      // 재측정을 시도하긴 하지만, 애초에 시도조차 안 하는 것보단 미리 하는 게 매끄럽다).
+      const isFirstStatusToday = !myStatus?.record?.clockInAt;
+      if (isFirstStatusToday && WORK_START_STATUSES_FRONT.has(code)) {
         await refreshHqQuickLocation();
-        // 이상치(순간이동) 감지 시 등록 자체를 막고 재측정을 유도한다(2026-09 요청 — 등록 차단).
+        // 이상치(순간이동) 감지는 본사근무처럼 대조할 고정 좌표가 있는 경우에만 의미가 있다
+        // (getCurrentLocationWithStatus 내부에서 직전 위치와의 순간이동만 보므로, 재택 등
+        // 대조 좌표가 없는 상태에서도 동일하게 동작 — 등록 자체를 막을 만큼 비정상적인
+        // GPS 튐이면 상태와 무관하게 재측정을 유도하는 게 맞다).
         if (hqQuickLocationMeta.jumpDetected) {
           setMessage(LOCATION_JUMP_WARNING);
           setMessageIsError(true);
@@ -1018,7 +1031,7 @@ export default function EmployeeHome() {
         () =>
           attemptWithLocationRetry(
             () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-            code === 'HQ_WORKING' ? refreshHqQuickLocation : undefined
+            isFirstStatusToday && WORK_START_STATUSES_FRONT.has(code) ? refreshHqQuickLocation : undefined
           ),
         pendingPrev
           ? `⚠️ 상태가 '${STATUS_META[code].label}'(으)로 변경됐지만, 직전 '${STATUS_META[pendingPrev.status]?.label ?? pendingPrev.status}' 내용을 아직 안 채우셨어요! 잊지 말고 채워주세요.`
@@ -1206,9 +1219,16 @@ export default function EmployeeHome() {
     // (ONSITE)으로 등록한 경우에만 시도한다 — 원격지원/내부업무까지 매번 GPS 권한을 물어보면
     // 번거로우니, 서버가 실제로 대조를 시도하는 조건(effort.clientName && siteType!=='REMOTE')과
     // 똑같이 맞춘다(backend attendance.routes.ts 참고).
+    // 2026-09-20: 재택(REMOTE)은 EFFORT_CONTINUATION_STATUSES_FRONT에 포함돼 있어서, 시작만 등록한
+    // 뒤 나중에 이 상세폼으로 완료시간 등을 채워 다시 제출하면 같은 StatusChangeLog 행을 그대로
+    // 갱신한다(새로 만들지 않음) — 이때 여기서 위치를 다시 안 보내면 서버가 처음에 캡처해뒀던
+    // locationCaptureStatus='OK'를 null로 덮어써버리는 문제가 생긴다("GPS 캡처만 필수화" 정책으로
+    // 재택도 이제 캡처상태가 실제로 저장되기 시작해서 새로 드러난 위험). 본사근무와 동일하게
+    // 항상 재측정해서 이 문제를 원천적으로 막는다.
     const needsLocationCheck =
       LOCATION_CHECK_STATUSES.has(code) ||
       code === 'HQ_WORKING' ||
+      code === 'REMOTE' ||
       (LOCATION_CHECK_ELIGIBLE_STATUSES.has(code) && Boolean(clientName.trim()) && siteType === 'ONSITE');
     // 본사근무도 고객사작업/미팅과 동일하게 위치 확보 실패 사유까지 같이 보낸다("오늘 첫 실패는 봐준다" 판단용).
     const detailFormLocationMeta: { accuracy: number | null; jumpDetected: boolean } = { accuracy: null, jumpDetected: false };

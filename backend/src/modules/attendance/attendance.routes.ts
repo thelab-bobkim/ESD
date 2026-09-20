@@ -176,6 +176,20 @@ attendanceRouter.post('/clock-in', async (req, res) => {
     });
   }
 
+  // 2026-09-20: "GPS 캡처만 필수화"(대표이사 지침) — 주말엔 아래 본사위치 확인 블록 자체를
+  // 건너뛰므로(주말엔 "본사근무"가 성립하지 않아 대조할 게 없음) 위치확인이 전혀 없이도 "출근"
+  // 버튼만으로 출근이 확정될 수 있었다. 최소한 GPS 확보 자체는 반드시 성공해야 한다는 것만
+  // 별도로 강제한다(집/고객사 등 어디인지는 판단하지 않음 — 그건 실제 상태를 고를 때 대조함).
+  if (isWeekendToday && !location) {
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'LOCATION_REQUIRED_FOR_CLOCKIN',
+        message: '위치 확인이 되지 않아 "출근" 버튼으로는 출근을 확정할 수 없어요. 위치 접근을 허용한 뒤 다시 시도해주세요.',
+      },
+    });
+  }
+
   // 2026-09-01 정책 변경: "출근" 버튼은 더 이상 위치확인 없이 조용히 통과시키지 않는다. 본사 좌표가
   // 등록되어 있다면 반드시 본사와 위치가 일치해야만 확정하고, 위치가 안 맞거나 아예 못 가져왔으면
   // 거부한 뒤 본사근무·고객사작업·고객사미팅·출장·고객사상주 중 실제 근무형태에 맞는 버튼을 눌러
@@ -760,6 +774,32 @@ attendanceRouter.post('/status', async (req, res) => {
     }
   }
 
+  // 2026-09-20: "직원 출근은 무조건 위치 대조를 강제해야 한다"(대표이사 지침) — 재택을 포함해 그날
+  // 첫 근무 상태를 등록하는 순간(=사실상 출근)엔 위치를 아예 안 남기고 넘어갈 수 없게 한다. 재택은
+  // 집 주소를 등록해두고 "일치"까지 확인하는 건 직원 개인정보(거주지) 보관 문제가 커서 보류하고,
+  // 우선 "GPS 확보 자체는 반드시 성공해야 한다"만 강제한다(어디인지 맞다/틀리다는 판단은 하지
+  // 않음). 본사근무는 사내망/주소로 대체 확인된 경우 예외(이미 위치가 확인된 것과 같으므로).
+  // 위 각 상태별 "오늘 첫 실패는 봐준다" 완화들은 이미 출근한 뒤의 재실패에만 적용되는 것이고,
+  // 그 출근 자체(오늘 첫 근무상태 등록)에는 적용하지 않는다 — 안 그러면 매일 "오늘 첫 등록"이
+  // 항상 봐주기 대상이 되어 이 강제 자체가 무력화된다.
+  if (WORK_START_STATUSES.has(status)) {
+    const workDateForLocationGate = todayDateOnly();
+    const existingRecordForLocationGate = await prisma.attendanceRecord.findUnique({
+      where: { userId_workDate: { userId, workDate: workDateForLocationGate } },
+    });
+    const alreadyClockedIn = Boolean(existingRecordForLocationGate?.clockInAt);
+    const exemptByAlternateMeans = status === 'HQ_WORKING' && hqVerifiedByAlternateMeans;
+    if (!alreadyClockedIn && !exemptByAlternateMeans && locationCaptureStatus !== 'OK') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'LOCATION_REQUIRED_FOR_WORK_START',
+          message: '오늘 첫 상태 등록(출근)은 위치 확인이 필수입니다. 위치 접근을 허용한 뒤 다시 시도해주세요.',
+        },
+      });
+    }
+  }
+
   // 2026-09-18: "같은 고객사작업을 여러 번 저장하면 그때마다 타임라인에 새 줄이 쌓인다"(관리자
   // 지적 — 상세폼을 고쳐서 다시 저장하거나 저장 버튼을 두 번 누르면, 완료시간까지 이미 채워진
   // 기록은 "진행중 이어받기" 대상이 아니라서 매번 새 StatusChangeLog+공수기록이 생겼다). 공수
@@ -807,7 +847,10 @@ attendanceRouter.post('/status', async (req, res) => {
     // 남긴다 — 위치대조 자체를 안 하는 상태(재택 등)에는 accuracyMeters가 와도 의미가 없다.
     locationAccuracyMeters: (locationResult ?? hqLocationResult) ? (accuracyMeters ?? null) : null,
     siteType: siteType ?? null,
-    locationCaptureStatus: (LOCATION_CHECK_ELIGIBLE_STATUSES.has(status) || status === 'HQ_WORKING') ? (locationCaptureStatus ?? null) : null,
+    // 2026-09-20: REMOTE는 예전엔 위치대조 대상이 아니라 여기서 항상 null로 지워졌는데, 이제
+    // "GPS 캡처 자체는 성공해야 한다"는 정책이 REMOTE에도 적용되므로(위 WORK_START_STATUSES
+    // 게이트), 실제로 캡처된 값(주로 'OK')이 지워지지 않고 남도록 REMOTE도 포함한다.
+    locationCaptureStatus: (LOCATION_CHECK_ELIGIBLE_STATUSES.has(status) || status === 'HQ_WORKING' || status === 'REMOTE') ? (locationCaptureStatus ?? null) : null,
     mismatchLatitude: statusMismatchCoords.mismatchLatitude,
     mismatchLongitude: statusMismatchCoords.mismatchLongitude,
   };
