@@ -81,15 +81,35 @@ const LOW_ACCURACY_RETRY_THRESHOLD_METERS = 100;
 // 재시도 사이의 대기시간 — 기기가 새 위성신호를 잡을 최소한의 시간을 준다.
 const ACCURACY_RETRY_DELAY_MS = 1500;
 
+// 2026-09-22: 아이폰(iOS Safari/WebKit) 사용자(백해성님)가 "고객사작업" 등록 시 로딩 스피너가
+// 하루 종일 멈춰있는 문제가 실제로 보고됨 — GEOLOCATION_OPTIONS.timeout(15초)을 지정해도 iOS
+// WebKit이 성공/실패 콜백을 아예 호출하지 않고 응답 자체가 영원히 없는 경우가 있다(알려진
+// WebKit 버그 — 위치 권한이 "다음에 확인" 상태이거나, 실내에서 GPS 수신이 계속 안 되거나,
+// 저전력 모드 등에서 재현). 브라우저의 timeout 옵션만 믿으면 이 Promise가 응답 없이 무한정
+// 매달리고, 그 위에서 기다리는 등록 버튼도 영원히 "확인 중" 상태로 멈춘다. 그래서 우리 쪽에서도
+// 독립적인 타이머를 하나 더 걸어서, 브라우저가 어떤 상황이든 이 함수는 반드시 일정 시간 안에
+// 응답(성공 또는 TIMEOUT)하도록 강제한다.
+const HARD_TIMEOUT_BUFFER_MS = 5000;
+
 function getPositionOnce(): Promise<GeolocationPosition | { errorCode: number } | null> {
   return new Promise((resolve) => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       resolve(null);
       return;
     }
+    let settled = false;
+    const settle = (value: GeolocationPosition | { errorCode: number } | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimeoutId);
+      resolve(value);
+    };
+    // GeolocationPositionError.TIMEOUT === 3 — 브라우저가 아예 응답하지 않을 때도 같은 코드로
+    // 처리해 호출하는 쪽(재시도/오류 안내 로직)이 평소 타임아웃과 동일하게 다룰 수 있게 한다.
+    const hardTimeoutId = setTimeout(() => settle({ errorCode: 3 }), GEOLOCATION_OPTIONS.timeout! + HARD_TIMEOUT_BUFFER_MS);
     navigator.geolocation.getCurrentPosition(
-      (pos) => resolve(pos),
-      (err) => resolve({ errorCode: err.code }),
+      (pos) => settle(pos),
+      (err) => settle({ errorCode: err.code }),
       GEOLOCATION_OPTIONS
     );
   });
@@ -197,9 +217,19 @@ export function getCurrentLocation(): Promise<{ lat: number; lng: number } | nul
       resolve(null);
       return;
     }
+    let settled = false;
+    const settle = (value: { lat: number; lng: number } | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimeoutId);
+      resolve(value);
+    };
+    // getPositionOnce()와 동일한 이유(iOS WebKit이 콜백을 아예 안 부르는 경우 방지)로 이 함수도
+    // 독립 타이머를 둔다 — 출근 버튼 등 이 함수를 직접 쓰는 곳에서도 무한 대기가 생기지 않도록.
+    const hardTimeoutId = setTimeout(() => settle(null), GEOLOCATION_OPTIONS.timeout! + HARD_TIMEOUT_BUFFER_MS);
     navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => resolve(null),
+      (pos) => settle({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => settle(null),
       GEOLOCATION_OPTIONS
     );
   });
