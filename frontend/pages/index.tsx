@@ -2030,7 +2030,7 @@ export default function EmployeeHome() {
               </p>
               <label className="field-label">{detailStatus === 'REMOTE' ? '지원 고객사' : '고객사명'}</label>
               <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="예: OO상사" />
-              <label className="field-label">업무내용(무엇을/어떻게 — 최소 10자)</label>
+              <label className="field-label">업무내용(무엇을/어떻게)</label>
               <textarea
                 className="detail-textarea right-col-textarea"
                 rows={3}
@@ -2038,7 +2038,8 @@ export default function EmployeeHome() {
                 value={workDetail}
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
-              <button disabled={workDetail.trim().length < 10} onClick={submitDetailForm}>등록</button>
+              {/* 2026-09-22: 최소 글자수(10자) 제약 제거 요청 반영 — 완전히 빈 값만 막는다. */}
+              <button disabled={!workDetail.trim()} onClick={submitDetailForm}>등록</button>
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
             </div>
           )}
@@ -2294,7 +2295,7 @@ export default function EmployeeHome() {
                   <label className="field-label">
                     {detailStatus === 'HQ_WORKING'
                       ? `오늘 수행업무 (필수 — 언제·무엇을·어떻게 했는지 구체적으로, 최소 15자)`
-                      : detailStatus === 'CLIENT_MEETING' ? '미팅주제(무엇을/어떻게 — 최소 10자)' : '작업내용(무엇을/어떻게 — 최소 10자)'}
+                      : detailStatus === 'CLIENT_MEETING' ? '미팅주제(무엇을/어떻게)' : '작업내용(무엇을/어떻게)'}
                   </label>
                   <textarea
                     className="detail-textarea right-col-textarea"
@@ -2349,7 +2350,10 @@ export default function EmployeeHome() {
                 disabled={
                   // 영업조직은 작업내용 입력칸이 없으므로 이 최소글자수 검증을 건너뛴다(제출 시
                   // 자동으로 채워짐 — effectiveWorkDetail 참고).
-                  (!isSimplifiedMeetingForm && workDetail.trim().length < (detailStatus === 'HQ_WORKING' ? 15 : 10))
+                  // 2026-09-22: 고객사작업/미팅 등 일반 작업내용의 "최소 10자" 제약은 제거 요청으로
+                  // 삭제하고 빈 값만 막는다 — 본사근무 업무일지(최소 15자)는 이번 요청 대상이
+                  // 아니라서 그대로 둔다.
+                  (!isSimplifiedMeetingForm && (detailStatus === 'HQ_WORKING' ? workDetail.trim().length < 15 : !workDetail.trim()))
                   || (!SIMPLIFIED_EFFORT_STATUSES.has(detailStatus) && !workReason.trim())
                   || (detailStatus === 'HQ_WORKING' ? !clientName.trim() : !workStart)
                   // 고객사미팅/고객사작업은 위 workStart 조건과 별개로 고객사 선택(clientName)도 필수다
