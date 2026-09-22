@@ -864,10 +864,12 @@ export default function EmployeeHome() {
     setClientQuery(initialClientName);
     setClientPickerOpen(false);
     setProjectName('');
-    setWorkStart(nowHHMM());
+    const initialWorkStart = nowHHMM();
+    setWorkStart(initialWorkStart);
     setWorkEnd('');
     setStillInProgress(false);
-    setWorkType(code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : code === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS[0] : WORK_TYPE_OPTIONS[0]);
+    const initialWorkType = code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : code === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS[0] : WORK_TYPE_OPTIONS[0];
+    setWorkType(initialWorkType);
     setWorkDetail('');
     setWorkReason('');
     setSiteType('ONSITE');
@@ -900,17 +902,22 @@ export default function EmployeeHome() {
         .then((open) => {
           if (!open) return;
           const startHHMM = isoToHHMM(open.startTime);
+          // 2026-09-22: 이 조회가 응답을 받기 전에 사용자가 이미 폼에 입력을 시작했다면 그
+          // 내용을 덮어쓰지 않는다 — 느린 네트워크(고객사 현장 등)에서 이 응답이 늦게 도착하면
+          // 방금 입력한 내용이 통째로 사라지는("입력창이 계속 초기화된다") 문제가 실제로
+          // 보고됨(백해성님 사례). 필드별로 "폼을 연 직후의 초기값 그대로인지"를 확인해서, 아직
+          // 손대지 않은 필드만 이어받은 값으로 채운다 — 사용자가 이미 입력한 필드는 그대로 둔다.
           if (!prefilledClientName && open.clientName) {
-            setClientName(open.clientName);
-            setClientQuery(open.clientName);
+            setClientName((prev) => (prev === initialClientName ? open.clientName : prev));
+            setClientQuery((prev) => (prev === initialClientName ? open.clientName : prev));
           }
-          if (open.projectName) setProjectName(open.projectName);
-          if (open.workType) setWorkType(open.workType);
-          setWorkStart(startHHMM);
+          if (open.projectName) setProjectName((prev) => (prev === '' ? open.projectName : prev));
+          if (open.workType) setWorkType((prev) => (prev === initialWorkType ? open.workType : prev));
+          setWorkStart((prev) => (prev === initialWorkStart ? startHHMM : prev));
           const { workDetail: wd, workReason: wr, personnel: pn } = parseComposedDescription(open.description || '');
-          if (wd) setWorkDetail(wd);
-          if (wr) setWorkReason(wr);
-          if (pn) setPersonnel(pn);
+          if (wd) setWorkDetail((prev) => (prev === '' ? wd : prev));
+          if (wr) setWorkReason((prev) => (prev === '' ? wr : prev));
+          if (pn) setPersonnel((prev) => (prev === '' ? pn : prev));
           setContinuedNotice(`⏳ 진행중이던 작업을 이어서 불러왔어요(시작 ${startHHMM}). 끝나셨으면 완료시간을 입력하고 등록해주세요.`);
         })
         .catch(() => {});
