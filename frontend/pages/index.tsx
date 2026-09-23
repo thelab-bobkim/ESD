@@ -369,6 +369,10 @@ export default function EmployeeHome() {
   // EARLY_LEAVE_REASON_REQUIRED로 거절하면 그 자리에서 사유를 입력받아 다시 시도할 수 있게 한다.
   const [departureNeedsReason, setDepartureNeedsReason] = useState(false);
   const [departureEarlyLeaveReason, setDepartureEarlyLeaveReason] = useState('');
+  // 2026-09-23: "고객사작업 위치이탈 자동감지"(대표이사 요청 — 엔지니어 관리 편의) — 고객사작업
+  // 중일 때만 위 하루 전체 퇴근 제안 대신 이 별도 배너를 띄운다. 하루 근태(clockOutAt)에는 손대지
+  // 않고, 진행중인 그 고객사작업 건의 종료시간만 채우고 "이동중"으로 전환할지 본인에게 확인받는다.
+  const [effortDepartureSuggestion, setEffortDepartureSuggestion] = useState<{ estimatedAt: string } | null>(null);
   // 2026-09-15: 관리자가 상황판에서 보낸 짧은 메시지(위치 불일치 등 확인 요청) — 안 읽은 것만
   // 주기적으로 받아와 배너로 보여준다. 이미 등록된 푸시로도 즉시 알림이 가지만(sw.js), 앱을
   // 열었을 때도 놓치지 않도록 여기서 한 번 더 보여준다. messages.routes.ts 참고.
@@ -704,7 +708,7 @@ export default function EmployeeHome() {
         && clientLocations.length > 0
         && Date.now() >= clientPromptSnoozedUntilRef.current;
       const wantsHqCheck = Boolean(hqLocation) && currentStatus?.status !== 'HQ_WORKING' && Date.now() >= hqPromptSnoozedUntilRef.current;
-      const anchor = !departureSuggestion && Date.now() >= departureSnoozedUntilRef.current ? resolveWorkAnchor() : null;
+      const anchor = !departureSuggestion && !effortDepartureSuggestion && Date.now() >= departureSnoozedUntilRef.current ? resolveWorkAnchor() : null;
       if (!anchor) departureAwaySinceRef.current = null;
 
       // 위치 확인이 여러 번 필요하더라도(고객사 도착/본사 복귀/이탈 감지) GPS는 이 틱에서 딱 한 번만
@@ -727,6 +731,9 @@ export default function EmployeeHome() {
 
       // 마지막 근무위치 이탈 감지 — 본사/고객사에 있어야 할 상태인데 30분 이상 계속 벗어나 있으면
       // 퇴근시각 후보를 만들어 확인을 요청한다(본인이 확정하지 않으면 관리자 승인함으로 넘어간다).
+      // 2026-09-23: 단, "고객사작업"만은 예외다 — 하루 전체를 퇴근시키는 게 아니라 그 작업 건만
+      // 종료시간을 채우고 "이동중"으로 넘어가는 게 맞아서(대표이사 요청, 엔지니어 관리 편의),
+      // 별도의(더 가벼운) effortDepartureSuggestion 배너로 분기한다.
       if (anchor) {
         const dist = distanceMeters(loc.lat, loc.lng, anchor.lat, anchor.lng);
         const anchorKey = `${currentStatus?.status}:${currentStatus?.changedAt}`;
@@ -735,14 +742,18 @@ export default function EmployeeHome() {
             departureAwaySinceRef.current = { anchorKey, since: Date.now() };
           } else if (Date.now() - departureAwaySinceRef.current.since >= DEPARTURE_AWAY_THRESHOLD_MS) {
             const estimatedAt = new Date(departureAwaySinceRef.current.since);
-            try {
-              const res = await apiFetch<{ correctionRequestId: string; proposedClockOutAt: string }>(
-                '/attendance/departure-suggest',
-                { method: 'POST', body: JSON.stringify({ estimatedClockOutAt: estimatedAt.toISOString() }) }
-              );
-              setDepartureSuggestion({ correctionRequestId: res.correctionRequestId, estimatedAt: res.proposedClockOutAt });
-            } catch {
-              // 실패해도 조용히 넘어간다 — 다음 5분 주기에 다시 시도된다.
+            if (currentStatus?.status === 'CLIENT_WORK') {
+              setEffortDepartureSuggestion({ estimatedAt: estimatedAt.toISOString() });
+            } else {
+              try {
+                const res = await apiFetch<{ correctionRequestId: string; proposedClockOutAt: string }>(
+                  '/attendance/departure-suggest',
+                  { method: 'POST', body: JSON.stringify({ estimatedClockOutAt: estimatedAt.toISOString() }) }
+                );
+                setDepartureSuggestion({ correctionRequestId: res.correctionRequestId, estimatedAt: res.proposedClockOutAt });
+              } catch {
+                // 실패해도 조용히 넘어간다 — 다음 5분 주기에 다시 시도된다.
+              }
             }
           }
         } else {
@@ -754,7 +765,7 @@ export default function EmployeeHome() {
     const timeout = setTimeout(checkArrival, 30 * 1000); // 페이지 켠 직후에도 한 번 확인
     return () => { clearInterval(interval); clearTimeout(timeout); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hqLocation, clientLocations, me?.locationConsentGiven, me?.assignedClient, currentStatus?.status, currentStatus?.changedAt, myStatus?.latestEffort?.clientName, clockedOut, departureSuggestion]);
+  }, [hqLocation, clientLocations, me?.locationConsentGiven, me?.assignedClient, currentStatus?.status, currentStatus?.changedAt, myStatus?.latestEffort?.clientName, clockedOut, departureSuggestion, effortDepartureSuggestion]);
 
   async function run(action: () => Promise<unknown>, successMsg: string, onSuccess?: (data: unknown) => void) {
     setMessage(null);
@@ -867,6 +878,38 @@ export default function EmployeeHome() {
     setDepartureNeedsReason(false);
     setDepartureEarlyLeaveReason('');
     apiFetch('/attendance/departure-suggest/dismiss', { method: 'POST', body: JSON.stringify({ correctionRequestId: info.correctionRequestId }) }).catch(() => {});
+  }
+
+  /**
+   * 2026-09-23: "고객사작업 위치이탈 자동감지" 확인 — 진행중이던 고객사작업 건의 종료시간을
+   * 추정 이탈시각으로 채우고, 상태를 "이동중"으로 전환한다. 위 퇴근 이탈감지와 달리 이건 하루
+   * 근태(clockOutAt)에는 손대지 않으므로 최소근무시간 사유 입력 같은 절차가 없다.
+   */
+  async function confirmEffortDeparture() {
+    if (!effortDepartureSuggestion) return;
+    const info = effortDepartureSuggestion;
+    setMessage(null);
+    setMessageIsError(false);
+    try {
+      await apiFetch('/attendance/effort-departure-confirm', {
+        method: 'POST',
+        body: JSON.stringify({ estimatedEndAt: info.estimatedAt }),
+      });
+      setEffortDepartureSuggestion(null);
+      departureAwaySinceRef.current = null;
+      setMessage(`${fmtClock(info.estimatedAt)}에 고객사작업을 마치신 걸로 등록하고 '이동중'으로 전환했어요.`);
+      refreshMyStatus();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '처리에 실패했습니다.');
+      setMessageIsError(true);
+    }
+  }
+
+  /** "아직 작업중이에요" — 오탐이었다고 알려주면 배너를 닫고 잠시 다시 안 물어본다. */
+  function dismissEffortDeparture() {
+    setEffortDepartureSuggestion(null);
+    departureAwaySinceRef.current = null;
+    departureSnoozedUntilRef.current = Date.now() + 30 * 60 * 1000; // 30분 동안 다시 안 물어봄
   }
 
   // 2026-09-02: 본사 위치확인이 서버에서 막히는 경우(AWAY_FROM_HQ/LOCATION_REQUIRED_FOR_CLOCKIN) —
@@ -1006,6 +1049,7 @@ export default function EmployeeHome() {
     // 새 상태를 등록한다는 건 본인이 여전히 활동중이라는 뜻이므로, 혹시 떠 있던 "퇴근 이탈감지"
     // 제안이 있다면 더 이상 맞지 않는 추정이니 같이 정리한다(오탐으로 조용히 취소).
     if (!alreadyInThisStatus && departureSuggestion) dismissDepartureSuggestion();
+    if (!alreadyInThisStatus && effortDepartureSuggestion) dismissEffortDeparture();
     // 직전 상태의 내용을 아직 안 채운 채로 다른 상태로 넘어가는 경우, 막지는 않되(사용자가 화면에
     // 갇히면 안 되므로) "직전 것도 잊지 마세요" 정도의 부드러운 리마인더만 붙여준다. 다만 직전
     // 상태가 부서 설정상 애초에 세부폼이 없는 상태(noFormStatuses)였다면 채울 내용 자체가 없으니
@@ -1767,6 +1811,20 @@ export default function EmployeeHome() {
         </div>
       )}
 
+      {effortDepartureSuggestion && (
+        <div className="card col-full notice-tint-orange">
+          🚚 고객사작업 위치에서 벗어난 지 30분이 지났어요. <strong>{fmtClock(effortDepartureSuggestion.estimatedAt)}</strong>에 작업을 마치신 걸로 등록하고 &apos;이동중&apos;으로 바꿀까요?
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button style={{ width: 'auto', margin: 0 }} onClick={confirmEffortDeparture}>
+              네, 확정할게요
+            </button>
+            <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={dismissEffortDeparture}>
+              아니요, 아직 작업중이에요
+            </button>
+          </div>
+        </div>
+      )}
+
       {adminMessages.map((m) => (
         <div className="card col-full notice-tint-blue" key={m.id}>
           📨 <strong>{m.sentByName}</strong>님이 보낸 메시지: {m.message}
@@ -1995,15 +2053,20 @@ export default function EmployeeHome() {
                 </button>
               </div>
             )}
-            <div style={{ textAlign: 'right', marginTop: 8 }}>
-              <button
-                className="secondary"
-                style={{ width: 'auto', margin: 0, padding: '4px 10px', fontSize: 12 }}
-                onClick={openCorrectionModal}
-              >
-                ✏️ 상태를 잘못 등록했어요 — 정정하기
-              </button>
-            </div>
+            <button
+              style={{
+                marginTop: 10,
+                marginBottom: 0,
+                background: '#fff4e6',
+                color: '#c2410c',
+                border: '2px solid #f76707',
+                fontWeight: 700,
+                fontSize: 15,
+              }}
+              onClick={openCorrectionModal}
+            >
+              ✏️ 상태를 잘못 등록했어요 — 정정하기
+            </button>
           </div>
 
           {me.assignedClient && (

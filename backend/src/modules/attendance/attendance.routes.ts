@@ -1209,6 +1209,75 @@ attendanceRouter.post('/departure-suggest/dismiss', async (req, res) => {
   return res.json({ success: true, data: { dismissed: true } });
 });
 
+const effortDepartureConfirmSchema = z.object({
+  estimatedEndAt: z.string().min(1),
+});
+
+/**
+ * 2026-09-23: "고객사작업 위치이탈 자동감지"(대표이사 요청 — 엔지니어 관리 편의). 위 본사/일반
+ * 이탈감지(/departure-suggest)와 달리, 고객사작업(CLIENT_WORK) 중 마지막 근무위치를 30분 이상
+ * 벗어나면 하루 전체를 퇴근시키는 게 아니라 지금 진행중인 그 고객사작업 건(EffortLog)만 종료시간을
+ * 채우고 상태를 "이동중"으로 자동 전환한다 — 다음 행선지(다른 고객사/본사/퇴근)를 아직 모르니
+ * "이동중"이 가장 자연스럽다. attendanceRecord.clockOutAt에는 전혀 손대지 않으므로 최소근무시간 등
+ * 퇴근 관련 규칙은 적용되지 않는다 — 그 작업 건의 소요시간만 정정하는 개념이다.
+ * "시스템이 임의로 근태를 확정하지 않는다" 원칙에 따라 이것도 프론트가 30분 이탈을 감지하면 먼저
+ * 배너로 물어보고, 본인이 확인을 눌러야만 이 엔드포인트가 호출된다(대기중 상태를 서버에 별도로
+ * 만들어두지 않고, 확인 즉시 반영하는 방식 — 확인 전까지는 프론트 화면에만 배너로 떠 있다가
+ * 다른 상태로 바뀌거나 "아직 작업중이에요"를 누르면 조용히 사라진다).
+ */
+attendanceRouter.post('/effort-departure-confirm', async (req, res) => {
+  const parsed = effortDepartureConfirmSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '요청 형식을 확인하세요.' } });
+  }
+  const userId = req.authUser!.userId;
+  const estimatedEndAt = new Date(parsed.data.estimatedEndAt);
+  if (Number.isNaN(estimatedEndAt.getTime())) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '추정 종료시각 형식이 올바르지 않습니다.' } });
+  }
+
+  const openEffort = await findOpenEffort(userId, 'CLIENT_WORK');
+  if (!openEffort) {
+    return res.status(400).json({ success: false, error: { code: 'NOT_FOUND', message: '진행중인 고객사작업 기록을 찾을 수 없습니다.' } });
+  }
+  if (estimatedEndAt <= openEffort.startTime) {
+    return res.status(400).json({ success: false, error: { code: 'OUT_OF_RANGE', message: '추정 종료시각이 시작시각보다 앞섭니다.' } });
+  }
+
+  // recordEffort()는 같은 시작시각(endTime: null)의 "진행중" 기록을 그대로 찾아 갱신하므로
+  // (effort-helpers.ts findResubmitTarget), 새 기록을 만들지 않고 이 건의 종료시간만 채운다.
+  const updatedEffort = await recordEffort(userId, 'CLIENT_WORK', {
+    workDate: openEffort.workDate,
+    clientName: openEffort.clientName,
+    projectName: openEffort.projectName,
+    workType: openEffort.workType,
+    startTime: openEffort.startTime,
+    endTime: estimatedEndAt,
+    description: openEffort.description ?? undefined,
+  });
+
+  const hhmm = estimatedEndAt.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });
+  const movingLog = await prisma.statusChangeLog.create({
+    data: {
+      userId,
+      status: 'MOVING',
+      note: `[위치이탈 자동감지] 고객사작업(${openEffort.clientName || '고객사'})을 ${hhmm}에 마치신 걸로 등록하고 이동중으로 전환했습니다.`,
+      source: 'WEB',
+    },
+  });
+
+  await recordAuditLog({
+    actorUserId: userId,
+    actionType: 'CORRECT',
+    targetType: 'effort_log',
+    targetId: updatedEffort.id,
+    beforeValue: { endTime: null },
+    afterValue: { endTime: estimatedEndAt, autoDetected: true, movingStatusLogId: movingLog.id },
+  });
+
+  return res.json({ success: true, data: { effortLog: updatedEffort, statusLog: movingLog } });
+});
+
 /** 본인 오늘 근태 조회 (상태는 "오늘" 것만 — 며칠 지난 상태를 현재처럼 보여주지 않는다) */
 attendanceRouter.get('/me', async (req, res) => {
   const userId = req.authUser!.userId;
