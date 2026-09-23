@@ -429,6 +429,15 @@ export default function EmployeeHome() {
     return () => clearTimeout(timer);
   }, [undoInfo]);
 
+  // 2026-09-23: "본인 상태 정정" — 다른 상태를 잘못 눌러 확정해버렸는데 되돌리기(10분 제한)로도
+  // 더 이상 못 고치는 경우, 본인이 사유를 남기고 직접 오늘 상태를 바로잡을 수 있게 한다(윤혜선
+  // 사원 사례 — 휴가인데 본사출근을 잘못 눌러버림). 위 아이콘 한 번 탭으로 즉시등록되는 평소
+  // 흐름과 헷갈리지 않도록, 별도의 "상태 정정" 메뉴로 분리해서 사유 입력을 거치게 한다.
+  const [showCorrectionModal, setShowCorrectionModal] = useState(false);
+  const [correctionStatus, setCorrectionStatus] = useState('');
+  const [correctionReason, setCorrectionReason] = useState('');
+  const [submittingCorrection, setSubmittingCorrection] = useState(false);
+
   // 고객사미팅/고객사작업/야간작업 공용 상세입력 폼 상태
   const [detailStatus, setDetailStatus] = useState<string | null>(null);
   const [clientName, setClientName] = useState('');
@@ -781,6 +790,38 @@ export default function EmployeeHome() {
         }),
       `'${info.label}' 등록을 취소하고 이전 상태로 되돌렸어요. 😊`
     );
+  }
+
+  function openCorrectionModal() {
+    setCorrectionStatus(currentStatus?.status && STATUS_META[currentStatus.status] ? currentStatus.status : visibleStatusOrder[0]);
+    setCorrectionReason('');
+    setShowCorrectionModal(true);
+  }
+
+  function closeCorrectionModal() {
+    if (submittingCorrection) return;
+    setShowCorrectionModal(false);
+  }
+
+  async function submitCorrection() {
+    if (!correctionReason.trim()) return;
+    setSubmittingCorrection(true);
+    setMessage(null);
+    setMessageIsError(false);
+    try {
+      await apiFetch('/attendance/status/correct', {
+        method: 'POST',
+        body: JSON.stringify({ newStatus: correctionStatus, reason: correctionReason.trim() }),
+      });
+      setShowCorrectionModal(false);
+      setMessage(`'${STATUS_META[correctionStatus]?.label ?? correctionStatus}'(으)로 상태를 정정했어요.`);
+      refreshMyStatus();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '상태 정정에 실패했습니다.');
+      setMessageIsError(true);
+    } finally {
+      setSubmittingCorrection(false);
+    }
   }
 
   /**
@@ -1534,6 +1575,64 @@ export default function EmployeeHome() {
         </div>
       )}
 
+      {showCorrectionModal && (
+        <div className="quick-confirm-backdrop" onClick={closeCorrectionModal}>
+          <div className="card notice-tint-blue quick-confirm-sheet" onClick={(e) => e.stopPropagation()}>
+            ✏️ 상태 정정
+            <div className="board-empty" style={{ marginTop: 4, marginBottom: 0 }}>
+              오늘 상태를 잘못 등록하셨다면(예: 휴가인데 본사출근을 눌렀어요) 여기서 바로 고칠 수 있어요. 사유는 기록에 남아요.
+            </div>
+
+            <label style={{ marginTop: 10, display: 'block' }}>
+              바꿀 상태
+              <select
+                value={correctionStatus}
+                onChange={(e) => setCorrectionStatus(e.target.value)}
+                style={{ marginTop: 4 }}
+              >
+                {visibleStatusOrder.map((code) => (
+                  <option key={code} value={code}>
+                    {STATUS_META[code].icon} {STATUS_META[code].label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label style={{ marginTop: 10, display: 'block' }}>
+              정정 사유 (필수)
+              <textarea
+                className="detail-textarea"
+                rows={2}
+                style={{ marginTop: 4 }}
+                placeholder="예: 휴가인데 본사출근을 잘못 눌러서 정정합니다."
+                value={correctionReason}
+                onChange={(e) => setCorrectionReason(e.target.value)}
+                maxLength={200}
+                autoFocus
+              />
+            </label>
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button
+                style={{ width: 'auto', margin: 0 }}
+                disabled={submittingCorrection || !correctionReason.trim()}
+                onClick={submitCorrection}
+              >
+                {submittingCorrection ? '정정 중...' : '정정 확정'}
+              </button>
+              <button
+                className="secondary"
+                style={{ width: 'auto', margin: 0 }}
+                disabled={submittingCorrection}
+                onClick={closeCorrectionModal}
+              >
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {arrivedClient && (
         <div className="card col-full notice-tint-blue">
           🚗 <strong>{arrivedClient}</strong>에 도착하신 것 같아요! 어떤 걸로 등록할까요?
@@ -1896,6 +1995,15 @@ export default function EmployeeHome() {
                 </button>
               </div>
             )}
+            <div style={{ textAlign: 'right', marginTop: 8 }}>
+              <button
+                className="secondary"
+                style={{ width: 'auto', margin: 0, padding: '4px 10px', fontSize: 12 }}
+                onClick={openCorrectionModal}
+              >
+                ✏️ 상태를 잘못 등록했어요 — 정정하기
+              </button>
+            </div>
           </div>
 
           {me.assignedClient && (

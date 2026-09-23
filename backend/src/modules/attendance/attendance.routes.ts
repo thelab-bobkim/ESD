@@ -993,6 +993,70 @@ attendanceRouter.post('/status/undo', async (req, res) => {
   return res.json({ success: true, data: { undone: true } });
 });
 
+// 2026-09-23: "본인 상태 정정" — 실수로 다른 상태(예: 본사출근)를 확정해버려서 되돌리기(위
+// /status/undo, 10분 제한)로도 더 이상 못 고치는 경우, 본인이 직접 사유를 남기고 오늘 상태를
+// 바로잡을 수 있게 한다(윤혜선 사원 사례 — 휴가인데 본사출근을 잘못 눌러버림. 처음엔 관리자 전용
+// 메뉴로 만들었으나 "관리자가 아니라 본인이 고칠 수 있게 해달라"는 요청으로 직원 화면에도 추가).
+// - 관리자용 정정(dashboard.routes.ts POST /dashboard/correct-status)과 같은 원칙: 새
+//   StatusChangeLog를 추가만 하고(기존 로그는 그대로 두고) note에 사유를 남기고
+//   AuditLog(actionType=CORRECT)에 정식 기록한다 — 차이는 대상이 본인(req.authUser.userId)으로
+//   고정된다는 점뿐이다(다른 사람 상태는 이 엔드포인트로 못 고친다 — body에 userId를 안 받음).
+// - 위 /status POST와 달리 위치대조·출근시각 자동인식·공수기록 등 부수효과를 전혀 만들지 않는다 —
+//   "화면에 표시되는 오늘 상태"만 정정하는 용도이므로, 실제 업무기록(공수/야간작업/출장)까지 새로
+//   만들면 오히려 데이터가 꼬인다. 위치확인이 필요한 상태(고객사미팅/작업 등)로 정정해도 이
+//   경로로는 위치기록이 남지 않으니, 정말 그 상태로 일한 것이면 정정 대신 해당 아이콘을 다시
+//   눌러 정식 등록하는 게 맞다 — 이 메뉴는 "단순 오탭 정정" 용도임을 프론트에서 안내한다.
+const correctOwnStatusSchema = z.object({
+  newStatus: z.enum([
+    'REMOTE', 'HQ_WORKING', 'RESIDENT_ONSITE', 'MOVING', 'CLIENT_MEETING', 'CLIENT_WORK',
+    'NIGHT_WORK', 'WEEKEND_WORK', 'BUSINESS_TRIP', 'ALT_DAY_OFF', 'ON_LEAVE',
+  ]),
+  reason: z.string().trim().min(2, '사유를 2자 이상 입력해주세요.').max(200),
+});
+
+/** 본인의 오늘 상태를 직접 정정한다(사유 필수, 감사로그 기록). */
+attendanceRouter.post('/status/correct', async (req, res) => {
+  const parsed = correctOwnStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'INVALID_INPUT', message: parsed.error.issues[0]?.message ?? '입력값을 확인해주세요.' },
+    });
+  }
+  const userId = req.authUser!.userId;
+  const { newStatus, reason } = parsed.data;
+
+  // 상황판/관리자 정정과 동일한 "하루" 경계 기준으로, 지금 화면에 보이는 오늘 상태를 정정 대상으로 삼는다.
+  const { start: dayStart, end: dayEnd } = realDayWindow(todayDateOnly());
+  const previousLog = await prisma.statusChangeLog.findFirst({
+    where: { userId, changedAt: { gte: dayStart, lt: dayEnd } },
+    orderBy: { changedAt: 'desc' },
+  });
+
+  const newLog = await prisma.statusChangeLog.create({
+    data: {
+      userId,
+      status: newStatus,
+      note: `[본인 수정] ${reason}`,
+      source: previousLog?.source ?? 'WEB',
+    },
+  });
+
+  await recordAuditLog({
+    actorUserId: userId,
+    actionType: 'CORRECT',
+    targetType: 'status_change_log',
+    targetId: newLog.id,
+    beforeValue: previousLog
+      ? { status: previousLog.status, note: previousLog.note, changedAt: previousLog.changedAt }
+      : null,
+    afterValue: { status: newStatus, reason },
+    ipAddress: req.ip ?? null,
+  });
+
+  return res.json({ success: true, data: { id: newLog.id, status: newLog.status, changedAt: newLog.changedAt } });
+});
+
 // 마지막 근무위치(본사/고객사)를 30분 이상 벗어난 게 프론트에서 감지되면 이 세 엔드포인트를 쓴다.
 // "시스템이 임의로 근태를 확정하지 않는다" 원칙을 지키기 위해, 자동감지는 항상 지난 근무일 정정
 // 신청과 같은 승인 큐에 "제안"만 만들어두고, 실제 반영은 (1) 본인이 그 자리에서 확인하거나
