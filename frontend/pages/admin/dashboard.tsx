@@ -193,6 +193,15 @@ export default function AdminDashboard() {
   const [messageThread, setMessageThread] = useState<ThreadMessage[] | null>(null);
   const [loadingThread, setLoadingThread] = useState(false);
 
+  // 2026-09-23: "관리자 상태 정정" — 직원이 실수로 다른 상태(예: 본사출근)를 눌러 확정해버려서
+  // 본인이 더 이상 못 고치는 경우(윤혜선 사원 사례 — 휴가인데 본사출근을 눌러버림), 관리자가 사유를
+  // 남기고 그 자리에서 오늘 상태를 바로잡을 수 있게 한다(backend: POST /dashboard/correct-status).
+  const [correctionTarget, setCorrectionTarget] = useState<{ userId: string; name: string } | null>(null);
+  const [correctionStatus, setCorrectionStatus] = useState('');
+  const [correctionReason, setCorrectionReason] = useState('');
+  const [submittingCorrection, setSubmittingCorrection] = useState(false);
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
+
   function loadUnreadReplies() {
     apiFetch<UnreadReply[]>('/messages/admin/unread-summary')
       .then(setUnreadReplies)
@@ -247,6 +256,42 @@ export default function AdminDashboard() {
       setMessageResult(e instanceof Error ? e.message : '메시지 전송에 실패했습니다.');
     } finally {
       setSendingMessage(false);
+    }
+  }
+
+  function openCorrectionModal(userId: string, name: string, currentStatus: string | null) {
+    setCorrectionTarget({ userId, name });
+    setCorrectionStatus(currentStatus && STATUS_META[currentStatus] ? currentStatus : STATUS_ORDER[0]);
+    setCorrectionReason('');
+    setCorrectionError(null);
+  }
+
+  function closeCorrectionModal() {
+    if (submittingCorrection) return;
+    setCorrectionTarget(null);
+    setCorrectionError(null);
+  }
+
+  async function submitCorrection() {
+    if (!correctionTarget || !correctionReason.trim()) return;
+    setSubmittingCorrection(true);
+    setCorrectionError(null);
+    try {
+      await apiFetch('/dashboard/correct-status', {
+        method: 'POST',
+        body: JSON.stringify({
+          userId: correctionTarget.userId,
+          newStatus: correctionStatus,
+          reason: correctionReason.trim(),
+        }),
+      });
+      setCorrectionTarget(null);
+      setCorrectionReason('');
+      await load();
+    } catch (e) {
+      setCorrectionError(e instanceof Error ? e.message : '상태 수정에 실패했습니다.');
+    } finally {
+      setSubmittingCorrection(false);
     }
   }
 
@@ -713,11 +758,22 @@ export default function AdminDashboard() {
                         </div>
                       </div>
                     </div>
-                    {e.isProvisional ? (
-                      <span className="cc-alert-flag" style={{ background: 'rgba(112,72,222,0.15)', color: '#7048e8' }}>확인 대기중</span>
-                    ) : (
-                      badge && <span className={`cc-alert-flag${flagClass ? ` ${flagClass}` : ''}`}>{badge.text.replace(/^\S+\s/, '')}</span>
-                    )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {e.isProvisional ? (
+                        <span className="cc-alert-flag" style={{ background: 'rgba(112,72,222,0.15)', color: '#7048e8' }}>확인 대기중</span>
+                      ) : (
+                        badge && <span className={`cc-alert-flag${flagClass ? ` ${flagClass}` : ''}`}>{badge.text.replace(/^\S+\s/, '')}</span>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary"
+                        style={{ width: 'auto', margin: 0, padding: '2px 8px', fontSize: 11, flexShrink: 0 }}
+                        title={`${e.name}님 상태를 관리자가 직접 수정`}
+                        onClick={() => openCorrectionModal(e.userId, e.name, e.status)}
+                      >
+                        ✏️ 수정
+                      </button>
+                    </div>
                   </div>
                   {e.isProvisional ? (
                     <div className="cc-alert-note">
@@ -861,6 +917,15 @@ export default function AdminDashboard() {
                           {code === 'RESIDENT_ONSITE' && e.client ? ` · ${e.client}` : ''}
                         </div>
                       </div>
+                      <button
+                        type="button"
+                        className="secondary"
+                        style={{ width: 'auto', margin: 0, padding: '2px 8px', fontSize: 11, flexShrink: 0 }}
+                        title={`${e.name}님 상태를 관리자가 직접 수정`}
+                        onClick={() => openCorrectionModal(e.userId, e.name, e.status)}
+                      >
+                        ✏️ 수정
+                      </button>
                     </div>
                     {code !== 'CLOCKED_OUT' && e.isProvisional && (
                       <div className="meta" style={{ color: '#7048e8', fontWeight: 600 }}>⏳ 확인 대기중(출근 버튼만 누름 — 상태 미확정)</div>
@@ -949,6 +1014,69 @@ export default function AdminDashboard() {
                 onClick={closeMessageModal}
               >
                 닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {correctionTarget && (
+        <div
+          className="quick-confirm-backdrop"
+          onClick={closeCorrectionModal}
+        >
+          <div className="card notice-tint-blue quick-confirm-sheet" onClick={(e) => e.stopPropagation()}>
+            ✏️ <strong>{correctionTarget.name}</strong>님 상태 수정
+            <div className="meta" style={{ marginTop: 4, color: 'var(--dsti-text-faint)' }}>
+              직원이 잘못 등록한 오늘 상태를 관리자가 대신 바로잡습니다. 사유는 감사 로그에 기록됩니다.
+            </div>
+
+            <label style={{ marginTop: 10, display: 'block' }}>
+              바꿀 상태
+              <select
+                value={correctionStatus}
+                onChange={(e) => setCorrectionStatus(e.target.value)}
+                style={{ marginTop: 4 }}
+              >
+                {STATUS_ORDER.map((code) => (
+                  <option key={code} value={code}>
+                    {STATUS_META[code].icon} {STATUS_META[code].label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label style={{ marginTop: 10, display: 'block' }}>
+              수정 사유 (필수)
+              <textarea
+                className="detail-textarea"
+                rows={2}
+                style={{ marginTop: 4 }}
+                placeholder="예: 휴가인데 본사출근을 잘못 눌러서 정정합니다."
+                value={correctionReason}
+                onChange={(e) => setCorrectionReason(e.target.value)}
+                maxLength={200}
+                autoFocus
+              />
+            </label>
+
+            {correctionError && <div className="msg-warn" style={{ marginTop: 8, padding: '6px 10px', borderRadius: 8 }}>{correctionError}</div>}
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button
+                style={{ width: 'auto', margin: 0 }}
+                disabled={submittingCorrection || !correctionReason.trim()}
+                onClick={submitCorrection}
+              >
+                {submittingCorrection ? '수정 중...' : '수정 확정'}
+              </button>
+              <button
+                className="secondary"
+                style={{ width: 'auto', margin: 0 }}
+                disabled={submittingCorrection}
+                onClick={closeCorrectionModal}
+              >
+                취소
               </button>
             </div>
           </div>

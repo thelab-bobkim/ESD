@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { realDayWindow, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
+import { recordAuditLog } from '../../common/audit';
 
 // 본사근무/고객사작업/고객사미팅/재택은 "우선 등록, 세부내용은 나중에" 원칙상 등록 직후엔
 // note가 비어있을 수 있다(attendance.routes.ts EFFORT_STATUSES와 동일하게 유지). 이 경우에도
@@ -241,6 +242,81 @@ dashboardRouter.get('/client/:id', async (req, res) => {
   const users = await prisma.user.findMany({ where: { assignedClientId: req.params.id }, select: { id: true } });
   const board = await buildStatusBoard(users.map((u) => u.id), undefined, canViewMismatchCoords(req));
   return res.json({ success: true, data: board });
+});
+
+// 2026-09-23: "관리자 상태 정정" — 직원이 실수로 다른 상태(예: 본사출근)를 눌러 확정해버려서
+// 본인이 더 이상 고칠 수 없는 경우(예: 윤혜선 사원 — 휴가인데 본사출근을 눌러버림), 관리자가
+// 그 자리에서 사유를 남기고 오늘 상태를 바로 잡을 수 있게 한다.
+// - StatusSource에는 "관리자 정정"에 해당하는 값이 따로 없다(WEB/MOBILE/SYSTEM뿐) — 새 값을
+//   추가하려면 배포 시 수동으로 `ALTER TYPE`을 실행해야 하는 위험이 있어(위 WEEKEND_WORK 추가 시
+//   주석 참고), 대신 note에 "[관리자 수정] 사유"를 남기고 AuditLog(actionType=CORRECT)에 정식으로
+//   기록해 추적한다.
+// - 기존 로그를 수정/삭제하지 않고 changedAt이 더 늦은 새 로그를 추가만 한다 — buildStatusBoard가
+//   "그날 가장 최근 로그"를 현재 상태로 보여주는 로직을 그대로 타므로, 그 외에는 아무것도 바꿀 필요가 없다.
+// - PILOT_MANAGER는 상황판을 볼 수는 있지만(위 라우터 레벨 requireRole) 이 쓰기 작업까지는 허용하지
+//   않는다 — approval.routes.ts의 쓰기 엔드포인트 권한 규칙과 동일하게 맞춘다.
+const correctStatusSchema = z.object({
+  userId: z.string().min(1),
+  newStatus: z.enum([
+    'HQ_WORKING',
+    'RESIDENT_ONSITE',
+    'OFFSITE',
+    'MEETING',
+    'MOVING',
+    'REMOTE',
+    'NIGHT_WORK',
+    'WEEKEND_WORK',
+    'ALT_DAY_OFF',
+    'ON_LEAVE',
+    'CLIENT_MEETING',
+    'CLIENT_WORK',
+    'BUSINESS_TRIP',
+  ]),
+  reason: z.string().trim().min(2, '사유를 2자 이상 입력해주세요.').max(200),
+});
+
+dashboardRouter.post('/correct-status', requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN'), async (req, res) => {
+  const parsed = correctStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? '입력값을 확인해주세요.' });
+  }
+  const { userId, newStatus, reason } = parsed.data;
+  const actorUserId = req.authUser!.userId;
+
+  const targetUser = await prisma.user.findUnique({ where: { id: userId } });
+  if (!targetUser) {
+    return res.status(404).json({ success: false, message: '대상 직원을 찾을 수 없습니다.' });
+  }
+
+  // 상황판과 동일한 "하루" 경계 기준으로, 지금 화면에 보이는 오늘 상태를 정정 대상으로 삼는다.
+  const { start: dayStart, end: dayEnd } = realDayWindow(dateOnlyUTC());
+  const previousLog = await prisma.statusChangeLog.findFirst({
+    where: { userId, changedAt: { gte: dayStart, lt: dayEnd } },
+    orderBy: { changedAt: 'desc' },
+  });
+
+  const newLog = await prisma.statusChangeLog.create({
+    data: {
+      userId,
+      status: newStatus,
+      note: `[관리자 수정] ${reason}`,
+      source: previousLog?.source ?? 'WEB',
+    },
+  });
+
+  await recordAuditLog({
+    actorUserId,
+    actionType: 'CORRECT',
+    targetType: 'status_change_log',
+    targetId: newLog.id,
+    beforeValue: previousLog
+      ? { status: previousLog.status, note: previousLog.note, changedAt: previousLog.changedAt }
+      : null,
+    afterValue: { status: newStatus, reason, targetUserId: userId, targetUserName: targetUser.name },
+    ipAddress: req.ip ?? null,
+  });
+
+  return res.json({ success: true, data: { id: newLog.id, status: newLog.status, changedAt: newLog.changedAt } });
 });
 
 const daySchema = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
