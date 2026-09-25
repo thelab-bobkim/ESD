@@ -9,6 +9,10 @@ const NAV_ITEMS = [
   { href: '/admin/calendar', label: '캘린더', icon: '🗓️' },
   { href: '/admin/approvals', label: '승인함', icon: '✅' },
   { href: '/admin/clients', label: '고객사 위치관리', icon: '📍' },
+  // 2026-09-25: 대표이사 요청 — 엔지니어들이 아웃룩으로 보내는 야간/주말작업 자기보고 메일을
+  // 매번 열어보지 않고도 여기서 한눈에 보기 위함(Claude가 주기적으로 채워넣는 열람 전용 데이터,
+  // night-work-mail.routes.ts 참고). 기존 "야간근무"(대체휴무 전환용 NightWorkSession)와는 별개다.
+  { href: '/admin/night-work-mail', label: '야간·주말작업 보고서', icon: '🌙' },
   { href: '/admin/board-scope', label: '표시 대상 관리', icon: '🎯' },
   { href: '/admin/feedback', label: '피드백함', icon: '💬' },
   { href: '/admin/messages', label: '메시지함', icon: '📨' },
