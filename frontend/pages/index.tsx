@@ -173,6 +173,10 @@ interface MeAttendance {
   latestEffort: { clientName: string } | null;
   // 정규 근무 마감 정책시각(기본 18) — "정규 근무시간이 지났는데 아직 퇴근 전" 배너 판단에 쓴다.
   regularWorkEndHour: number;
+  // 2026-09-25: 오늘이 "휴일"(주말 또는 법정공휴일)인지 — 법정공휴일 목록은 서버 정책값
+  // (PUBLIC_HOLIDAYS_KST)에만 있어서 프론트 혼자서는 판단할 수 없다(attendance.routes.ts
+  // GET /me, isRestDayKST 참고).
+  isRestDay: boolean;
 }
 interface WeeklySummary { from: string; to: string; totalMinutes: number; days: number; }
 
@@ -391,12 +395,18 @@ export default function EmployeeHome() {
   const kstHourNow = (new Date(nowTick).getUTCHours() + 9) % 24;
   const regularWorkEndHour = myStatus?.regularWorkEndHour ?? 18;
   const isPastRegularWorkEnd = kstHourNow >= regularWorkEndHour || kstHourNow < 3;
-  // 주말(토/일, KST) 여부 — 서버(attendance.routes.ts isWeekendKST)와 동일한 기준. 주말엔
-  // "주말작업"만 등록 가능하므로 이 배너도, 아래 아이콘 잠금도 이 값을 함께 참고한다.
-  const isWeekendToday = (() => {
-    const kstDay = new Date(nowTick + 9 * 60 * 60 * 1000).getUTCDay();
-    return kstDay === 0 || kstDay === 6;
-  })();
+  // 휴일(주말 또는 법정공휴일, KST) 여부 — 서버(attendance.routes.ts isRestDayKST)와 동일한
+  // 기준을 GET /attendance/me 응답(myStatus.isRestDay)으로 그대로 받아온다. 법정공휴일 목록은
+  // 서버 정책값에만 있어서 주말처럼 요일 계산만으로는 알 수 없기 때문(2026-09-25, 추석 연휴
+  // 금요일에 "출근"이 평일처럼 활성화되어 있던 문제 반영). myStatus를 아직 못 받아온 첫
+  // 렌더링 동안에만 주말(토/일) 계산으로 임시 대체한다 — 공휴일 여부까지는 못 잡아도, 잠깐
+  // 사이 화면이 깜빡이며 평일 아이콘이 보였다 잠기는 것보다는 낫다.
+  const isWeekendToday = myStatus
+    ? myStatus.isRestDay
+    : (() => {
+        const kstDay = new Date(nowTick + 9 * 60 * 60 * 1000).getUTCDay();
+        return kstDay === 0 || kstDay === 6;
+      })();
   // 주말엔 "퇴근하고 야간작업으로" 배너가 의미가 없다(주말작업은 애초에 정규 근무시간 개념이
   // 없고, 버튼을 눌러도 서버가 평일 전용인 야간작업 등록을 막아버린다) — 평일에만 띄운다.
   const showNightWorkTransitionPrompt = Boolean(
@@ -2011,7 +2021,7 @@ export default function EmployeeHome() {
             )}
             {isWeekendToday && (
               <div className="board-empty" style={{ marginBottom: 8, color: '#1c7ed6' }}>
-                🗓️ 주말이에요 — 오늘은 &quot;주말작업&quot;만 등록할 수 있어요. 평일 상태 아이콘은 월요일에 다시 열려요.
+                🗓️ 오늘은 주말/공휴일이에요 — &quot;주말작업&quot;만 등록할 수 있어요. 평일 상태 아이콘은 다음 근무일에 다시 열려요.
               </div>
             )}
             <div className="status-icon-grid">
@@ -2019,9 +2029,10 @@ export default function EmployeeHome() {
                 // 퇴근(낮근무 종료) 후에도 야간작업자는 계속 상태를 등록해야 하니 예외로 둔다.
                 // 지난 근무일 퇴근 미해결 건이 있으면(정정 신청 전까지) 야간작업 예외 없이 전부 잠근다 —
                 // 오늘 상태를 계속 쌓아가기 전에 어제 문제부터 정리하게 하기 위함.
-                // 2026-09-06: 주말(토/일)엔 "주말작업" 하나만 남기고 나머지 상태 아이콘을 전부
-                // 잠근다(요청사항) — 서버도 동일한 요일 기준으로 최종 검증하므로(attendance.routes.ts
-                // isWeekendKST), 화면 잠금과 실제 등록 가능 여부가 항상 일치한다.
+                // 2026-09-06: 휴일(주말 또는 법정공휴일)엔 "주말작업" 하나만 남기고 나머지 상태
+                // 아이콘을 전부 잠근다(요청사항) — 서버도 동일한 기준으로 최종 검증하므로
+                // (attendance.routes.ts isRestDayKST), 화면 잠금과 실제 등록 가능 여부가 항상
+                // 일치한다.
                 // 2026-09-14: 관리자 계정이라고 이 잠금들을 건너뛰게 해뒀던 예외를 없앴다 — 관리자도
                 // 똑같은 사용자 화면·똑같은 규칙으로 등록하고, 관리 기능이 필요하면 /admin으로 들어간다.
                 const isLocked = mustResolvePastCorrection

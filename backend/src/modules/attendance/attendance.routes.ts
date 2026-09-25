@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
+import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isRestDayKST, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 import { recordNightWork, willResumeNightWork } from '../../common/night-work-helpers';
 import { recordEffort, findOpenEffort, willUpdateExistingEffort } from '../../common/effort-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, buildMismatchCoords } from '../../common/location';
@@ -138,7 +138,10 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   // 무조건 본사근무를 잠정 등록해왔다 — 주말에 도착팝업을 못 보고(또는 무시하고) 그냥 저녁에
   // 퇴근만 누르면, 실제로는 주말작업인데 본사근무 출근~퇴근으로 하루 전체가 남아 주말작업수당
   // 산정에서 통째로 빠지는 치명적 문제였다(대표이사 지적). 아래에서 이 값으로 분기한다.
-  const isWeekendToday = isWeekendKST();
+  // 2026-09-25: 주말(토/일)만 보고 있어서 추석 연휴처럼 평일에 걸치는 법정공휴일엔 그대로
+  // "출근" 버튼이 평일처럼 활성화되어 있던 문제(대표이사 지적) — isRestDayKST로 공휴일까지
+  // 함께 판단한다.
+  const isWeekendToday = await isRestDayKST();
   // 좌표는 저장하지 않고, 본사와의 거리 비교에만 즉시 사용하고 폐기한다.
   const location = req.body?.location as { lat: number; lng: number } | undefined;
   // 카카오맵 역지오코딩 주소(frontend에서 이미 변환해서 보내줌) — 좌표와 마찬가지로 대조 후 폐기.
@@ -526,21 +529,22 @@ attendanceRouter.post('/status', async (req, res) => {
   const userId = req.authUser!.userId;
   const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus, locationAddress, accuracyMeters } = parsed.data;
 
-  // 주말(토/일, KST) 게이트(2026-09-06 요청): 주말엔 "주말작업"만 등록할 수 있고 나머지 상태는
-  // 막는다 — 반대로 평일엔 "주말작업"을 등록할 수 없다. 관리자 계정도 예외 없이 적용한다(프론트
-  // 아이콘 잠금은 관리자 계정에는 안 걸어두지만, 실제 등록은 여기서 최종적으로 검증되므로 관리자가
-  // 테스트 삼아 눌러도 이 규칙은 그대로 지켜진다).
-  const isWeekendNow = isWeekendKST();
+  // 휴일(주말 토/일 + 법정공휴일, KST) 게이트(2026-09-06 요청, 2026-09-25 공휴일 반영): 휴일엔
+  // "주말작업"만 등록할 수 있고 나머지 상태는 막는다 — 반대로 평일(공휴일 아닌 날)엔 "주말작업"을
+  // 등록할 수 없다. 관리자 계정도 예외 없이 적용한다(프론트 아이콘 잠금은 관리자 계정에는 안
+  // 걸어두지만, 실제 등록은 여기서 최종적으로 검증되므로 관리자가 테스트 삼아 눌러도 이 규칙은
+  // 그대로 지켜진다).
+  const isWeekendNow = await isRestDayKST();
   if (isWeekendNow && status !== 'WEEKEND_WORK') {
     return res.status(400).json({
       success: false,
-      error: { code: 'WEEKEND_ONLY_WEEKEND_WORK', message: '주말에는 "주말작업" 상태만 등록할 수 있습니다.' },
+      error: { code: 'WEEKEND_ONLY_WEEKEND_WORK', message: '주말/공휴일에는 "주말작업" 상태만 등록할 수 있습니다.' },
     });
   }
   if (!isWeekendNow && status === 'WEEKEND_WORK') {
     return res.status(400).json({
       success: false,
-      error: { code: 'WEEKEND_WORK_ONLY_ON_WEEKEND', message: '주말작업은 토요일/일요일에만 등록할 수 있습니다.' },
+      error: { code: 'WEEKEND_WORK_ONLY_ON_WEEKEND', message: '주말작업은 토요일/일요일 또는 법정공휴일에만 등록할 수 있습니다.' },
     });
   }
 
@@ -1300,9 +1304,14 @@ attendanceRouter.get('/me', async (req, res) => {
   // 이어가시겠어요?" 배너를 관리자 정책값과 맞춰 띄울 수 있도록, 값을 그대로 내려준다
   // (하드코딩하면 관리자가 정책값을 바꿨을 때 프론트만 안 맞게 되는 문제가 있어서).
   const regularWorkEndHour = await getPolicyNumber('REGULAR_WORK_END_HOUR', 18);
+  // 2026-09-25: 법정공휴일 목록(PUBLIC_HOLIDAYS_KST)은 서버 정책값에만 있어서 프론트 혼자서는
+  // "오늘이 휴일인지" 판단할 수 없다(주말은 요일 계산만으로 가능하지만 공휴일은 불가능) — "출근"
+  // 버튼·상태 아이콘 잠금이 서버의 휴일 게이트(POST /status WEEKEND_ONLY_WEEKEND_WORK)와 항상
+  // 일치하도록 여기서 함께 내려준다.
+  const isRestDay = await isRestDayKST();
   return res.json({
     success: true,
-    data: { record, latestStatus, latestEffort: latestEffort ? { clientName: latestEffort.clientName } : null, regularWorkEndHour },
+    data: { record, latestStatus, latestEffort: latestEffort ? { clientName: latestEffort.clientName } : null, regularWorkEndHour, isRestDay },
   });
 });
 

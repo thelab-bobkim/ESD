@@ -47,6 +47,20 @@ export async function isPublicHolidayKST(date: Date = new Date()): Promise<boole
 }
 
 /**
+ * "휴일"(주말 또는 법정공휴일) 통합 판단 — 2026-09-25 대표이사 지적: 추석 연휴(금요일)인데도
+ * "출근" 버튼과 상태 아이콘이 평일처럼 활성화되어 있던 문제. isPublicHolidayKST는 그동안 정의만
+ * 되어 있었을 뿐 출근/상태등록 게이트(attendance.routes.ts)와 사용자 화면 잠금(frontend
+ * index.tsx) 어디에서도 실제로 쓰이지 않았다(reminder-scheduler.ts의 알림 스킵 로직만 두 함수를
+ * 함께 쓰고 있었음) — 그 두 군데도 이제 이 함수로 통일한다. 주말 여부는 동기 계산이라 즉시 알 수
+ * 있지만 공휴일 여부는 정책값 조회가 필요해 비동기이므로, 이미 주말이면 공휴일 조회 자체를
+ * 생략한다.
+ */
+export async function isRestDayKST(date: Date = new Date()): Promise<boolean> {
+  if (isWeekendKST(date)) return true;
+  return isPublicHolidayKST(date);
+}
+
+/**
  * "오늘"의 workDate를 계산한다. 자정이 아니라 새벽 3시(KST)를 하루의 경계로 삼는다 —
  * 야간작업자가 새벽 1~2시까지 일하는 경우가 많아서, 자정을 넘겨도 "어제"로 계속 잡히게 하기 위함.
  * (새벽 3시가 지나야 비로소 "새 하루"로 넘어가며, 그때부터 출근 버튼 등이 다시 활성화된다.)
