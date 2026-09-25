@@ -137,8 +137,8 @@ export default function AdminNightWorkMailPage() {
           </div>
           <form onSubmit={onSearchSubmit} style={{ display: 'flex', gap: 4 }}>
             <input
-              style={{ margin: 0, width: 220 }}
-              placeholder="고객사/보고자/작업인원 검색"
+              style={{ margin: 0, width: 260 }}
+              placeholder="고객사 또는 엔지니어(보고자/작업인원) 검색"
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
@@ -218,15 +218,15 @@ export default function AdminNightWorkMailPage() {
                     <td style={{ whiteSpace: 'nowrap' }}>{formatDate(r.workDate)}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>{r.kind === 'NIGHT' ? '🌙 야간작업' : '🏖️ 주말작업'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>{r.reporterName}</td>
-                    <td>{r.clientNameRaw}</td>
-                    <td>{r.location ?? '-'}</td>
+                    <td style={{ maxWidth: 140, whiteSpace: 'normal', wordBreak: 'break-word' }}>{r.clientNameRaw}</td>
+                    <td style={{ maxWidth: 140, whiteSpace: 'normal', wordBreak: 'break-word' }}>{r.location ?? '-'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>{r.workTimeRaw ?? '-'}</td>
-                    <td style={{ maxWidth: 280 }}>{r.workContent ?? '-'}</td>
-                    <td>{r.workers ?? '-'}</td>
+                    <td style={{ maxWidth: 280, whiteSpace: 'normal', wordBreak: 'break-word' }}>{r.workContent ?? '-'}</td>
+                    <td style={{ maxWidth: 160, whiteSpace: 'normal', wordBreak: 'break-word' }}>{r.workers ?? '-'}</td>
                     <td style={{ whiteSpace: 'nowrap', color: '#868e96' }}>
                       {r.tsbLocationVerified == null ? '대조 예정' : r.tsbLocationVerified ? '✓ 일치' : '⚠ 불일치'}
                     </td>
-                    <td style={{ maxWidth: 220, color: r.note ? '#e8590c' : undefined }}>{r.note ?? ''}</td>
+                    <td style={{ maxWidth: 220, whiteSpace: 'normal', wordBreak: 'break-word', color: r.note ? '#e8590c' : undefined }}>{r.note ?? ''}</td>
                     <td>
                       {r.mailWebLink && (
                         <a href={r.mailWebLink} target="_blank" rel="noreferrer">

@@ -183,6 +183,10 @@ export default function AdminEffortPage() {
   const [timeline, setTimeline] = useState<TimelineEntry[] | null>(null);
   const [timelineError, setTimelineError] = useState<string | null>(null);
   const [workTypeFilter, setWorkTypeFilter] = useState('ALL');
+  // 2026-09-25: 대표이사 요청 — 야간·주말작업 보고서 화면처럼 "고객사별/엔지니어별 검색"이 바로
+  // 되면 좋겠다는 의견 반영. 대상 목록(드롭다운과 동일한 데이터)을 이름으로 즉시 필터링해서
+  // 순위 카드에 보여주고, 클릭하면 바로 그 대상의 타임라인으로 전환된다.
+  const [targetSearch, setTargetSearch] = useState('');
   // 년/월/일을 직접 선택하는 기간 — 지정하면 위 탭(월/분기/반기/년)보다 우선한다.
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
@@ -250,6 +254,13 @@ export default function AdminEffortPage() {
   const selectedKey = perspective === 'client' ? selectedClientName : selectedEngineerId;
   const resolvedKey = currentTargets.some((t) => t.key === selectedKey) ? selectedKey : (currentTargets[0]?.key ?? '');
   const currentTarget = currentTargets.find((t) => t.key === resolvedKey) ?? null;
+  // 대상 드롭다운은 이름 가나다순을 유지하되(위 정렬 참고), 검색+순위 카드는 이 기간의 투입시간이
+  // 많은 순으로 보여준다 — 야간·주말작업 보고서의 "인원별/고객사별 건수" 카드와 같은 느낌.
+  const rankedTargets = useMemo(() => {
+    const term = targetSearch.trim().toLowerCase();
+    const base = term ? currentTargets.filter((t) => t.label.toLowerCase().includes(term)) : currentTargets;
+    return [...base].sort((a, b) => b.totalMinutes - a.totalMinutes);
+  }, [currentTargets, targetSearch]);
   // 고객사별 관점은 effort 응답만 있으면 되지만, 엔지니어별 관점은 roster까지 로드돼야 목록이
   // 완성된다(engineerTargets 참고).
   const isDataLoading = !effort || (perspective === 'engineer' && !roster);
@@ -351,6 +362,56 @@ export default function AdminEffortPage() {
       {isDataLoading && <div className="card"><div className="board-empty">불러오는 중...</div></div>}
       {!isDataLoading && currentTargets.length === 0 && (
         <div className="card"><div className="board-empty">이 조건에 등록된(완료된) 공수기록이 없습니다.</div></div>
+      )}
+
+      {/* 2026-09-25: 야간·주말작업 보고서 대시보드처럼, 대상을 하나씩 드롭다운으로 고르기 전에
+          이 기간 전체 순위를 한눈에 보고 이름으로 바로 검색할 수 있게 한다. 행을 클릭하면
+          아래 상세 타임라인이 그 대상으로 바로 전환된다. */}
+      {!isDataLoading && currentTargets.length > 0 && (
+        <div className="card">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+            <h3 style={{ fontSize: 13, margin: 0 }}>
+              {perspective === 'client' ? '🏢 고객사별 순위' : '🧑‍💻 엔지니어별 순위'} · {rangeLabel}
+            </h3>
+            <input
+              style={{ margin: 0, width: 220 }}
+              placeholder={perspective === 'client' ? '고객사 검색' : '엔지니어 검색'}
+              value={targetSearch}
+              onChange={(e) => setTargetSearch(e.target.value)}
+            />
+          </div>
+          {rankedTargets.length === 0 && <div className="board-empty">검색 결과가 없습니다.</div>}
+          {rankedTargets.length > 0 && (
+            <div style={{ display: 'grid', gap: 4, maxHeight: 260, overflowY: 'auto' }}>
+              {rankedTargets.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => (perspective === 'client' ? setSelectedClientName(t.key) : setSelectedEngineerId(t.key))}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    width: '100%',
+                    padding: '7px 10px',
+                    margin: 0,
+                    borderRadius: 8,
+                    border: 'none',
+                    cursor: 'pointer',
+                    background: t.key === resolvedKey ? '#eef1ff' : '#f8f9fc',
+                    color: t.key === resolvedKey ? '#3d5afe' : '#1c1f24',
+                    fontWeight: t.key === resolvedKey ? 700 : 500,
+                    fontSize: 12.5,
+                    textAlign: 'left',
+                  }}
+                >
+                  <span>{t.label}</span>
+                  <span style={{ color: t.key === resolvedKey ? '#3d5afe' : '#868e96', fontVariantNumeric: 'tabular-nums' }}>{hoursLabel(t.totalMinutes)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {!isDataLoading && currentTarget && (
