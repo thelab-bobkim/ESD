@@ -1556,7 +1556,10 @@ export default function EmployeeHome() {
               </div>
             </div>
           </div>
-        ) : (
+        ) : isWeekendToday ? null : (
+          // 2026-09-25: 휴일엔 이 독려 문구를 보여주지 않는다(대표이사 지적) — 대부분 근무하지
+          // 않는 날에 "아직 상태 등록 안 하셨네요!"라고 채근할 이유가 없다. 실제로 휴일에
+          // 근무하는 소수를 위한 안내는 아래 상태 아이콘 근처의 차분한 안내 배너로 충분하다.
           <div className="hero-nudge">
             🌤️ 아직 오늘 상태를 등록 안 하셨네요! 아래에서 지금 상태를 눌러주세요 — 10초면 끝나요.
           </div>
@@ -1878,6 +1881,17 @@ export default function EmployeeHome() {
         <div>
           <div className="card">
             <h2>출퇴근</h2>
+            {/* 2026-09-25: "휴일엔 출근을 독려할 일이 없다"(대표이사 지적) — 휴일엔 대부분
+                근무하지 않으므로, 평일용 "출근" 버튼(본사근무 수동 등록)을 아예 숨긴다. 실제로
+                휴일에 근무하는 경우엔 아래 상태 아이콘에서 "주말작업"을 고르면 그 순간 자동으로
+                출근 처리된다(WORK_START_STATUSES, attendance.routes.ts ensureClockIn 참고) —
+                이 버튼이 없어도 등록 경로는 그대로 남아있다. */}
+            {isWeekendToday && (
+              <div className="notice-inline-orange" style={{ marginBottom: 12 }}>
+                🗓️ 오늘은 휴일이에요 — 실제로 근무하신 경우에만 아래 상태 아이콘에서 &quot;주말작업&quot;을 선택해주세요. 선택하는 순간 자동으로 출근 처리돼요.
+              </div>
+            )}
+            {!isWeekendToday && (
             <button
               className={myStatus?.record?.clockInAt ? 'done' : ''}
               disabled={Boolean(myStatus?.record?.clockInAt)}
@@ -1928,6 +1942,7 @@ export default function EmployeeHome() {
             >
               {myStatus?.record?.clockInAt ? `✓ 출근 완료 · ${fmtClock(myStatus.record.clockInAt)}` : '출근'}
             </button>
+            )}
             <button
               className={myStatus?.record?.clockOutAt ? 'done' : 'secondary'}
               disabled={!myStatus?.record?.clockInAt || Boolean(myStatus?.record?.clockOutAt)}
@@ -1986,12 +2001,14 @@ export default function EmployeeHome() {
                 onSelect={(lat, lng, address) => confirmNewClientWithLocation(lat, lng, address)}
               />
             )}
+            {!isWeekendToday && (
             <div className="notice-inline-orange">
               ⚠️ 출근은 자동이에요 — 상태를 누르면 그 순간이 출근시각이 됩니다.
               <span style={{ fontWeight: 400 }}>
                 {' '}"출근" 버튼은 본사 위치가 확인될 때만 처리돼요. 고객사로 바로 가는 날, 출장이나 상주근무인 날은 "출근" 버튼 대신 도착 후 상태를 눌러주세요. 하루를 마치면 꼭 "퇴근"을 눌러야 근무가 확정돼요.
               </span>
             </div>
+            )}
             {!pushSubscribed && iosNeedsInstall ? (
               // 2026-09-04: 아이폰 사파리(홈 화면 앱이 아닌 상태)에서는 눌러도 항상 실패하므로,
               // 버튼 대신 이유와 방법을 바로 보여준다 — "안 된다"가 아니라 "이렇게 하면 된다"로.
