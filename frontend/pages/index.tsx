@@ -177,6 +177,9 @@ interface MeAttendance {
   // (PUBLIC_HOLIDAYS_KST)에만 있어서 프론트 혼자서는 판단할 수 없다(attendance.routes.ts
   // GET /me, isRestDayKST 참고).
   isRestDay: boolean;
+  // 오늘이 공휴일이면 그 이름("추석" 등), 순수 주말이면 null — 인사말(greetings.ts)이 요일
+  // 문구 대신 이 이름을 부르는 데 쓴다.
+  holidayName: string | null;
 }
 interface WeeklySummary { from: string; to: string; totalMinutes: number; days: number; }
 
@@ -886,7 +889,7 @@ export default function EmployeeHome() {
       departureAwaySinceRef.current = null;
       setDepartureNeedsReason(false);
       setDepartureEarlyLeaveReason('');
-      setMessage(`${fmtClock(info.estimatedAt)}에 퇴근하신 걸로 확정했어요. ${clockOutGreeting(weather)}`);
+      setMessage(`${fmtClock(info.estimatedAt)}에 퇴근하신 걸로 확정했어요. ${clockOutGreeting(weather, myStatus?.holidayName)}`);
       refreshMyStatus();
     } catch (err) {
       const code = err instanceof Error ? (err as Error & { code?: string }).code : undefined;
@@ -1538,7 +1541,7 @@ export default function EmployeeHome() {
 
       {/* 히어로: 인사말 + 지금 내 상태 크게 보여주기 */}
       <div className="hero-card">
-        <div className="hero-greeting">{me.name}님, {heroGreeting(weather)}! 👋</div>
+        <div className="hero-greeting">{me.name}님, {heroGreeting(weather, myStatus?.holidayName)}! 👋</div>
         {currentStatus ? (
           <div className="hero-status">
             <span className="hero-status-icon">{clockedOut ? '🏁' : (STATUS_META[currentStatus.status]?.icon ?? '❔')}</span>
@@ -1955,7 +1958,7 @@ export default function EmployeeHome() {
                         }),
                       }
                     );
-                    setMessage(`퇴근 처리되었습니다. ${clockOutGreeting(weather)}`);
+                    setMessage(`퇴근 처리되었습니다. ${clockOutGreeting(weather, myStatus?.holidayName)}`);
                     refreshMyStatus();
                     setNightWorkPromptDismissed(true);
                     if (viaNightWorkBanner) {

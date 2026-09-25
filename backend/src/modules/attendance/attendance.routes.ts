@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isRestDayKST, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
+import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isRestDayKST, getPublicHolidayNameKST, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 import { recordNightWork, willResumeNightWork } from '../../common/night-work-helpers';
 import { recordEffort, findOpenEffort, willUpdateExistingEffort } from '../../common/effort-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, buildMismatchCoords } from '../../common/location';
@@ -1307,11 +1307,14 @@ attendanceRouter.get('/me', async (req, res) => {
   // 2026-09-25: 법정공휴일 목록(PUBLIC_HOLIDAYS_KST)은 서버 정책값에만 있어서 프론트 혼자서는
   // "오늘이 휴일인지" 판단할 수 없다(주말은 요일 계산만으로 가능하지만 공휴일은 불가능) — "출근"
   // 버튼·상태 아이콘 잠금이 서버의 휴일 게이트(POST /status WEEKEND_ONLY_WEEKEND_WORK)와 항상
-  // 일치하도록 여기서 함께 내려준다.
+  // 일치하도록 여기서 함께 내려준다. holidayName은 "추석"처럼 그 공휴일의 이름(순수 주말이면
+  // null) — 대표이사 지적대로, 공휴일엔 인사말(greetings.ts)이 "불금" 같은 평일 문구 대신 그
+  // 공휴일 이름을 부를 수 있도록 함께 내려준다.
   const isRestDay = await isRestDayKST();
+  const holidayName = await getPublicHolidayNameKST();
   return res.json({
     success: true,
-    data: { record, latestStatus, latestEffort: latestEffort ? { clientName: latestEffort.clientName } : null, regularWorkEndHour, isRestDay },
+    data: { record, latestStatus, latestEffort: latestEffort ? { clientName: latestEffort.clientName } : null, regularWorkEndHour, isRestDay, holidayName },
   });
 });
 

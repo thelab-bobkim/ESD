@@ -98,6 +98,33 @@ const EVENING_BY_WEEKDAY: Record<number, string[]> = {
 
 const DAWN_MSGS = ['늦은 시간까지 고생 많으세요', '무리하지 말고 마무리하세요'];
 
+// 2026-09-25: "추석인데 화면엔 '불금'이라고 나온다"(대표이사 지적) — 요일만 보고 인사말을
+// 고르다 보니, 평일에 걸치는 법정공휴일(추석·설날 등)에도 그냥 그 요일 문구("불금이에요" 등)가
+// 나왔다. 서버가 공휴일 이름을 내려주면(attendance.routes.ts GET /me의 holidayName, 순수
+// 주말이면 null) 아래 공휴일 전용 문구를 요일 문구보다 우선해서 쓴다 — 이름을 문장 맨 뒤가 아니라
+// 조사(은/는/이에요 등) 없이도 자연스러운 자리에 넣어서, "추석"이든 "크리스마스"든 "현충일"이든
+// 받침 유무와 상관없이 다 매끄럽게 읽히도록 문구를 골랐다.
+const HOLIDAY_MORNING_MSGS = (name: string) => [
+  `${name} 아침이에요, 가족과 함께 즐거운 하루 보내세요`,
+  `${name} 잘 보내세요, 오늘 하루도 편안하시길 바라요`,
+  `즐거운 ${name} 보내세요, 가족과 함께 좋은 시간 되세요`,
+];
+const HOLIDAY_LUNCH_MSGS = (name: string) => [
+  `${name} 점심 맛있게 드세요, 가족과 함께 좋은 시간 되세요`,
+  `${name}에도 맛있는 식사 하세요`,
+  `든든하게 드시고 남은 ${name} 편하게 보내세요`,
+];
+const HOLIDAY_AFTERNOON_MSGS = (name: string) => [
+  `${name} 오후, 가족과 함께 즐거운 시간 보내세요`,
+  `편안한 ${name} 오후 되세요`,
+  `소중한 사람들과 함께하는 여유로운 ${name} 오후 되세요`,
+];
+const HOLIDAY_EVENING_MSGS = (name: string) => [
+  `${name} 잘 보내셨길 바라요, 편안한 저녁 되세요`,
+  `오늘 하루도 가족과 함께 즐거운 ${name} 보내셨길 바라요`,
+  `즐거운 ${name} 되세요, 편안한 밤 되세요`,
+];
+
 function pick<T>(arr: T[], seed: number): T {
   const i = ((seed % arr.length) + arr.length) % arr.length;
   return arr[i];
@@ -141,8 +168,10 @@ function weatherSuffix(weather?: WeatherInfo | null): string {
 /**
  * 화면 상단 "지금 상태" 카드의 인사말(이름 뒤에 붙는 문구). 하루 중 시간대에 따라 자동으로 바뀌고,
  * weather를 넘기면 날씨 문구가 뒤에 덧붙는다(생략 가능 — 없으면 요일/시간대 인사말만 나온다).
+ * holidayName을 넘기면(서버 GET /attendance/me의 값, 순수 주말이면 null) 요일 문구 대신 그
+ * 공휴일 이름을 부르는 문구를 쓴다(2026-09-25 — 추석에 "불금" 문구가 나오던 문제 반영).
  */
-export function heroGreeting(weather?: WeatherInfo | null): string {
+export function heroGreeting(weather?: WeatherInfo | null, holidayName?: string | null): string {
   const now = new Date();
   const seed = dateSeed(now);
   const weekday = now.getDay();
@@ -152,25 +181,28 @@ export function heroGreeting(weather?: WeatherInfo | null): string {
       base = pick(DAWN_MSGS, seed);
       break;
     case 'MORNING':
-      base = pick(MORNING_BY_WEEKDAY[weekday] ?? MORNING_BY_WEEKDAY[1], seed);
+      base = holidayName ? pick(HOLIDAY_MORNING_MSGS(holidayName), seed) : pick(MORNING_BY_WEEKDAY[weekday] ?? MORNING_BY_WEEKDAY[1], seed);
       break;
     case 'LUNCH':
-      base = pick(LUNCH_BY_WEEKDAY[weekday] ?? LUNCH_BY_WEEKDAY[1], seed);
+      base = holidayName ? pick(HOLIDAY_LUNCH_MSGS(holidayName), seed) : pick(LUNCH_BY_WEEKDAY[weekday] ?? LUNCH_BY_WEEKDAY[1], seed);
       break;
     case 'AFTERNOON':
-      base = pick(AFTERNOON_BY_WEEKDAY[weekday] ?? AFTERNOON_BY_WEEKDAY[1], seed);
+      base = holidayName ? pick(HOLIDAY_AFTERNOON_MSGS(holidayName), seed) : pick(AFTERNOON_BY_WEEKDAY[weekday] ?? AFTERNOON_BY_WEEKDAY[1], seed);
       break;
     case 'EVENING':
-      base = pick(EVENING_BY_WEEKDAY[weekday] ?? EVENING_BY_WEEKDAY[1], seed);
+      base = holidayName ? pick(HOLIDAY_EVENING_MSGS(holidayName), seed) : pick(EVENING_BY_WEEKDAY[weekday] ?? EVENING_BY_WEEKDAY[1], seed);
       break;
   }
   return base + weatherSuffix(weather);
 }
 
-/** 퇴근 완료 토스트 메시지 뒤에 붙는 인사말. hero 인사말과 겹치지 않게 시드를 살짝 다르게 준다. */
-export function clockOutGreeting(weather?: WeatherInfo | null): string {
+/** 퇴근 완료 토스트 메시지 뒤에 붙는 인사말. hero 인사말과 겹치지 않게 시드를 살짝 다르게 준다.
+ *  holidayName은 heroGreeting과 동일 — 공휴일이면 그 이름을 부르는 문구를 쓴다. */
+export function clockOutGreeting(weather?: WeatherInfo | null, holidayName?: string | null): string {
   const now = new Date();
   const weekday = now.getDay();
-  const base = pick(EVENING_BY_WEEKDAY[weekday] ?? EVENING_BY_WEEKDAY[1], dateSeed(now) + 1);
+  const base = holidayName
+    ? pick(HOLIDAY_EVENING_MSGS(holidayName), dateSeed(now) + 1)
+    : pick(EVENING_BY_WEEKDAY[weekday] ?? EVENING_BY_WEEKDAY[1], dateSeed(now) + 1);
   return base + weatherSuffix(weather);
 }
