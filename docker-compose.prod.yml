@@ -47,6 +47,10 @@ services:
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
       OPENWEATHER_API_KEY: ${OPENWEATHER_API_KEY:-}
+      # 2026-09-25: 야간·주말작업 보고서(아웃룩 메일) 동기화 전용 키. .env.prod에 값을 채워도
+      # 여기 등록되어 있지 않으면 컨테이너 안으로 전달되지 않는다(위 다우오피스 변수들과 동일한 이유 —
+      # 첫 배포 때 이걸 빠뜨려서 /sync가 503(SYNC_NOT_CONFIGURED)을 반환했었다).
+      NIGHT_WORK_MAIL_SYNC_KEY: ${NIGHT_WORK_MAIL_SYNC_KEY:-}
 
   frontend:
     build:
