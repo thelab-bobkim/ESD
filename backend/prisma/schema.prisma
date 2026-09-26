@@ -131,6 +131,14 @@ enum AuditActionType {
   DAUOFFICE_LEAVE_SCRAPE
 }
 
+// 2026-09-26: "일일업무일지"(대표이사 요청) — 오늘 근무형태에 따라 간단히 두 줄만 쓰면 되는 날과
+// 방문 고객사/작업내용 등을 자세히 적어야 하는 날을 구분한다. 판단 로직은
+// daily-work-log.routes.ts의 DETAILED_STATUSES 참고.
+enum DailyWorkLogFormType {
+  SIMPLE
+  DETAILED
+}
+
 model Department {
   id        String          @id @default(uuid())
   name      String          @unique
@@ -224,6 +232,7 @@ model User {
   pilotFeedbackResolved  PilotFeedback[] @relation("PilotFeedbackResolvedBy")
   effortLogs             EffortLog[]
   businessTripLogs       BusinessTripLog[]
+  dailyWorkLogs          DailyWorkLog[]
   pushSubscriptions      PushSubscription[]
   approvalRequestsMade   ApprovalRequest[] @relation("Requester")
   approvalRequestsDecided ApprovalRequest[] @relation("Approver")
@@ -767,4 +776,52 @@ model NightWorkMailReport {
   @@unique([mailInternetMessageId, itemIndex])
   @@index([workDate])
   @@map("night_work_mail_reports")
+}
+
+// ===== 일일업무일지 =====
+// 2026-09-26: 김형태 대표이사 요청 — "매일 업무 마감을 일일업무일지로" 진행하기 위한 표.
+// 1단계(강제 마감): 자동초안 없이, 퇴근 시 "이슈/특이사항"과 "내일 예정 업무" 두 줄만 필수로
+// 받는다(attendance.routes.ts /clock-out에서 함께 upsert). 2단계(자동초안): StatusChangeLog/
+// EffortLog/NightWorkMailReport에서 오늘치 데이터를 모아 9개 표준 필드를 미리 채워준다
+// (daily-work-log.routes.ts GET /draft). 3단계(관리자 열람): night-work-mail 관리자 화면과 같은
+// 패턴으로 목록·주간/월간 집계를 제공한다(daily-work-log.routes.ts GET /admin/*).
+// 하루 1건 — 같은 날 다시 제출하면(퇴근 정정 등) upsert로 덮어쓴다(AttendanceRecord와 동일한
+// @@unique 패턴).
+model DailyWorkLog {
+  id       String   @id @default(uuid())
+  userId   String   @map("user_id")
+  user     User     @relation(fields: [userId], references: [id])
+  workDate DateTime @map("work_date") @db.Date
+
+  // 오늘 근무형태에 따라 간단형/상세형 중 어느 쪽으로 작성됐는지(2단계 자동판단 결과) — 관리자
+  // 화면에서 필터링·구분 표시하는 데 쓴다.
+  formType DailyWorkLogFormType @default(SIMPLE) @map("form_type")
+  // 오늘의 대표 근무형태 스냅샷(마지막 상태, 한글 라벨) — 근태 판정과는 무관한 표시·집계 전용.
+  workTypeSnapshot String? @map("work_type_snapshot")
+  // 방문 고객사/현장 — 여러 곳이면 쉼표로 구분(2단계 자동초안이 EffortLog/NightWorkMailReport에서 수집).
+  visitedClients String? @map("visited_clients")
+  // 주요 작업내용 — 자동초안을 기반으로 본인이 자유롭게 수정 가능.
+  workContent String? @map("work_content")
+  // 이슈 및 특이사항 — 1단계부터 필수(퇴근 시 반드시 입력해야 그날이 마감됨).
+  issues String @map("issues")
+  // 후속조치/미해결 건 — 선택 입력(상세형에서 주로 사용).
+  followUp String? @map("follow_up")
+  // 내일 예정 업무 — 1단계부터 필수(퇴근 시 반드시 입력해야 그날이 마감됨).
+  tomorrowPlan String @map("tomorrow_plan")
+  // 지원요청/공유사항 — 선택 입력.
+  supportRequest String? @map("support_request")
+  // 오늘 총 근무시간(분) — 퇴근 처리 시 AttendanceRecord.totalWorkedMinutes 스냅샷.
+  totalWorkedMinutes Int? @map("total_worked_minutes")
+  // 오늘 실공수(고객사 작업 등) 시간(분) — EffortLog.actualMinutes 합계 스냅샷.
+  actualEffortMinutes Int? @map("actual_effort_minutes")
+  // 2단계가 처음 만들어준 자동초안 원문(사용자가 실제로 고쳐 쓴 내용과 별개로 보관) — 감사·품질
+  // 개선용이며 화면에 상시 노출하지 않는다.
+  autoDraftSnapshot String? @map("auto_draft_snapshot")
+  submittedAt DateTime @default(now()) @map("submitted_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, workDate])
+  @@index([workDate])
+  @@map("daily_work_logs")
 }

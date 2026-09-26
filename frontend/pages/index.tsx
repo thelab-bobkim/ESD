@@ -1955,7 +1955,7 @@ export default function EmployeeHome() {
                 clockInAt={myStatus.record.clockInAt}
                 locationConsentGiven={Boolean(me?.locationConsentGiven)}
                 onCancel={() => { setShowClockOutConfirm(false); setClockOutThenNightWork(false); }}
-                onConfirm={async ({ locationAddress, locationStatus, earlyLeaveReason }) => {
+                onConfirm={async ({ locationAddress, locationStatus, earlyLeaveReason, dailyWorkLog }) => {
                   // 18시 이후 정규근무분 초과(야간작업 등록 제안) 여부를 응답에서 바로 확인해야 해서
                   // run()을 안 거치고 직접 호출한다(NIGHT_WORK 등록과 같은 이유).
                   setMessage(null);
@@ -1970,6 +1970,7 @@ export default function EmployeeHome() {
                           ...(locationAddress ? { locationAddress } : {}),
                           locationStatus,
                           ...(earlyLeaveReason ? { earlyLeaveReason } : {}),
+                          dailyWorkLog,
                         }),
                       }
                     );

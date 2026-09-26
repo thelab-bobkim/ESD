@@ -23,6 +23,7 @@ import { weatherRouter } from './modules/weather/weather.routes';
 import { messagesRouter } from './modules/messages/messages.routes';
 import { auditLocationRouter } from './modules/audit-location/audit-location.routes';
 import { nightWorkMailRouter } from './modules/night-work-mail/night-work-mail.routes';
+import { dailyWorkLogRouter } from './modules/daily-work-log/daily-work-log.routes';
 
 export function createApp() {
   const app = express();
@@ -86,6 +87,7 @@ export function createApp() {
   app.use('/api/v1/messages', messagesRouter);
   app.use('/api/v1/audit-location', auditLocationRouter);
   app.use('/api/v1/night-work-mail', nightWorkMailRouter);
+  app.use('/api/v1/daily-work-log', dailyWorkLogRouter);
 
   // 공통 에러 핸들러
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

@@ -9,6 +9,7 @@ import { recordNightWork, willResumeNightWork } from '../../common/night-work-he
 import { recordEffort, findOpenEffort, willUpdateExistingEffort } from '../../common/effort-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, buildMismatchCoords } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
+import { upsertDailyWorkLog } from '../daily-work-log/daily-work-log.routes';
 
 /** "123.45.67.0/24" 형태의 CIDR 표기를 IPv4 대역으로 해석해 clientIp가 그 안에 속하는지 본다. */
 function ipInCidr(clientIp: string, cidr: string): boolean {
@@ -312,6 +313,18 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   const earlyLeaveReason = typeof req.body?.earlyLeaveReason === 'string' && req.body.earlyLeaveReason.trim()
     ? req.body.earlyLeaveReason.trim().slice(0, 300)
     : undefined;
+  // 2026-09-26: "일일업무일지" 1단계(대표이사 요청) — 퇴근 시 "이슈/특이사항"과 "내일 예정 업무"
+  // 두 줄을 반드시 받아야 그날이 마감된다. 자동초안(2단계, GET /daily-work-log/draft)으로
+  // 프론트가 미리 채워주지만, 최종 저장 검증은 항상 여기(서버)에서 한다.
+  const dailyWorkLogBody = (req.body?.dailyWorkLog ?? {}) as Record<string, unknown>;
+  const dwlIssues = typeof dailyWorkLogBody.issues === 'string' ? dailyWorkLogBody.issues.trim() : '';
+  const dwlTomorrowPlan = typeof dailyWorkLogBody.tomorrowPlan === 'string' ? dailyWorkLogBody.tomorrowPlan.trim() : '';
+  if (!dwlIssues || !dwlTomorrowPlan) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'DAILY_WORK_LOG_REQUIRED', message: '퇴근 전에 "이슈/특이사항"과 "내일 예정 업무"를 입력해주세요.' },
+    });
+  }
 
   const existing = await prisma.attendanceRecord.findUnique({
     where: { userId_workDate: { userId, workDate } },
@@ -415,6 +428,24 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   // "퇴근" 버튼으로 정상 처리됐으니, 혹시 위치이탈 자동감지가 미리 만들어둔 대기중 제안(있다면)은
   // 더 이상 의미가 없다 — 승인함에 오탐(false positive)으로 남지 않도록 같이 정리한다.
   await cancelPendingAutoDepartureSuggestion(existing.id, userId, '본인이 정상적으로 "퇴근" 버튼을 눌러 처리됨');
+
+  // 일일업무일지 upsert — 위에서 이미 필수값(이슈/내일 예정 업무)을 검증했다. 나머지 필드는
+  // 2단계 자동초안을 프론트가 그대로(또는 수정해서) 실어보낸 값이며, 근태 확정과 같은 트랜잭션
+  // 시점에 함께 저장해 "퇴근 = 하루 마감"이 한 번의 동작으로 끝나게 한다.
+  const dwlFormType = dailyWorkLogBody.formType === 'DETAILED' ? 'DETAILED' as const : 'SIMPLE' as const;
+  await upsertDailyWorkLog(userId, workDate, {
+    issues: dwlIssues,
+    tomorrowPlan: dwlTomorrowPlan,
+    formType: dwlFormType,
+    workTypeSnapshot: typeof dailyWorkLogBody.workTypeSnapshot === 'string' ? dailyWorkLogBody.workTypeSnapshot.slice(0, 60) : undefined,
+    visitedClients: typeof dailyWorkLogBody.visitedClients === 'string' ? dailyWorkLogBody.visitedClients.slice(0, 500) : undefined,
+    workContent: typeof dailyWorkLogBody.workContent === 'string' ? dailyWorkLogBody.workContent.slice(0, 4000) : undefined,
+    followUp: typeof dailyWorkLogBody.followUp === 'string' ? dailyWorkLogBody.followUp.slice(0, 2000) : undefined,
+    supportRequest: typeof dailyWorkLogBody.supportRequest === 'string' ? dailyWorkLogBody.supportRequest.slice(0, 2000) : undefined,
+    autoDraftSnapshot: typeof dailyWorkLogBody.autoDraftSnapshot === 'string' ? dailyWorkLogBody.autoDraftSnapshot.slice(0, 6000) : undefined,
+    totalWorkedMinutes,
+    actualEffortMinutes: typeof dailyWorkLogBody.actualEffortMinutes === 'number' ? dailyWorkLogBody.actualEffortMinutes : undefined,
+  });
 
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes, lateClockOutOverMinutes } });
 

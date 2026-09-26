@@ -13,6 +13,9 @@ const NAV_ITEMS = [
   // 매번 열어보지 않고도 여기서 한눈에 보기 위함(Claude가 주기적으로 채워넣는 열람 전용 데이터,
   // night-work-mail.routes.ts 참고). 기존 "야간근무"(대체휴무 전환용 NightWorkSession)와는 별개다.
   { href: '/admin/night-work-mail', label: '야간·주말작업 보고서', icon: '🌙' },
+  // 2026-09-26: 대표이사 요청 — "매일 업무 마감을 일일업무일지로"(daily-work-log.routes.ts 참고).
+  // 퇴근 시 직원이 마감한 이슈/특이사항·내일 예정 업무와 자동수집된 작업내용을 관리자가 한눈에 본다.
+  { href: '/admin/daily-work-log', label: '일일업무일지', icon: '📓' },
   { href: '/admin/board-scope', label: '표시 대상 관리', icon: '🎯' },
   { href: '/admin/feedback', label: '피드백함', icon: '💬' },
   { href: '/admin/messages', label: '메시지함', icon: '📨' },
