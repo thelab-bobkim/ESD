@@ -4,6 +4,7 @@ import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, realDayWindow } from '../../common/attendance-helpers';
+import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 
 /**
  * 일일업무일지 모듈 (2026-09-26, 김형태 대표이사 요청 — "매일 업무 마감을 일일업무일지로").
@@ -55,6 +56,43 @@ function parseWorkDateParam(raw: unknown): Date {
   return todayDateOnly();
 }
 
+/**
+ * "미등록 공백시간" 판정 (2026-09-29, 김형태 대표이사 요청).
+ * 예: 최문석님 사례 — 고객사작업을 10:03에 등록하고 16:00 완료로 마감했는데, 그 뒤로 아무 상태도
+ * 새로 등록하지 않은 채 19:10에 퇴근을 누르면 16:00~19:10(3시간10분)이 "뭘 했는지 기록이 없는데
+ * 근무시간으로는 그대로 잡히는" 공백이 된다. 근로시간(급여) 계산 자체는 건드리지 않기로 했으므로
+ * (2026-09-29 결정), 이 함수는 공백을 "감지"만 하고 — 감지되면 호출하는 쪽(POST /clock-out,
+ * GET /draft)이 사유 입력을 요구한다.
+ *
+ * 판정 기준: 오늘 "종료시간이 찍힌" EffortLog 중 가장 늦은 것(latestFinishedEffort) 이후에,
+ * 새로 등록된 상태변경(StatusChangeLog)이 하나도 없어야 한다 — 즉 "그 다음에 뭘 했는지"를
+ * 본인이 이미 알려준 경우(예: 고객사작업 끝나고 "이동중"이라도 눌렀으면)는 공백으로 보지 않는다.
+ * 본사근무처럼 끝나는 시각이 따로 없는 상태(종료시간 없이 "지금 이 상태"로 계속 유지되는 상태)는
+ * 애초에 latestFinishedEffort 후보가 아니므로, 평범한 하루(예: 본사근무만 하다 퇴근)에는 절대
+ * 걸리지 않는다.
+ */
+export async function computeUnloggedGapMinutes(
+  userId: string,
+  workDate: Date,
+  asOf: Date
+): Promise<{ minutes: number; sinceISO: string } | null> {
+  const { start, end } = realDayWindow(workDate);
+  const [latestStatus, latestFinishedEffort] = await Promise.all([
+    prisma.statusChangeLog.findFirst({ where: { userId, changedAt: { gte: start, lt: end } }, orderBy: { changedAt: 'desc' } }),
+    prisma.effortLog.findFirst({ where: { userId, workDate, endTime: { not: null } }, orderBy: { endTime: 'desc' } }),
+  ]);
+  if (!latestFinishedEffort?.endTime) return null;
+  // 마지막 완료 이후에 뭔가 더 등록했으면(이동중 등) 공백이 아니다.
+  if (latestStatus && latestStatus.changedAt > latestFinishedEffort.endTime) return null;
+  // 2026-09-29: 임계값을 기존 GPS 위치이탈 자동감지(고객사작업 이탈 후 DEPARTURE_AWAY_THRESHOLD_MS,
+  // frontend/pages/index.tsx)와 동일하게 30분으로 맞춘다(대표이사 요청) — 두 메커니즘이 같은
+  // "이탈 후 N분" 감각을 공유해야 관리자/직원 모두 헷갈리지 않는다.
+  const thresholdMinutes = await getPolicyNumber('UNLOGGED_GAP_WARN_MINUTES', 30);
+  const minutes = Math.round((asOf.getTime() - latestFinishedEffort.endTime.getTime()) / 60000);
+  if (minutes < thresholdMinutes) return null;
+  return { minutes, sinceISO: latestFinishedEffort.endTime.toISOString() };
+}
+
 /** upsert에 공통으로 쓰는 필드 검증 — 1단계부터 필수인 두 줄(issues/tomorrowPlan)을 여기서 강제한다. */
 export const dailyWorkLogInputSchema = z.object({
   workDate: z.string().optional(), // 없으면 오늘(todayDateOnly 기준)
@@ -69,6 +107,9 @@ export const dailyWorkLogInputSchema = z.object({
   totalWorkedMinutes: z.number().int().min(0).optional(),
   actualEffortMinutes: z.number().int().min(0).optional(),
   autoDraftSnapshot: z.string().max(6000).optional(),
+  // 2026-09-29: "미등록 공백시간" 사유 — computeUnloggedGapMinutes가 공백을 감지했을 때만 채워진다.
+  unloggedGapMinutes: z.number().int().min(0).optional(),
+  unloggedGapReason: z.string().max(1000).optional(),
 });
 
 type DailyWorkLogInput = z.infer<typeof dailyWorkLogInputSchema>;
@@ -93,6 +134,8 @@ export async function upsertDailyWorkLog(userId: string, workDate: Date, input: 
       totalWorkedMinutes: input.totalWorkedMinutes,
       actualEffortMinutes: input.actualEffortMinutes,
       autoDraftSnapshot: input.autoDraftSnapshot,
+      unloggedGapMinutes: input.unloggedGapMinutes,
+      unloggedGapReason: input.unloggedGapReason,
     },
     update: {
       formType: input.formType ?? 'SIMPLE',
@@ -105,6 +148,10 @@ export async function upsertDailyWorkLog(userId: string, workDate: Date, input: 
       supportRequest: input.supportRequest,
       ...(input.totalWorkedMinutes != null ? { totalWorkedMinutes: input.totalWorkedMinutes } : {}),
       ...(input.actualEffortMinutes != null ? { actualEffortMinutes: input.actualEffortMinutes } : {}),
+      // 공백이 이번엔 없으면(사유 미첨부) 예전 공백 기록을 지운다 — 재정정 등으로 다시 계산됐을 때
+      // 낡은 공백 표시가 관리자 화면에 남아있지 않도록.
+      unloggedGapMinutes: input.unloggedGapMinutes ?? null,
+      unloggedGapReason: input.unloggedGapReason ?? null,
     },
   });
 }
@@ -117,12 +164,15 @@ dailyWorkLogRouter.get('/draft', async (req, res) => {
   const workDate = parseWorkDateParam(req.query.workDate);
   const { start, end } = realDayWindow(workDate);
 
-  const [statuses, effortLogs, attendanceRecord, existing, me] = await Promise.all([
+  const [statuses, effortLogs, attendanceRecord, existing, me, unloggedGap] = await Promise.all([
     prisma.statusChangeLog.findMany({ where: { userId, changedAt: { gte: start, lt: end } }, orderBy: { changedAt: 'asc' } }),
     prisma.effortLog.findMany({ where: { userId, workDate }, orderBy: { startTime: 'asc' } }),
     prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate } } }),
     prisma.dailyWorkLog.findUnique({ where: { userId_workDate: { userId, workDate } } }),
     prisma.user.findUnique({ where: { id: userId }, select: { email: true } }),
+    // 퇴근 전에 미리 보여주기 위한 "지금 시점 기준" 공백 판정 — 실제 퇴근 시점엔 attendance.routes.ts
+    // /clock-out이 그때의 clockOutAt 기준으로 다시 한번 독립적으로 계산해서 최종 검증한다.
+    computeUnloggedGapMinutes(userId, workDate, new Date()),
   ]);
 
   const mailReports = me?.email
@@ -159,6 +209,8 @@ dailyWorkLogRouter.get('/draft', async (req, res) => {
       workContent: workContentLines.join('\n') || null,
       totalWorkedMinutes: attendanceRecord?.totalWorkedMinutes ?? null,
       actualEffortMinutes: actualEffortMinutes || null,
+      // 미등록 공백시간 — 있으면 프론트가 퇴근 전에 미리 사유 입력창을 보여준다.
+      unloggedGap,
       // 이미 오늘치를 제출한 적이 있으면(퇴근 정정 등으로 다시 여는 경우) 자동초안 대신 기존
       // 제출값을 우선 보여준다 — 자동초안으로 덮어써서 이미 고쳐둔 내용을 잃어버리지 않게.
       existing: existing
@@ -171,6 +223,7 @@ dailyWorkLogRouter.get('/draft', async (req, res) => {
             followUp: existing.followUp,
             tomorrowPlan: existing.tomorrowPlan,
             supportRequest: existing.supportRequest,
+            unloggedGapReason: existing.unloggedGapReason,
           }
         : null,
     },
@@ -261,6 +314,8 @@ adminRouter.get('/list', async (req, res) => {
       supportRequest: r.supportRequest,
       totalWorkedMinutes: r.totalWorkedMinutes,
       actualEffortMinutes: r.actualEffortMinutes,
+      unloggedGapMinutes: r.unloggedGapMinutes,
+      unloggedGapReason: r.unloggedGapReason,
       submittedAt: r.submittedAt,
     })),
   });
@@ -280,6 +335,7 @@ adminRouter.get('/summary', async (req, res) => {
   const byUser = new Map<string, { name: string; count: number; simpleCount: number; detailedCount: number; totalMinutes: number }>();
   const byClient = new Map<string, number>();
   let detailedCount = 0;
+  let unloggedGapCount = 0;
 
   for (const row of rows) {
     const cur = byUser.get(row.user.name) ?? { name: row.user.name, count: 0, simpleCount: 0, detailedCount: 0, totalMinutes: 0 };
@@ -287,6 +343,7 @@ adminRouter.get('/summary', async (req, res) => {
     if (row.formType === 'DETAILED') { cur.detailedCount += 1; detailedCount += 1; } else { cur.simpleCount += 1; }
     cur.totalMinutes += row.totalWorkedMinutes ?? 0;
     byUser.set(row.user.name, cur);
+    if (row.unloggedGapMinutes != null) unloggedGapCount += 1;
 
     (row.visitedClients ?? '').split(',').map((s) => s.trim()).filter(Boolean).forEach((name) => {
       byClient.set(name, (byClient.get(name) ?? 0) + 1);
@@ -299,6 +356,8 @@ adminRouter.get('/summary', async (req, res) => {
       total: rows.length,
       detailedCount,
       simpleCount: rows.length - detailedCount,
+      // 2026-09-29: "미등록 공백시간" 사유가 달린 건수 — 관리자가 한눈에 몇 건이나 있었는지 보게.
+      unloggedGapCount,
       byUser: Array.from(byUser.values())
         .map((u) => ({ name: u.name, count: u.count, simpleCount: u.simpleCount, detailedCount: u.detailedCount, avgMinutes: u.count > 0 ? Math.round(u.totalMinutes / u.count) : 0 }))
         .sort((a, b) => b.count - a.count),

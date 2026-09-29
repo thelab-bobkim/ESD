@@ -763,7 +763,9 @@ export default function EmployeeHome() {
               try {
                 await apiFetch('/attendance/effort-departure-confirm', {
                   method: 'POST',
-                  body: JSON.stringify({ estimatedEndAt: estimatedAt.toISOString() }),
+                  // 2026-09-29: 이탈 감지 시점의 GPS도 함께 보내서, 백엔드가 등록된 고객사 위치와
+                  // 비교(불일치 시에만 좌표 저장하는 기존 정책 그대로)해 이탈장소를 추정할 수 있게 한다.
+                  body: JSON.stringify({ estimatedEndAt: estimatedAt.toISOString(), location: { lat: loc.lat, lng: loc.lng } }),
                 });
                 departureAwaySinceRef.current = null;
                 setEffortDepartureNotice({ estimatedAt: estimatedAt.toISOString() });

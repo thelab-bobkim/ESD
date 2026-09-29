@@ -9,7 +9,7 @@ import { recordNightWork, willResumeNightWork } from '../../common/night-work-he
 import { recordEffort, findOpenEffort, willUpdateExistingEffort } from '../../common/effort-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, buildMismatchCoords } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
-import { upsertDailyWorkLog } from '../daily-work-log/daily-work-log.routes';
+import { upsertDailyWorkLog, computeUnloggedGapMinutes } from '../daily-work-log/daily-work-log.routes';
 
 /** "123.45.67.0/24" 형태의 CIDR 표기를 IPv4 대역으로 해석해 clientIp가 그 안에 속하는지 본다. */
 function ipInCidr(clientIp: string, cidr: string): boolean {
@@ -325,6 +325,7 @@ attendanceRouter.post('/clock-out', async (req, res) => {
       error: { code: 'DAILY_WORK_LOG_REQUIRED', message: '퇴근 전에 "이슈/특이사항"과 "내일 예정 업무"를 입력해주세요.' },
     });
   }
+  const dwlUnloggedGapReason = typeof dailyWorkLogBody.unloggedGapReason === 'string' ? dailyWorkLogBody.unloggedGapReason.trim() : '';
 
   const existing = await prisma.attendanceRecord.findUnique({
     where: { userId_workDate: { userId, workDate } },
@@ -379,6 +380,24 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   }
 
   const clockOutAt = new Date();
+
+  // 2026-09-29: "미등록 공백시간" 검증(대표이사 결정 — 근로시간 계산은 그대로 두고 사유만 강제).
+  // 예: 고객사작업을 16:00에 완료로 마감해놓고 그 뒤로 아무 상태도 새로 등록하지 않은 채 19:10에
+  // 퇴근하면, 그 3시간10분이 "뭘 했는지 기록이 없는데 근무시간엔 그대로 잡히는" 공백이 된다.
+  // 프론트가 GET /daily-work-log/draft로 미리 보여주지만, 최종 판정은 항상 여기(퇴근 확정 시점
+  // 기준)에서 다시 한번 독립적으로 계산해서 검증한다.
+  const unloggedGap = await computeUnloggedGapMinutes(userId, workDate, clockOutAt);
+  if (unloggedGap && !dwlUnloggedGapReason) {
+    const gapH = Math.floor(unloggedGap.minutes / 60);
+    const gapM = unloggedGap.minutes % 60;
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'UNLOGGED_GAP_REASON_REQUIRED',
+        message: `마지막 등록된 작업 종료 이후 ${gapH}시간 ${gapM}분 동안 등록된 활동이 없습니다. 그 사이 무엇을 하셨는지 사유를 입력해주세요.`,
+      },
+    });
+  }
 
   // 정규 퇴근 마감: 정규 근무 상태(야간작업 제외)로 저녁 경고시각(기본 19시) 이후까지 퇴근을 안 누르면,
   // 막지는 않되 정규 근무시간은 마감시각(기본 18시)까지만 인정하고 그 이후분은 "야간작업으로 별도
@@ -445,6 +464,8 @@ attendanceRouter.post('/clock-out', async (req, res) => {
     autoDraftSnapshot: typeof dailyWorkLogBody.autoDraftSnapshot === 'string' ? dailyWorkLogBody.autoDraftSnapshot.slice(0, 6000) : undefined,
     totalWorkedMinutes,
     actualEffortMinutes: typeof dailyWorkLogBody.actualEffortMinutes === 'number' ? dailyWorkLogBody.actualEffortMinutes : undefined,
+    unloggedGapMinutes: unloggedGap?.minutes,
+    unloggedGapReason: unloggedGap ? dwlUnloggedGapReason.slice(0, 1000) : undefined,
   });
 
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes, lateClockOutOverMinutes } });
@@ -1246,6 +1267,10 @@ attendanceRouter.post('/departure-suggest/dismiss', async (req, res) => {
 
 const effortDepartureConfirmSchema = z.object({
   estimatedEndAt: z.string().min(1),
+  // 2026-09-29: "이탈장소 기록"(대표이사 요청) — 이탈 감지 순간의 좌표. 등록된 고객사 좌표와
+  // 얼마나 떨어져 있었는지(locationDistanceMeters) 계산하는 데만 쓰고, 기존 "불일치 건만 좌표
+  // 저장" 원칙(common/location.ts buildMismatchCoords) 그대로 적용해 원본 좌표는 불일치일 때만 남긴다.
+  location: z.object({ lat: z.number(), lng: z.number() }).optional(),
 });
 
 /**
@@ -1291,13 +1316,28 @@ attendanceRouter.post('/effort-departure-confirm', async (req, res) => {
     description: openEffort.description ?? undefined,
   });
 
+  // 2026-09-29: 이탈 감지 순간의 좌표를 등록된 고객사 좌표와 대조한다 — "고객사와 이탈장소가
+  // 다르다"는 걸 근거로 남겨서, 관리자가 실제 작업 종료시각을 가늠하는 데 참고할 수 있게 한다.
+  // 다른 위치대조 지점(CLIENT_WORK 등록 등)과 동일하게 "불일치 건만 좌표 저장" 원칙을 그대로
+  // 적용한다(common/location.ts buildMismatchCoords) — 일치하면 좌표는 남기지 않는다.
+  const matchedClientForDeparture = openEffort.clientName
+    ? await prisma.client.findFirst({ where: { name: { contains: openEffort.clientName.trim(), mode: 'insensitive' } } })
+    : null;
+  const departureLocationResult = checkLocationMatch(parsed.data.location, matchedClientForDeparture);
+  const departureMismatchCoords = buildMismatchCoords(parsed.data.location, departureLocationResult);
+
   const hhmm = estimatedEndAt.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });
+  const distanceNote = departureLocationResult ? ` (등록된 고객사 위치에서 약 ${departureLocationResult.locationDistanceMeters}m 이탈)` : '';
   const movingLog = await prisma.statusChangeLog.create({
     data: {
       userId,
       status: 'MOVING',
-      note: `[위치이탈 자동감지] 고객사작업(${openEffort.clientName || '고객사'})을 ${hhmm}에 마치신 걸로 등록하고 이동중으로 전환했습니다.`,
+      note: `[위치이탈 자동감지] 고객사작업(${openEffort.clientName || '고객사'})을 ${hhmm}에 마치신 걸로 등록하고 이동중으로 전환했습니다.${distanceNote}`,
       source: 'WEB',
+      locationMatch: departureLocationResult?.locationMatch ?? null,
+      locationDistanceMeters: departureLocationResult?.locationDistanceMeters ?? null,
+      mismatchLatitude: departureMismatchCoords.mismatchLatitude,
+      mismatchLongitude: departureMismatchCoords.mismatchLongitude,
     },
   });
 

@@ -30,6 +30,9 @@ export interface DailyWorkLogPayload {
   supportRequest?: string;
   actualEffortMinutes?: number;
   autoDraftSnapshot?: string;
+  // 2026-09-29: "미등록 공백시간" 사유 — draft.unloggedGap이 감지됐을 때만 채워서 보낸다.
+  unloggedGapMinutes?: number;
+  unloggedGapReason?: string;
 }
 
 interface DraftResponse {
@@ -38,6 +41,9 @@ interface DraftResponse {
   visitedClients: string | null;
   workContent: string | null;
   actualEffortMinutes: number | null;
+  // 2026-09-29: "미등록 공백시간" — 마지막으로 종료시간이 찍힌 작업 이후 새로 등록된 상태 없이
+  // 지금(퇴근 직전 조회 시점)까지 공백이 임계값 이상이면 채워진다. 없으면 null.
+  unloggedGap: { minutes: number; sinceISO: string } | null;
   existing: {
     formType: 'SIMPLE' | 'DETAILED';
     workTypeSnapshot: string | null;
@@ -47,6 +53,7 @@ interface DraftResponse {
     followUp: string | null;
     tomorrowPlan: string;
     supportRequest: string | null;
+    unloggedGapReason: string | null;
   } | null;
 }
 
@@ -93,6 +100,7 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
   const [followUp, setFollowUp] = useState('');
   const [tomorrowPlan, setTomorrowPlan] = useState('');
   const [supportRequest, setSupportRequest] = useState('');
+  const [unloggedGapReason, setUnloggedGapReason] = useState('');
   const [showWorkLogError, setShowWorkLogError] = useState(false);
 
   useEffect(() => {
@@ -110,6 +118,7 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
       setFollowUp(e?.followUp ?? '');
       setTomorrowPlan(e?.tomorrowPlan ?? '');
       setSupportRequest(e?.supportRequest ?? '');
+      setUnloggedGapReason(e?.unloggedGapReason ?? '');
     }).catch(() => {
       // 자동초안 조회 실패해도 마감 자체는 막지 않는다 — 빈 폼으로 직접 입력하면 된다.
     });
@@ -141,7 +150,8 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
   const recordedMinutes = Math.max(0, elapsedMinutes - LUNCH_BREAK_DEFAULT_MINUTES);
   // 이상치(순간이동) 감지 시 퇴근 확정을 막고 재측정을 유도한다(2026-09 요청 — 등록 차단).
   const jumpDetected = locationResult !== 'checking' && locationResult.jumpDetected;
-  const workLogMissing = !issues.trim() || !tomorrowPlan.trim();
+  const unloggedGapRequired = !!draft?.unloggedGap;
+  const workLogMissing = !issues.trim() || !tomorrowPlan.trim() || (unloggedGapRequired && !unloggedGapReason.trim());
 
   // 2026-09-16: 슬라이더(SlideToConfirm)의 onConfirm은 반환값이 false면 손잡이를 원위치로
   // 되돌리고 확정 처리하지 않는다 — 조기퇴근 사유 미입력처럼 아직 확정하면 안 되는 경우 그대로
@@ -174,6 +184,8 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
           supportRequest: supportRequest.trim() || undefined,
           actualEffortMinutes: draft?.actualEffortMinutes ?? undefined,
           autoDraftSnapshot: draft?.workContent ?? undefined,
+          unloggedGapMinutes: draft?.unloggedGap?.minutes,
+          unloggedGapReason: unloggedGapRequired ? unloggedGapReason.trim() : undefined,
         },
       });
       return true;
@@ -256,6 +268,22 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
             </span>
           </div>
 
+          {unloggedGapRequired && draft?.unloggedGap && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ background: 'rgba(239,68,68,0.14)', border: '1px solid #7f1d1d', borderRadius: 8, padding: '10px 12px', marginBottom: 6, fontSize: 12.5, lineHeight: 1.5 }}>
+                ⚠️ 마지막 등록된 작업 종료(
+                {new Date(draft.unloggedGap.sinceISO).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' })}
+                ) 이후 <strong>{Math.floor(draft.unloggedGap.minutes / 60)}시간 {draft.unloggedGap.minutes % 60}분</strong> 동안 등록된 활동이 없어요. 근무시간엔 그대로 반영되니, 그 사이 무엇을 하셨는지 적어주세요.
+              </div>
+              <textarea
+                value={unloggedGapReason}
+                onChange={(e) => { setUnloggedGapReason(e.target.value); setShowWorkLogError(false); }}
+                placeholder="예: 다음 고객사 이동 및 대기, 개인 용무 등"
+                style={{ ...textareaStyle, border: `1px solid ${showWorkLogError && !unloggedGapReason.trim() ? '#ef4444' : '#212a45'}` }}
+              />
+            </div>
+          )}
+
           {formType === 'DETAILED' && (
             <>
               <div style={{ marginBottom: 10 }}>
@@ -314,7 +342,9 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
           )}
 
           {showWorkLogError && workLogMissing && (
-            <div style={{ fontSize: 12, color: '#f87171', marginTop: 4 }}>이슈/특이사항과 내일 예정 업무는 반드시 입력해야 퇴근이 확정돼요.</div>
+            <div style={{ fontSize: 12, color: '#f87171', marginTop: 4 }}>
+              이슈/특이사항과 내일 예정 업무{unloggedGapRequired ? ', 그리고 위 공백시간 사유' : ''}는 반드시 입력해야 퇴근이 확정돼요.
+            </div>
           )}
         </div>
 

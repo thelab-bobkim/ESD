@@ -26,6 +26,10 @@ interface RowData {
   supportRequest: string | null;
   totalWorkedMinutes: number | null;
   actualEffortMinutes: number | null;
+  // 2026-09-29: "미등록 공백시간" — 마지막 작업 종료 후 새 상태등록 없이 퇴근한 경우의 공백(분)과
+  // 본인이 남긴 사유. 없으면 둘 다 null.
+  unloggedGapMinutes: number | null;
+  unloggedGapReason: string | null;
   submittedAt: string;
 }
 
@@ -33,6 +37,7 @@ interface SummaryData {
   total: number;
   simpleCount: number;
   detailedCount: number;
+  unloggedGapCount: number;
   byUser: { name: string; count: number; simpleCount: number; detailedCount: number; avgMinutes: number }[];
   byClient: { name: string; count: number }[];
 }
@@ -157,6 +162,10 @@ export default function AdminDailyWorkLogPage() {
               <div style={{ fontSize: 12, color: '#868e96' }}>상세형</div>
               <div style={{ fontSize: 24, fontWeight: 700 }}>{summary.detailedCount}</div>
             </div>
+            <div>
+              <div style={{ fontSize: 12, color: '#868e96' }}>⚠️ 미등록 공백 사유 건</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: summary.unloggedGapCount > 0 ? '#e8590c' : undefined }}>{summary.unloggedGapCount}</div>
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
             <div style={{ minWidth: 260 }}>
@@ -218,7 +227,14 @@ export default function AdminDailyWorkLogPage() {
                       </td>
                       <td style={{ maxWidth: 220, whiteSpace: 'normal', wordBreak: 'break-word' }}>{r.issues}</td>
                       <td style={{ maxWidth: 220, whiteSpace: 'normal', wordBreak: 'break-word' }}>{r.tomorrowPlan}</td>
-                      <td style={{ whiteSpace: 'nowrap' }}>{hoursLabel(r.totalWorkedMinutes)}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {hoursLabel(r.totalWorkedMinutes)}
+                        {r.unloggedGapMinutes != null && (
+                          <span title={`미등록 공백 ${Math.floor(r.unloggedGapMinutes / 60)}시간 ${r.unloggedGapMinutes % 60}분`} style={{ marginLeft: 4, color: '#e8590c' }}>
+                            ⚠️
+                          </span>
+                        )}
+                      </td>
                       <td>
                         <button
                           type="button"
@@ -233,6 +249,12 @@ export default function AdminDailyWorkLogPage() {
                     {expandedId === r.id && (
                       <tr>
                         <td colSpan={9} style={{ background: '#f8f9fa', fontSize: 12.5, lineHeight: 1.7 }}>
+                          {r.unloggedGapMinutes != null && (
+                            <div style={{ marginBottom: 6, color: '#e8590c' }}>
+                              <strong>⚠️ 미등록 공백 {Math.floor(r.unloggedGapMinutes / 60)}시간 {r.unloggedGapMinutes % 60}분 사유</strong>
+                              <div style={{ whiteSpace: 'pre-wrap' }}>{r.unloggedGapReason || '(사유 없음)'}</div>
+                            </div>
+                          )}
                           {r.workContent && (
                             <div style={{ marginBottom: 6 }}>
                               <strong>주요 작업내용</strong>
@@ -251,7 +273,7 @@ export default function AdminDailyWorkLogPage() {
                               <div style={{ whiteSpace: 'pre-wrap' }}>{r.supportRequest}</div>
                             </div>
                           )}
-                          {!r.workContent && !r.followUp && !r.supportRequest && (
+                          {!r.workContent && !r.followUp && !r.supportRequest && r.unloggedGapMinutes == null && (
                             <span style={{ color: '#868e96' }}>추가로 기록된 내용이 없습니다.</span>
                           )}
                         </td>

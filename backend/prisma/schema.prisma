@@ -817,6 +817,12 @@ model DailyWorkLog {
   // 2단계가 처음 만들어준 자동초안 원문(사용자가 실제로 고쳐 쓴 내용과 별개로 보관) — 감사·품질
   // 개선용이며 화면에 상시 노출하지 않는다.
   autoDraftSnapshot String? @map("auto_draft_snapshot")
+  // 2026-09-29: "미등록 공백시간" 관리(대표이사 요청) — 마지막으로 종료시간이 찍힌 고객사작업 등
+  // 이후 다음 상태 등록 없이 퇴근을 누르면, 그 사이 시간이 근무시간엔 그대로 인정되지만(근로시간
+  // 계산은 건드리지 않기로 결정) 무엇을 했는지 사유를 반드시 남기게 한다. 공백이 없으면 둘 다 null.
+  // 판정 로직은 daily-work-log.routes.ts의 computeUnloggedGapMinutes 참고.
+  unloggedGapMinutes Int?    @map("unlogged_gap_minutes")
+  unloggedGapReason  String? @map("unlogged_gap_reason")
   submittedAt DateTime @default(now()) @map("submitted_at")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
