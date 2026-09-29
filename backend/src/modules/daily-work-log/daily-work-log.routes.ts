@@ -285,6 +285,46 @@ function buildAdminWhere(query: z.infer<typeof adminQuerySchema>) {
   return where;
 }
 
+/**
+ * 위치이탈 자동감지 이벤트 조회 (2026-09-29, 김형태 대표이사 요청).
+ * "고객사에서 이탈 후 30분" 자동감지(attendance.routes.ts의 /effort-departure-confirm)가 남긴
+ * StatusChangeLog(이동중, note가 '[위치이탈 자동감지]'로 시작)를 조회 대상 (userId, workDate) 범위에
+ * 맞춰 한 번에 모아온다 — 업무일지 사유(unloggedGapReason)와는 별개 테이블/별개 정보이므로 관리자
+ * 화면에도 별도 블록으로 보여준다. N+1을 피하려고 목록 조회당 한 번만 조회하고, 새벽3시 경계
+ * (realDayWindow)를 감안해 각 로그를 해당하는 workDate 행에 매칭한다.
+ */
+async function attachDepartureEvents<T extends { id: string; userId: string; workDate: Date }>(
+  rows: T[]
+): Promise<Map<string, Array<{ at: Date; note: string; locationMatch: boolean | null; locationDistanceMeters: number | null }>>> {
+  const byId = new Map<string, Array<{ at: Date; note: string; locationMatch: boolean | null; locationDistanceMeters: number | null }>>();
+  if (rows.length === 0) return byId;
+  const userIds = [...new Set(rows.map((r) => r.userId))];
+  const times = rows.map((r) => realDayWindow(r.workDate));
+  const start = new Date(Math.min(...times.map((t) => t.start.getTime())));
+  const end = new Date(Math.max(...times.map((t) => t.end.getTime())));
+  const departureLogs = await prisma.statusChangeLog.findMany({
+    where: { userId: { in: userIds }, changedAt: { gte: start, lt: end }, note: { startsWith: '[위치이탈 자동감지]' } },
+    orderBy: { changedAt: 'asc' },
+  });
+  if (departureLogs.length === 0) return byId;
+  for (const row of rows) {
+    const { start: rs, end: re } = realDayWindow(row.workDate);
+    const matched = departureLogs.filter((log) => log.userId === row.userId && log.changedAt >= rs && log.changedAt < re);
+    if (matched.length > 0) {
+      byId.set(
+        row.id,
+        matched.map((log) => ({
+          at: log.changedAt,
+          note: log.note ?? '',
+          locationMatch: log.locationMatch,
+          locationDistanceMeters: log.locationDistanceMeters,
+        }))
+      );
+    }
+  }
+  return byId;
+}
+
 adminRouter.get('/list', async (req, res) => {
   const parsed = adminQuerySchema.safeParse(req.query);
   if (!parsed.success) {
@@ -296,6 +336,7 @@ adminRouter.get('/list', async (req, res) => {
     orderBy: [{ workDate: 'desc' }, { submittedAt: 'desc' }],
     take: 1000,
   });
+  const departureById = await attachDepartureEvents(rows);
   return res.json({
     success: true,
     data: rows.map((r) => ({
@@ -317,6 +358,12 @@ adminRouter.get('/list', async (req, res) => {
       unloggedGapMinutes: r.unloggedGapMinutes,
       unloggedGapReason: r.unloggedGapReason,
       submittedAt: r.submittedAt,
+      // 위치이탈 자동감지 이벤트(있으면) — 고객사 등록 위치와 실제 이탈 위치 사이 거리를 보여준다.
+      departureEvents: (departureById.get(r.id) ?? []).map((e) => ({
+        at: e.at,
+        locationMatch: e.locationMatch,
+        locationDistanceMeters: e.locationDistanceMeters,
+      })),
     })),
   });
 });
@@ -331,13 +378,16 @@ adminRouter.get('/summary', async (req, res) => {
     where: buildAdminWhere(parsed.data),
     include: { user: { select: { name: true } } },
   });
+  const departureById = await attachDepartureEvents(rows);
 
   const byUser = new Map<string, { name: string; count: number; simpleCount: number; detailedCount: number; totalMinutes: number }>();
   const byClient = new Map<string, number>();
   let detailedCount = 0;
   let unloggedGapCount = 0;
+  let departureDetectedCount = 0;
 
   for (const row of rows) {
+    if (departureById.has(row.id)) departureDetectedCount += 1;
     const cur = byUser.get(row.user.name) ?? { name: row.user.name, count: 0, simpleCount: 0, detailedCount: 0, totalMinutes: 0 };
     cur.count += 1;
     if (row.formType === 'DETAILED') { cur.detailedCount += 1; detailedCount += 1; } else { cur.simpleCount += 1; }
@@ -358,6 +408,8 @@ adminRouter.get('/summary', async (req, res) => {
       simpleCount: rows.length - detailedCount,
       // 2026-09-29: "미등록 공백시간" 사유가 달린 건수 — 관리자가 한눈에 몇 건이나 있었는지 보게.
       unloggedGapCount,
+      // 2026-09-29: 위치이탈 자동감지가 실제로 발생한 건수(고객사 등록 위치와 이탈 위치 거리 비교용).
+      departureDetectedCount,
       byUser: Array.from(byUser.values())
         .map((u) => ({ name: u.name, count: u.count, simpleCount: u.simpleCount, detailedCount: u.detailedCount, avgMinutes: u.count > 0 ? Math.round(u.totalMinutes / u.count) : 0 }))
         .sort((a, b) => b.count - a.count),

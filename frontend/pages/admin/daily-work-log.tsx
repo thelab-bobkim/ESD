@@ -31,6 +31,10 @@ interface RowData {
   unloggedGapMinutes: number | null;
   unloggedGapReason: string | null;
   submittedAt: string;
+  // 2026-09-29: 위치이탈 자동감지(고객사에서 이탈 후 30분) 이벤트 — 등록된 고객사 위치와 이탈 당시
+  // 위치 사이 거리로 실제 작업완료 시점을 추정하는 데 쓴다. 미등록 공백 사유와는 별개 정보라 화면도
+  // 별도 블록으로 보여준다. 없으면 빈 배열.
+  departureEvents: { at: string; locationMatch: boolean | null; locationDistanceMeters: number | null }[];
 }
 
 interface SummaryData {
@@ -38,6 +42,7 @@ interface SummaryData {
   simpleCount: number;
   detailedCount: number;
   unloggedGapCount: number;
+  departureDetectedCount: number;
   byUser: { name: string; count: number; simpleCount: number; detailedCount: number; avgMinutes: number }[];
   byClient: { name: string; count: number }[];
 }
@@ -62,6 +67,10 @@ function hoursLabel(minutes: number | null): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return `${h}시간 ${m}분`;
+}
+
+function formatTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });
 }
 
 export default function AdminDailyWorkLogPage() {
@@ -166,6 +175,10 @@ export default function AdminDailyWorkLogPage() {
               <div style={{ fontSize: 12, color: '#868e96' }}>⚠️ 미등록 공백 사유 건</div>
               <div style={{ fontSize: 24, fontWeight: 700, color: summary.unloggedGapCount > 0 ? '#e8590c' : undefined }}>{summary.unloggedGapCount}</div>
             </div>
+            <div>
+              <div style={{ fontSize: 12, color: '#868e96' }}>📍 위치이탈 자동감지 건</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: summary.departureDetectedCount > 0 ? '#1971c2' : undefined }}>{summary.departureDetectedCount}</div>
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
             <div style={{ minWidth: 260 }}>
@@ -234,6 +247,14 @@ export default function AdminDailyWorkLogPage() {
                             ⚠️
                           </span>
                         )}
+                        {r.departureEvents.length > 0 && (
+                          <span
+                            title={`위치이탈 자동감지 ${r.departureEvents.length}건`}
+                            style={{ marginLeft: 4, color: '#1971c2' }}
+                          >
+                            📍
+                          </span>
+                        )}
                       </td>
                       <td>
                         <button
@@ -255,6 +276,21 @@ export default function AdminDailyWorkLogPage() {
                               <div style={{ whiteSpace: 'pre-wrap' }}>{r.unloggedGapReason || '(사유 없음)'}</div>
                             </div>
                           )}
+                          {r.departureEvents.length > 0 && (
+                            <div style={{ marginBottom: 6, color: '#1971c2' }}>
+                              <strong>📍 위치이탈 자동감지 ({r.departureEvents.length}건)</strong>
+                              {r.departureEvents.map((e, i) => (
+                                <div key={i}>
+                                  {formatTime(e.at)} 이탈 —{' '}
+                                  {e.locationDistanceMeters == null
+                                    ? '거리 확인 불가(위치 미확인)'
+                                    : e.locationMatch
+                                    ? `등록된 고객사 위치와 일치 (약 ${e.locationDistanceMeters}m)`
+                                    : `등록된 고객사 위치에서 약 ${e.locationDistanceMeters}m 이탈`}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                           {r.workContent && (
                             <div style={{ marginBottom: 6 }}>
                               <strong>주요 작업내용</strong>
@@ -273,7 +309,7 @@ export default function AdminDailyWorkLogPage() {
                               <div style={{ whiteSpace: 'pre-wrap' }}>{r.supportRequest}</div>
                             </div>
                           )}
-                          {!r.workContent && !r.followUp && !r.supportRequest && r.unloggedGapMinutes == null && (
+                          {!r.workContent && !r.followUp && !r.supportRequest && r.unloggedGapMinutes == null && r.departureEvents.length === 0 && (
                             <span style={{ color: '#868e96' }}>추가로 기록된 내용이 없습니다.</span>
                           )}
                         </td>
