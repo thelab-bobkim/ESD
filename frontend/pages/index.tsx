@@ -3,7 +3,7 @@ import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush, isIOSDevice, isStandalonePWA } from '@/lib/push';
-import { getCurrentLocation, getCurrentLocationWithStatus, distanceMeters, reverseGeocode, isLowAccuracy, accuracyWarningLabel, LOCATION_JUMP_WARNING } from '@/lib/geolocation';
+import { getCurrentLocationWithStatus, distanceMeters, reverseGeocode, isLowAccuracy, accuracyWarningLabel, LOCATION_JUMP_WARNING } from '@/lib/geolocation';
 import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greetings';
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
@@ -173,13 +173,6 @@ interface MeAttendance {
   latestEffort: { clientName: string } | null;
   // 정규 근무 마감 정책시각(기본 18) — "정규 근무시간이 지났는데 아직 퇴근 전" 배너 판단에 쓴다.
   regularWorkEndHour: number;
-  // 2026-09-25: 오늘이 "휴일"(주말 또는 법정공휴일)인지 — 법정공휴일 목록은 서버 정책값
-  // (PUBLIC_HOLIDAYS_KST)에만 있어서 프론트 혼자서는 판단할 수 없다(attendance.routes.ts
-  // GET /me, isRestDayKST 참고).
-  isRestDay: boolean;
-  // 오늘이 공휴일이면 그 이름("추석" 등), 순수 주말이면 null — 인사말(greetings.ts)이 요일
-  // 문구 대신 이 이름을 부르는 데 쓴다.
-  holidayName: string | null;
 }
 interface WeeklySummary { from: string; to: string; totalMinutes: number; days: number; }
 
@@ -398,18 +391,12 @@ export default function EmployeeHome() {
   const kstHourNow = (new Date(nowTick).getUTCHours() + 9) % 24;
   const regularWorkEndHour = myStatus?.regularWorkEndHour ?? 18;
   const isPastRegularWorkEnd = kstHourNow >= regularWorkEndHour || kstHourNow < 3;
-  // 휴일(주말 또는 법정공휴일, KST) 여부 — 서버(attendance.routes.ts isRestDayKST)와 동일한
-  // 기준을 GET /attendance/me 응답(myStatus.isRestDay)으로 그대로 받아온다. 법정공휴일 목록은
-  // 서버 정책값에만 있어서 주말처럼 요일 계산만으로는 알 수 없기 때문(2026-09-25, 추석 연휴
-  // 금요일에 "출근"이 평일처럼 활성화되어 있던 문제 반영). myStatus를 아직 못 받아온 첫
-  // 렌더링 동안에만 주말(토/일) 계산으로 임시 대체한다 — 공휴일 여부까지는 못 잡아도, 잠깐
-  // 사이 화면이 깜빡이며 평일 아이콘이 보였다 잠기는 것보다는 낫다.
-  const isWeekendToday = myStatus
-    ? myStatus.isRestDay
-    : (() => {
-        const kstDay = new Date(nowTick + 9 * 60 * 60 * 1000).getUTCDay();
-        return kstDay === 0 || kstDay === 6;
-      })();
+  // 주말(토/일, KST) 여부 — 서버(attendance.routes.ts isWeekendKST)와 동일한 기준. 주말엔
+  // "주말작업"만 등록 가능하므로 이 배너도, 아래 아이콘 잠금도 이 값을 함께 참고한다.
+  const isWeekendToday = (() => {
+    const kstDay = new Date(nowTick + 9 * 60 * 60 * 1000).getUTCDay();
+    return kstDay === 0 || kstDay === 6;
+  })();
   // 주말엔 "퇴근하고 야간작업으로" 배너가 의미가 없다(주말작업은 애초에 정규 근무시간 개념이
   // 없고, 버튼을 눌러도 서버가 평일 전용인 야간작업 등록을 막아버린다) — 평일에만 띄운다.
   const showNightWorkTransitionPrompt = Boolean(
@@ -460,6 +447,14 @@ export default function EmployeeHome() {
 
   // 고객사미팅/고객사작업/야간작업 공용 상세입력 폼 상태
   const [detailStatus, setDetailStatus] = useState<string | null>(null);
+  // 2026-09-30: submitDetailForm이 위치확인(GPS+역지오코딩, 수 초 소요 가능)을 기다리는 동안에도
+  // "등록" 버튼이 계속 눌려있어, 그 사이 빠르게 두 번 누르면(iOS에서 위치 확인이 느릴 때 특히)
+  // 상태변경/공수기록이 중복 생성될 수 있었다 — submittingCorrection과 동일한 패턴으로 막는다.
+  const [detailSubmitting, setDetailSubmitting] = useState(false);
+  // 2026-09-30: 수동 "출근" 버튼도 같은 이유(GPS 확보 대기 중 버튼이 계속 활성)로 중복 클릭 시
+  // /attendance/clock-in이 두 번 호출될 수 있었다 — myStatus.record.clockInAt은 refreshMyStatus()가
+  // 끝나야 채워지므로 그것만으로는 두 번째 클릭을 못 막는다.
+  const [clockInSubmitting, setClockInSubmitting] = useState(false);
   const [clientName, setClientName] = useState('');
   // 목록에서 정확히 고른 고객사의 id — 같은 이름을 포함하는 지점이 여러 곳(예: "김앤장법률사무소"
   // 본점/세양센터/국원센터)이어도 서버가 이름 부분일치 대신 이 id로 정확히 그 지점만 조회하도록
@@ -505,8 +500,6 @@ export default function EmployeeHome() {
   const [leaveDestination, setLeaveDestination] = useState('');
   const [leaveContact, setLeaveContact] = useState('');
   const detailFormRef = useRef<HTMLDivElement | null>(null);
-  // 2026-09-30: "출근" 버튼을 눌렀을 때 실제 상태 아이콘 쪽으로 시선을 유도하기 위한 참조.
-  const statusIconGridRef = useRef<HTMLDivElement | null>(null);
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
   // 2026-09-03 추가, 2026-09-19 변경: 처음엔 "네, 알림 받을게요" 배너로 먼저 동의를 구했는데,
@@ -732,8 +725,14 @@ export default function EmployeeHome() {
       // 위치 확인이 여러 번 필요하더라도(고객사 도착/본사 복귀/이탈 감지) GPS는 이 틱에서 딱 한 번만
       // 읽어서 재사용한다 — 매번 새로 읽으면 배터리도 더 쓰고 권한 프롬프트도 잦아진다.
       if (!wantsClientCheck && !wantsHqCheck && !anchor) return;
-      const loc = await getCurrentLocation();
-      if (!loc) return;
+      // 2026-09-30: 기존에는 오차범위를 전혀 안 보고(getCurrentLocation) 첫 GPS 응답을 그대로
+      // 썼는데, 실내·이동 중에는 기지국/WiFi 기반으로 잡힌 부정확한 좌표(수백m~수km 오차)가 올 수
+      // 있어 실제로는 300m 밖인데도 "도착하신 것 같아요" 배너가 뜨는 오탐이 발생했다(사용자 보고).
+      // 다른 위치 확인 로직(출퇴근 등록 등)과 동일하게 getCurrentLocationWithStatus()로 바꿔
+      // 오차범위가 낮은(신뢰 가능한) 좌표만 쓰고, 오차가 크면 이번 주기는 건너뛰고 다음 5분 주기에
+      // 다시 시도한다 — 실제로 근처에 있으면 다음 시도에서도 계속 감지되므로 기능 자체는 그대로다.
+      const { status: locStatus, coords: loc, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+      if (locStatus !== 'OK' || !loc || isLowAccuracy(accuracyMeters)) return;
 
       // 고객사 도착 감지 — 이미 고객사에 있다고 등록된 상태/휴무가 아니면 상태와 무관하게 항상 확인한다.
       if (wantsClientCheck) {
@@ -765,9 +764,7 @@ export default function EmployeeHome() {
               try {
                 await apiFetch('/attendance/effort-departure-confirm', {
                   method: 'POST',
-                  // 2026-09-29: 이탈 감지 시점의 GPS도 함께 보내서, 백엔드가 등록된 고객사 위치와
-                  // 비교(불일치 시에만 좌표 저장하는 기존 정책 그대로)해 이탈장소를 추정할 수 있게 한다.
-                  body: JSON.stringify({ estimatedEndAt: estimatedAt.toISOString(), location: { lat: loc.lat, lng: loc.lng } }),
+                  body: JSON.stringify({ estimatedEndAt: estimatedAt.toISOString() }),
                 });
                 departureAwaySinceRef.current = null;
                 setEffortDepartureNotice({ estimatedAt: estimatedAt.toISOString() });
@@ -807,57 +804,8 @@ export default function EmployeeHome() {
       refreshMyStatus();
       onSuccess?.(data);
     } catch (err) {
-      // 2026-09-30: 위치불일치 하드블록(LOCATION_MISMATCH_BLOCKED)은 withMismatchConfirm이 이미
-      // "카카오맵으로 실제 위치 확인" 팝업을 띄우는 등 알아서 처리했다는 뜻으로 이 표식(silent)을
-      // 남기고 다시 던진다 — 여기서 또 오류 문구로 화면을 덮어쓰지 않는다(사용자가 팝업을 취소한
-      // 경우 조용히 아무 일도 없었던 것처럼 끝난다).
-      if ((err as Error & { silent?: boolean } | undefined)?.silent) return;
       setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
       setMessageIsError(true);
-    }
-  }
-
-  // 2026-09-30: 대표이사 요청 — "국민대학교처럼 GPS가 잘 안 맞는 현장에서, 진짜로 거기 있는
-  // 직원이 카카오맵으로 본인 위치를 직접 확인하고 등록할 수 있게" 해주는 공용 흐름. 서버가
-  // LOCATION_MISMATCH_BLOCKED로 막으면(위치 불일치 하드블록) 곧바로 오류로 표시하는 대신, GPS로
-  // 잡힌 좌표를 지도에 띄워 "여기가 맞다"고 확정(또는 지도를 클릭해 실제 위치로 보정)하게 하고,
-  // 그러면 body.selfConfirmMismatch=true를 더해 딱 한 번 자동으로 재제출한다. 취소하면 조용히
-  // (오류 문구 없이) 등록을 중단한다 — 관리자 화면에는 이렇게 등록된 건이 note 표식으로 남는다.
-  const [mismatchConfirm, setMismatchConfirm] = useState<{
-    distanceMeters?: number;
-    lat?: number;
-    lng?: number;
-    resolve: (result: { lat: number; lng: number } | null) => void;
-  } | null>(null);
-
-  function askMismatchConfirm(
-    distanceMeters: number | undefined,
-    lat: number | undefined,
-    lng: number | undefined
-  ): Promise<{ lat: number; lng: number } | null> {
-    return new Promise((resolve) => {
-      setMismatchConfirm({ distanceMeters, lat, lng, resolve });
-    });
-  }
-
-  async function withMismatchConfirm<T>(body: Record<string, unknown>, submit: () => Promise<T>): Promise<T> {
-    try {
-      return await submit();
-    } catch (err) {
-      const code = err instanceof Error ? (err as Error & { code?: string }).code : undefined;
-      if (code !== 'LOCATION_MISMATCH_BLOCKED') throw err;
-      const distance = (err as Error & { distanceMeters?: number }).distanceMeters;
-      const loc = body.location as { lat: number; lng: number } | undefined;
-      const confirmed = await askMismatchConfirm(distance, loc?.lat, loc?.lng);
-      if (!confirmed) {
-        const silentErr = new Error(err instanceof Error ? err.message : '취소되었습니다.');
-        (silentErr as Error & { silent?: boolean }).silent = true;
-        throw silentErr;
-      }
-      // 사용자가 지도에서 확정(또는 클릭해 보정)한 좌표를 그대로 최종 등록 위치로 쓴다.
-      body.location = { lat: confirmed.lat, lng: confirmed.lng };
-      body.selfConfirmMismatch = true;
-      return submit();
     }
   }
 
@@ -942,7 +890,7 @@ export default function EmployeeHome() {
       departureAwaySinceRef.current = null;
       setDepartureNeedsReason(false);
       setDepartureEarlyLeaveReason('');
-      setMessage(`${fmtClock(info.estimatedAt)}에 퇴근하신 걸로 확정했어요. ${clockOutGreeting(weather, myStatus?.holidayName)}`);
+      setMessage(`${fmtClock(info.estimatedAt)}에 퇴근하신 걸로 확정했어요. ${clockOutGreeting(weather)}`);
       refreshMyStatus();
     } catch (err) {
       const code = err instanceof Error ? (err as Error & { code?: string }).code : undefined;
@@ -1189,11 +1137,9 @@ export default function EmployeeHome() {
       const accuracyWarningSuffix = isLowAccuracy(hqQuickLocationMeta.accuracy) ? ` (${accuracyWarningLabel(hqQuickLocationMeta.accuracy)})` : '';
       run(
         () =>
-          withMismatchConfirm(body, () =>
-            attemptWithLocationRetry(
-              () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-              isFirstStatusToday && WORK_START_STATUSES_FRONT.has(code) ? refreshHqQuickLocation : undefined
-            )
+          attemptWithLocationRetry(
+            () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+            isFirstStatusToday && WORK_START_STATUSES_FRONT.has(code) ? refreshHqQuickLocation : undefined
           ),
         pendingPrev
           ? `⚠️ 상태가 '${STATUS_META[code].label}'(으)로 변경됐지만, 직전 '${STATUS_META[pendingPrev.status]?.label ?? pendingPrev.status}' 내용을 아직 안 채우셨어요! 잊지 말고 채워주세요.`
@@ -1271,6 +1217,16 @@ export default function EmployeeHome() {
   /** 즉시등록 확인 팝업에서 "아니요"를 누르거나 잘못 눌렀을 때 — 아무것도 등록하지 않고 닫는다. */
   function cancelPendingQuickStatus() {
     setPendingQuickConfirm(null);
+  }
+
+  async function handleDetailFormSubmit() {
+    if (detailSubmitting) return;
+    setDetailSubmitting(true);
+    try {
+      await submitDetailForm();
+    } finally {
+      setDetailSubmitting(false);
+    }
   }
 
   async function submitDetailForm() {
@@ -1428,21 +1384,15 @@ export default function EmployeeHome() {
       setMessage(null);
       setMessageIsError(false);
       try {
-        const res = await withMismatchConfirm(body, () =>
-          apiFetch<{ statusLog: unknown; nightWork: { altDayOffRecommended?: boolean } | null }>(
-            '/attendance/status', { method: 'POST', body: JSON.stringify(body) }
-          )
+        const res = await apiFetch<{ statusLog: unknown; nightWork: { altDayOffRecommended?: boolean } | null }>(
+          '/attendance/status', { method: 'POST', body: JSON.stringify(body) }
         );
         setMessage(`상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`);
         refreshMyStatus();
         if (res.nightWork?.altDayOffRecommended) setShowAltDayOffPrompt(true);
       } catch (err) {
-        // 위치확인 팝업을 취소한 경우(silent)는 조용히 넘어간다 — withMismatchConfirm의 run() 쪽
-        // 처리와 동일한 규칙을 여기(run()을 안 거치는 야간작업 경로)에도 그대로 적용한다.
-        if (!(err as Error & { silent?: boolean } | undefined)?.silent) {
-          setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
-          setMessageIsError(true);
-        }
+        setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+        setMessageIsError(true);
       }
       setDetailStatus(null);
       return;
@@ -1450,11 +1400,9 @@ export default function EmployeeHome() {
 
     run(
       () =>
-        withMismatchConfirm(body, () =>
-          attemptWithLocationRetry(
-            () => apiFetch<{ locationMismatchException?: boolean }>('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-            needsLocationCheck ? refreshDetailFormLocation : undefined
-          )
+        attemptWithLocationRetry(
+          () => apiFetch<{ locationMismatchException?: boolean }>('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+          needsLocationCheck ? refreshDetailFormLocation : undefined
         ),
       `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊${
         isLowAccuracy(detailFormLocationMeta.accuracy) ? ` (${accuracyWarningLabel(detailFormLocationMeta.accuracy)})` : ''
@@ -1604,7 +1552,7 @@ export default function EmployeeHome() {
 
       {/* 히어로: 인사말 + 지금 내 상태 크게 보여주기 */}
       <div className="hero-card">
-        <div className="hero-greeting">{me.name}님, {heroGreeting(weather, myStatus?.holidayName)}! 👋</div>
+        <div className="hero-greeting">{me.name}님, {heroGreeting(weather)}! 👋</div>
         {currentStatus ? (
           <div className="hero-status">
             <span className="hero-status-icon">{clockedOut ? '🏁' : (STATUS_META[currentStatus.status]?.icon ?? '❔')}</span>
@@ -1619,10 +1567,7 @@ export default function EmployeeHome() {
               </div>
             </div>
           </div>
-        ) : isWeekendToday ? null : (
-          // 2026-09-25: 휴일엔 이 독려 문구를 보여주지 않는다(대표이사 지적) — 대부분 근무하지
-          // 않는 날에 "아직 상태 등록 안 하셨네요!"라고 채근할 이유가 없다. 실제로 휴일에
-          // 근무하는 소수를 위한 안내는 아래 상태 아이콘 근처의 차분한 안내 배너로 충분하다.
+        ) : (
           <div className="hero-nudge">
             🌤️ 아직 오늘 상태를 등록 안 하셨네요! 아래에서 지금 상태를 눌러주세요 — 10초면 끝나요.
           </div>
@@ -1944,34 +1889,60 @@ export default function EmployeeHome() {
         <div>
           <div className="card">
             <h2>출퇴근</h2>
-            {/* 2026-09-25: "휴일엔 출근을 독려할 일이 없다"(대표이사 지적) — 휴일엔 대부분
-                근무하지 않으므로, 평일용 "출근" 버튼(본사근무 수동 등록)을 아예 숨긴다. 실제로
-                휴일에 근무하는 경우엔 아래 상태 아이콘에서 "주말작업"을 고르면 그 순간 자동으로
-                출근 처리된다(WORK_START_STATUSES, attendance.routes.ts ensureClockIn 참고) —
-                이 버튼이 없어도 등록 경로는 그대로 남아있다. */}
-            {isWeekendToday && (
-              <div className="notice-inline-orange" style={{ marginBottom: 12 }}>
-                🗓️ 오늘은 휴일이에요 — 실제로 근무하신 경우에만 아래 상태 아이콘에서 &quot;주말작업&quot;을 선택해주세요. 선택하는 순간 자동으로 출근 처리돼요.
-              </div>
-            )}
-            {!isWeekendToday && (
             <button
               className={myStatus?.record?.clockInAt ? 'done' : ''}
-              disabled={Boolean(myStatus?.record?.clockInAt)}
-              onClick={() => {
-                // 2026-09-30: 대표이사 결정 — "출근" 버튼이 위치확인만 되면 실제 근무형태(고객사작업
-                // 등)를 안 고른 채로도 조용히 "본사근무 임시등록"을 확정해버리던 게 문제의 원인이었다
-                // (상황판 "지금 확인이 필요한 직원"에 계속 쌓이던 케이스). 이제 이 버튼은 스스로
-                // 아무것도 등록하지 않고, 아래 실제 상태 아이콘 선택을 안내만 한다 — 출근은 그
-                // 아이콘을 누르는 순간 각 상태별 위치확인 규칙과 함께 자동으로 확정된다(ensureClockIn).
-                setMessage('⚠️ "출근"은 이제 실제 근무형태를 선택해야 확정돼요. 아래에서 오늘 근무형태(본사근무·고객사작업·고객사미팅·출장·고객사상주·재택 등)를 눌러주세요 — 그 순간 자동으로 출근 처리됩니다.');
-                setMessageIsError(true);
-                statusIconGridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              disabled={Boolean(myStatus?.record?.clockInAt) || clockInSubmitting}
+              onClick={async () => {
+                if (clockInSubmitting) return;
+                setClockInSubmitting(true);
+                setMessage(null);
+                setMessageIsError(false);
+                try {
+                  const clockInBody: Record<string, unknown> = {};
+                  const clockInLocationMeta: { accuracy: number | null; jumpDetected: boolean } = { accuracy: null, jumpDetected: false };
+                  const refreshClockInLocation = async () => {
+                    const { status: locStatus, coords, accuracyMeters, jumpDetected } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+                    clockInBody.locationStatus = locStatus;
+                    clockInLocationMeta.accuracy = accuracyMeters;
+                    clockInLocationMeta.jumpDetected = jumpDetected;
+                    if (coords) {
+                      clockInBody.location = coords;
+                      // 2026-09-16: 오차범위를 서버로 함께 보낸다(위치 미확인/불일치 개선 1순위).
+                      clockInBody.locationAccuracyMeters = accuracyMeters ?? undefined;
+                      clockInBody.locationAddress = (await reverseGeocode(coords.lat, coords.lng)) ?? undefined;
+                    } else {
+                      delete clockInBody.location;
+                      delete clockInBody.locationAddress;
+                      delete clockInBody.locationAccuracyMeters;
+                    }
+                  };
+                  await refreshClockInLocation();
+                  // 이상치(순간이동) 감지 시 등록 자체를 막고 재측정을 유도한다(2026-09 요청 — 등록 차단).
+                  if (clockInLocationMeta.jumpDetected) {
+                    setMessage(LOCATION_JUMP_WARNING);
+                    setMessageIsError(true);
+                    return;
+                  }
+                  const result = await attemptWithLocationRetry(
+                    () => apiFetch<{ locationConfirmed?: boolean }>('/attendance/clock-in', {
+                      method: 'POST',
+                      body: JSON.stringify(clockInBody),
+                    }),
+                    refreshClockInLocation
+                  );
+                  const accuracySuffix = isLowAccuracy(clockInLocationMeta.accuracy) ? ` (${accuracyWarningLabel(clockInLocationMeta.accuracy)})` : '';
+                  setMessage((result.locationConfirmed ? '✅ 위치 확인 완료 — 정상출근 처리되었습니다.' : '출근 처리되었습니다.') + accuracySuffix);
+                  refreshMyStatus();
+                } catch (err) {
+                  setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+                  setMessageIsError(true);
+                } finally {
+                  setClockInSubmitting(false);
+                }
               }}
             >
               {myStatus?.record?.clockInAt ? `✓ 출근 완료 · ${fmtClock(myStatus.record.clockInAt)}` : '출근'}
             </button>
-            )}
             <button
               className={myStatus?.record?.clockOutAt ? 'done' : 'secondary'}
               disabled={!myStatus?.record?.clockInAt || Boolean(myStatus?.record?.clockOutAt)}
@@ -1984,7 +1955,7 @@ export default function EmployeeHome() {
                 clockInAt={myStatus.record.clockInAt}
                 locationConsentGiven={Boolean(me?.locationConsentGiven)}
                 onCancel={() => { setShowClockOutConfirm(false); setClockOutThenNightWork(false); }}
-                onConfirm={async ({ locationAddress, locationStatus, earlyLeaveReason, dailyWorkLog }) => {
+                onConfirm={async ({ locationAddress, locationStatus, earlyLeaveReason }) => {
                   // 18시 이후 정규근무분 초과(야간작업 등록 제안) 여부를 응답에서 바로 확인해야 해서
                   // run()을 안 거치고 직접 호출한다(NIGHT_WORK 등록과 같은 이유).
                   setMessage(null);
@@ -1999,11 +1970,10 @@ export default function EmployeeHome() {
                           ...(locationAddress ? { locationAddress } : {}),
                           locationStatus,
                           ...(earlyLeaveReason ? { earlyLeaveReason } : {}),
-                          dailyWorkLog,
                         }),
                       }
                     );
-                    setMessage(`퇴근 처리되었습니다. ${clockOutGreeting(weather, myStatus?.holidayName)}`);
+                    setMessage(`퇴근 처리되었습니다. ${clockOutGreeting(weather)}`);
                     refreshMyStatus();
                     setNightWorkPromptDismissed(true);
                     if (viaNightWorkBanner) {
@@ -2031,37 +2001,12 @@ export default function EmployeeHome() {
                 onSelect={(lat, lng, address) => confirmNewClientWithLocation(lat, lng, address)}
               />
             )}
-            {mismatchConfirm && (
-              // 2026-09-30: 위치 불일치 하드블록(LOCATION_MISMATCH_BLOCKED)을 만났을 때 뜨는 팝업 —
-              // GPS로 잡힌 좌표를 그대로 지도에 띄워, 실제로 그 자리에 있는 직원이 "여기가 맞다"고
-              // 확정하거나 지도를 클릭해 실제 위치로 보정할 수 있게 한다.
-              <MapPickerModal
-                title="📍 실제 위치를 확인해주세요"
-                helpText={`등록된 위치에서 약 ${mismatchConfirm.distanceMeters ?? '?'}m 떨어져 있어 등록이 막혔어요. 지금 계신 곳이 지도에 표시된 위치가 맞으면 그대로 아래 버튼을 눌러주세요. 위치가 다르면 지도를 클릭해서 실제 계신 곳을 다시 찍어주세요.`}
-                confirmLabel="여기가 맞습니다 · 등록 계속하기"
-                initialCoords={
-                  mismatchConfirm.lat != null && mismatchConfirm.lng != null
-                    ? { lat: mismatchConfirm.lat, lng: mismatchConfirm.lng }
-                    : undefined
-                }
-                onClose={() => {
-                  mismatchConfirm.resolve(null);
-                  setMismatchConfirm(null);
-                }}
-                onSelect={(lat, lng) => {
-                  mismatchConfirm.resolve({ lat, lng });
-                  setMismatchConfirm(null);
-                }}
-              />
-            )}
-            {!isWeekendToday && (
             <div className="notice-inline-orange">
-              ⚠️ 출근은 자동이에요 — 아래 실제 근무형태 아이콘을 누르면 그 순간이 출근시각이 됩니다.
+              ⚠️ 출근은 자동이에요 — 상태를 누르면 그 순간이 출근시각이 됩니다.
               <span style={{ fontWeight: 400 }}>
-                {' '}"출근" 버튼 자체는 더 이상 직접 등록하지 않아요 — 오늘 근무형태(본사근무·고객사작업·고객사미팅·출장·고객사상주·재택 등)를 아래에서 골라주세요. 하루를 마치면 꼭 "퇴근"을 눌러야 근무가 확정돼요.
+                {' '}"출근" 버튼은 본사 위치가 확인될 때만 처리돼요. 고객사로 바로 가는 날, 출장이나 상주근무인 날은 "출근" 버튼 대신 도착 후 상태를 눌러주세요. 하루를 마치면 꼭 "퇴근"을 눌러야 근무가 확정돼요.
               </span>
             </div>
-            )}
             {!pushSubscribed && iosNeedsInstall ? (
               // 2026-09-04: 아이폰 사파리(홈 화면 앱이 아닌 상태)에서는 눌러도 항상 실패하므로,
               // 버튼 대신 이유와 방법을 바로 보여준다 — "안 된다"가 아니라 "이렇게 하면 된다"로.
@@ -2094,18 +2039,17 @@ export default function EmployeeHome() {
             )}
             {isWeekendToday && (
               <div className="board-empty" style={{ marginBottom: 8, color: '#1c7ed6' }}>
-                🗓️ 오늘은 주말/공휴일이에요 — &quot;주말작업&quot;만 등록할 수 있어요. 평일 상태 아이콘은 다음 근무일에 다시 열려요.
+                🗓️ 주말이에요 — 오늘은 &quot;주말작업&quot;만 등록할 수 있어요. 평일 상태 아이콘은 월요일에 다시 열려요.
               </div>
             )}
-            <div className="status-icon-grid" ref={statusIconGridRef}>
+            <div className="status-icon-grid">
               {visibleStatusOrder.map((code) => {
                 // 퇴근(낮근무 종료) 후에도 야간작업자는 계속 상태를 등록해야 하니 예외로 둔다.
                 // 지난 근무일 퇴근 미해결 건이 있으면(정정 신청 전까지) 야간작업 예외 없이 전부 잠근다 —
                 // 오늘 상태를 계속 쌓아가기 전에 어제 문제부터 정리하게 하기 위함.
-                // 2026-09-06: 휴일(주말 또는 법정공휴일)엔 "주말작업" 하나만 남기고 나머지 상태
-                // 아이콘을 전부 잠근다(요청사항) — 서버도 동일한 기준으로 최종 검증하므로
-                // (attendance.routes.ts isRestDayKST), 화면 잠금과 실제 등록 가능 여부가 항상
-                // 일치한다.
+                // 2026-09-06: 주말(토/일)엔 "주말작업" 하나만 남기고 나머지 상태 아이콘을 전부
+                // 잠근다(요청사항) — 서버도 동일한 요일 기준으로 최종 검증하므로(attendance.routes.ts
+                // isWeekendKST), 화면 잠금과 실제 등록 가능 여부가 항상 일치한다.
                 // 2026-09-14: 관리자 계정이라고 이 잠금들을 건너뛰게 해뒀던 예외를 없앴다 — 관리자도
                 // 똑같은 사용자 화면·똑같은 규칙으로 등록하고, 관리 기능이 필요하면 /admin으로 들어간다.
                 const isLocked = mustResolvePastCorrection
@@ -2209,7 +2153,7 @@ export default function EmployeeHome() {
                 value={tripPurpose}
                 onChange={(e) => setTripPurpose(e.target.value)}
               />
-              <button disabled={!tripDestination.trim() || !tripStart || !tripPurpose.trim()} onClick={submitDetailForm}>
+              <button disabled={!tripDestination.trim() || !tripStart || !tripPurpose.trim() || detailSubmitting} onClick={handleDetailFormSubmit}>
                 등록
               </button>
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
@@ -2236,7 +2180,7 @@ export default function EmployeeHome() {
               <input value={leaveDestination} onChange={(e) => setLeaveDestination(e.target.value)} placeholder="예: 제주도, 국내(자택)" />
               <label className="field-label">비상연락처(선택)</label>
               <input value={leaveContact} onChange={(e) => setLeaveContact(e.target.value)} placeholder="예: 010-1234-5678" />
-              <button disabled={!leaveStart || !leaveEnd} onClick={submitDetailForm}>등록</button>
+              <button disabled={!leaveStart || !leaveEnd || detailSubmitting} onClick={handleDetailFormSubmit}>등록</button>
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
             </div>
           )}
@@ -2259,7 +2203,7 @@ export default function EmployeeHome() {
               </div>
               <label className="field-label">사유(선택)</label>
               <input value={leaveDestination} onChange={(e) => setLeaveDestination(e.target.value)} placeholder="예: 지난주 야간작업 대체" />
-              <button disabled={!leaveStart} onClick={submitDetailForm}>등록</button>
+              <button disabled={!leaveStart || detailSubmitting} onClick={handleDetailFormSubmit}>등록</button>
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
             </div>
           )}
@@ -2274,7 +2218,7 @@ export default function EmployeeHome() {
               <input value={movingFrom} onChange={(e) => setMovingFrom(e.target.value)} placeholder="예: 본사" />
               <label className="field-label">목적지</label>
               <input value={movingTo} onChange={(e) => setMovingTo(e.target.value)} placeholder="예: OO상사" />
-              <button disabled={!movingFrom.trim() || !movingTo.trim()} onClick={submitDetailForm}>등록</button>
+              <button disabled={!movingFrom.trim() || !movingTo.trim() || detailSubmitting} onClick={handleDetailFormSubmit}>등록</button>
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
             </div>
           )}
@@ -2296,7 +2240,7 @@ export default function EmployeeHome() {
                 onChange={(e) => setWorkDetail(e.target.value)}
               />
               {/* 2026-09-22: 최소 글자수(10자) 제약 제거 요청 반영 — 완전히 빈 값만 막는다. */}
-              <button disabled={!workDetail.trim()} onClick={submitDetailForm}>등록</button>
+              <button disabled={!workDetail.trim() || detailSubmitting} onClick={handleDetailFormSubmit}>등록</button>
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
             </div>
           )}
@@ -2620,8 +2564,9 @@ export default function EmployeeHome() {
                   // 고객사작업/야간작업/주말작업은 완료시간도 필수다(2026-09-14 요청 — 고객사미팅은 제외).
                   // 단, "진행중" 체크박스를 켠 경우는 예외(2026-09-15).
                   || (END_TIME_REQUIRED_STATUSES.has(detailStatus) && !workEnd && !stillInProgress)
+                  || detailSubmitting
                 }
-                onClick={submitDetailForm}
+                onClick={handleDetailFormSubmit}
               >
                 등록
               </button>

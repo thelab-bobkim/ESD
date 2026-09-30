@@ -55,8 +55,14 @@ export function startMismatchCoordPurgeScheduler() {
 
   setInterval(async () => {
     try {
-      // 자정(00:00~00:59)에만 실제 삭제를 수행한다 — 매시간 불필요하게 전체 스캔하지 않기 위함.
-      if (new Date().getHours() !== 0) return;
+      // 2026-09-30 수정: getHours()는 서버(컨테이너)의 로컬 시각을 쓰는데, 이 앱의 배포환경은
+      // TZ를 KST로 맞춰두지 않아(Dockerfile/compose 어디에도 TZ 설정 없음, node:20-slim 기본은
+      // UTC) getHours()===0은 실제로는 UTC 00시, 즉 KST 09시였다 — reminder-scheduler.ts의
+      // kstHourOf()와 동일하게 KST로 변환해서 비교해야 주석에 적힌 "자정(00:00~00:59, KST)"이
+      // 실제 동작과 맞는다(하루 1회만 도는 특성상 지워지는 시점만 늦었을 뿐 삭제 자체가 누락/중복
+      // 되진 않았지만, 위치정보보호법 "즉시파기" 취지상 의도한 시각에 지워야 한다).
+      const kstHour = (new Date().getUTCHours() + 9) % 24;
+      if (kstHour !== 0) return;
       await runPurge();
     } catch (err) {
       // eslint-disable-next-line no-console

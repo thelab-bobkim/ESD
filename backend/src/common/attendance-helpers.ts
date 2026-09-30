@@ -11,37 +11,45 @@ export function isWeekendKST(date: Date = new Date()): boolean {
   return kstDay === 0 || kstDay === 6;
 }
 
+/**
+ * 2026-09-30 발견/수정: "주말엔 주말작업만" 게이트(attendance.routes.ts)가 지금까지
+ * isWeekendKST()(자정 기준 실제 달력요일)를 그대로 썼는데, workDate/todayDateOnly()는 새벽
+ * 3시를 하루 경계로 삼는다 — 두 기준이 어긋나 있었다. 그래서 금요일 야간작업을 하다 토요일
+ * 03시 이전(workDate는 아직 "금요일")에 상태를 다시 등록하려 하면 isWeekendKST()는 "토요일"로
+ * 보고 WEEKEND_ONLY_WEEKEND_WORK로 막아버렸다(야간작업자가 새벽에도 상태를 등록/수정할 수
+ * 있어야 한다는 기존 방침과 정면으로 어긋남). 반대로 월요일 00~03시(workDate는 아직 "일요일")엔
+ * 평일로 오인되어 주말작업이 막히는 등, 자정 전후 3시간 구간에서 요일 판정이 실제 근무일과
+ * 어긋났다. workDate(이미 3시 경계로 보정된 Date.UTC 날짜)의 요일을 그대로 보면 이 어긋남이
+ * 사라진다 — isWeekendKST()는 그대로 두고(reminder-scheduler.ts 등 실제 달력요일이 맞는
+ * 곳도 있음) "근무일 기준" 주말판정이 필요한 곳에서만 이 함수를 쓴다.
+ */
+export function isWeekendForWorkDate(workDate: Date): boolean {
+  const day = workDate.getUTCDay();
+  return day === 0 || day === 6;
+}
+
 // 2026-09-14: "주말/공휴일에도 출근 알림이 계속 온다"는 신고(김진호·김진영·권성주) 반영 —
 // 관공서의 공휴일에 관한 규정 기준 2026년 법정공휴일 기본값(대체공휴일·근로자의 날 포함).
-// 2026-09-25: "추석인데 화면 인사말이 '불금'이다"(대표이사 지적) 반영 — 각 공휴일에 이름을
-// 함께 달아서, 인사말(greetings.ts)이 "추석 잘 보내세요"처럼 그 공휴일을 직접 부를 수 있게 했다.
-// 연도가 바뀌거나 회사 창립기념일 같은 회사만의 휴일을 추가해야 하면, 정책값 PUBLIC_HOLIDAYS_KST
-// (JSON 문자열 배열, "YYYY-MM-DD", 이름 없이 날짜만)로 날짜 목록 자체는 덮어쓸 수 있다 — 다만
-// 그 경우 이름 정보가 없으므로 getPublicHolidayNameKST는 "공휴일"이라는 일반 이름으로 대체한다.
-interface PublicHolidayEntry { date: string; name: string; }
-const DEFAULT_PUBLIC_HOLIDAYS_KST_2026: PublicHolidayEntry[] = [
-  { date: '2026-01-01', name: '신정' },
-  { date: '2026-02-16', name: '설날 연휴' },
-  { date: '2026-02-17', name: '설날' },
-  { date: '2026-02-18', name: '설날 연휴' },
-  { date: '2026-03-01', name: '삼일절' },
-  { date: '2026-03-02', name: '삼일절 대체공휴일' },
-  { date: '2026-05-01', name: '근로자의 날' }, // 전 사업장 유급휴일
-  { date: '2026-05-05', name: '어린이날' },
-  { date: '2026-05-24', name: '부처님오신날' },
-  { date: '2026-05-25', name: '부처님오신날 대체공휴일' },
-  { date: '2026-06-06', name: '현충일' },
-  { date: '2026-08-15', name: '광복절' },
-  { date: '2026-08-17', name: '광복절 대체공휴일' },
-  { date: '2026-09-24', name: '추석 연휴' },
-  { date: '2026-09-25', name: '추석' },
-  { date: '2026-09-26', name: '추석 연휴' },
-  { date: '2026-10-03', name: '개천절' },
-  { date: '2026-10-05', name: '개천절 대체공휴일' },
-  { date: '2026-10-09', name: '한글날' },
-  { date: '2026-12-25', name: '크리스마스' },
+// 연도가 바뀌거나 회사 창립기념일 같은 회사만의 휴일을 추가해야 하면, 정책값
+// PUBLIC_HOLIDAYS_KST(JSON 문자열 배열, "YYYY-MM-DD")로 이 기본값 전체를 덮어쓸 수 있다.
+const DEFAULT_PUBLIC_HOLIDAYS_KST_2026 = [
+  '2026-01-01', // 신정
+  '2026-02-16', '2026-02-17', '2026-02-18', // 설날 연휴
+  '2026-03-01', // 삼일절
+  '2026-03-02', // 삼일절 대체공휴일
+  '2026-05-01', // 근로자의 날 (전 사업장 유급휴일)
+  '2026-05-05', // 어린이날
+  '2026-05-24', // 부처님오신날
+  '2026-05-25', // 부처님오신날 대체공휴일
+  '2026-06-06', // 현충일
+  '2026-08-15', // 광복절
+  '2026-08-17', // 광복절 대체공휴일
+  '2026-09-24', '2026-09-25', '2026-09-26', // 추석 연휴
+  '2026-10-03', // 개천절
+  '2026-10-05', // 개천절 대체공휴일
+  '2026-10-09', // 한글날
+  '2026-12-25', // 크리스마스
 ];
-const DEFAULT_PUBLIC_HOLIDAY_DATES_2026 = DEFAULT_PUBLIC_HOLIDAYS_KST_2026.map((h) => h.date);
 
 /** Date를 "YYYY-MM-DD"(KST 기준 날짜) 문자열로 변환한다 — 공휴일 목록 대조용. */
 function kstDateKey(date: Date): string {
@@ -51,36 +59,8 @@ function kstDateKey(date: Date): string {
 
 /** 오늘(또는 주어진 날짜)이 정책값 PUBLIC_HOLIDAYS_KST(없으면 기본 2026년 목록) 기준 공휴일인지. */
 export async function isPublicHolidayKST(date: Date = new Date()): Promise<boolean> {
-  const holidays = await getPolicyJSON<string[]>('PUBLIC_HOLIDAYS_KST', DEFAULT_PUBLIC_HOLIDAY_DATES_2026);
+  const holidays = await getPolicyJSON<string[]>('PUBLIC_HOLIDAYS_KST', DEFAULT_PUBLIC_HOLIDAYS_KST_2026);
   return holidays.includes(kstDateKey(date));
-}
-
-/**
- * 오늘(또는 주어진 날짜)이 공휴일이면 그 이름("추석", "신정" 등)을, 아니면 null을 반환한다.
- * 관리자가 정책값 PUBLIC_HOLIDAYS_KST로 날짜 목록만 덮어썼다면(이름 정보가 없으므로) "공휴일"로
- * 대체한다. 순수 주말(토/일)이면서 공휴일 목록에는 없는 날은 null — 그 경우 인사말은 기존
- * 주말 문구를 그대로 쓴다(greetings.ts).
- */
-export async function getPublicHolidayNameKST(date: Date = new Date()): Promise<string | null> {
-  const isHoliday = await isPublicHolidayKST(date);
-  if (!isHoliday) return null;
-  const key = kstDateKey(date);
-  const known = DEFAULT_PUBLIC_HOLIDAYS_KST_2026.find((h) => h.date === key);
-  return known?.name ?? '공휴일';
-}
-
-/**
- * "휴일"(주말 또는 법정공휴일) 통합 판단 — 2026-09-25 대표이사 지적: 추석 연휴(금요일)인데도
- * "출근" 버튼과 상태 아이콘이 평일처럼 활성화되어 있던 문제. isPublicHolidayKST는 그동안 정의만
- * 되어 있었을 뿐 출근/상태등록 게이트(attendance.routes.ts)와 사용자 화면 잠금(frontend
- * index.tsx) 어디에서도 실제로 쓰이지 않았다(reminder-scheduler.ts의 알림 스킵 로직만 두 함수를
- * 함께 쓰고 있었음) — 그 두 군데도 이제 이 함수로 통일한다. 주말 여부는 동기 계산이라 즉시 알 수
- * 있지만 공휴일 여부는 정책값 조회가 필요해 비동기이므로, 이미 주말이면 공휴일 조회 자체를
- * 생략한다.
- */
-export async function isRestDayKST(date: Date = new Date()): Promise<boolean> {
-  if (isWeekendKST(date)) return true;
-  return isPublicHolidayKST(date);
 }
 
 /**

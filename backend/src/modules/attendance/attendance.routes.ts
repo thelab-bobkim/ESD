@@ -4,22 +4,11 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isRestDayKST, getPublicHolidayNameKST, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
+import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST, isWeekendForWorkDate, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 import { recordNightWork, willResumeNightWork } from '../../common/night-work-helpers';
 import { recordEffort, findOpenEffort, willUpdateExistingEffort } from '../../common/effort-helpers';
-import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, buildMismatchCoords, MAX_ACCURACY_ALLOWANCE_METERS } from '../../common/location';
-
-// 2026-09-30: 대표이사 결정 — "집이나 그 이외의 장소에서 출근을 못 찍게 하는 게 원칙" — 본사근무·
-// 고객사작업·고객사미팅·야간작업·주말작업 등록 시 위치가 실제로 등록된 좌표와 맞아야만 통과시킨다
-// (2026-09-08/09-14에 "불일치해도 막지 않고 기록만" 하던 완화를 여기서 다시 되돌린다). 다만 GPS
-// 자체가 스스로 "나도 잘 모르겠다"고 보고한 경우(오차범위가 이 값보다 큰 경우 — 신한이노플렉스 등
-// 고층건물 실내 최대 2.8km 오차 실측 사례가 이 완화를 만든 계기였다)까지 그대로 막으면 그 문제가
-// 재발하므로, 그 경우에 한해서만 예전처럼 "막지 않고 기록만" 남긴다.
-function isMismatchAccuracyExempt(accuracyMeters: number | null | undefined): boolean {
-  return typeof accuracyMeters === 'number' && Number.isFinite(accuracyMeters) && accuracyMeters > MAX_ACCURACY_ALLOWANCE_METERS;
-}
+import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, buildMismatchCoords } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
-import { upsertDailyWorkLog, computeUnloggedGapMinutes } from '../daily-work-log/daily-work-log.routes';
 
 /** "123.45.67.0/24" 형태의 CIDR 표기를 IPv4 대역으로 해석해 clientIp가 그 안에 속하는지 본다. */
 function ipInCidr(clientIp: string, cidr: string): boolean {
@@ -140,15 +129,18 @@ async function cancelPendingAutoDepartureSuggestion(attendanceRecordId: string, 
   }
 }
 
-/**
- * 출근 처리(수동) — 위 자동인식 대상이 아닌 경우를 위한 수동 버튼.
- * 2026-09-30: 대표이사 지적 — "출근 버튼만 누르고 실제 상태(고객사작업 등)를 안 고른 채 방치"되는
- * 사례가 반복돼(상황판 "지금 확인이 필요한 직원" 목록에 위치확인 전 임시 본사근무로 계속 쌓임),
- * 프론트("출근" 버튼)가 더 이상 이 엔드포인트를 호출하지 않도록 바꿨다(index.tsx 참고 — 버튼을
- * 누르면 이제 실제 상태 아이콘 선택을 안내할 뿐, 이 API를 직접 부르지 않는다). 이 라우트 자체는
- * 혹시 모를 외부/구버전 클라이언트 호환을 위해 그대로 남겨두되, 새로 만드는 흐름에서는 쓰지 않는다.
- */
+// 2026-09-30 수정: /status(statusSchema)/resident-checkin은 location을 zod로 검증하는데, 이
+// 수동 출근 버튼만 그냥 타입 단언(as)만 하고 실제 검증 없이 썼다 — 형태가 이상한 값(예: 배열,
+// 문자열이 섞인 객체)이 오면 NaN 기반으로 조용히 "위치불일치"가 되고, 그 값이 그대로 mismatch
+// 좌표(Float 컬럼)에 저장 시도되면서 이 엔드포인트에서만 DB 에러로 죽을 수 있었다. 같은 검증을 맞춘다.
+const clockInLocationSchema = z.object({ lat: z.number(), lng: z.number() }).optional();
+
+/** 출근 처리(수동) — 위 자동인식 대상이 아닌 경우를 위한 수동 버튼 */
 attendanceRouter.post('/clock-in', async (req, res) => {
+  const locationParsed = clockInLocationSchema.safeParse(req.body?.location);
+  if (!locationParsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '위치 값을 확인하세요.' } });
+  }
   const userId = req.authUser!.userId;
   const workDate = todayDateOnly();
   // 2026-09-20: "주말엔 주말작업만"이라는 규칙이 POST /status(WEEKEND_ONLY_WEEKEND_WORK 게이트,
@@ -156,12 +148,11 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   // 무조건 본사근무를 잠정 등록해왔다 — 주말에 도착팝업을 못 보고(또는 무시하고) 그냥 저녁에
   // 퇴근만 누르면, 실제로는 주말작업인데 본사근무 출근~퇴근으로 하루 전체가 남아 주말작업수당
   // 산정에서 통째로 빠지는 치명적 문제였다(대표이사 지적). 아래에서 이 값으로 분기한다.
-  // 2026-09-25: 주말(토/일)만 보고 있어서 추석 연휴처럼 평일에 걸치는 법정공휴일엔 그대로
-  // "출근" 버튼이 평일처럼 활성화되어 있던 문제(대표이사 지적) — isRestDayKST로 공휴일까지
-  // 함께 판단한다.
-  const isWeekendToday = await isRestDayKST();
+  // 2026-09-30: isWeekendKST()(실제 자정 기준 달력요일) 대신 workDate(새벽 3시 경계로 보정된
+  // 근무일) 기준으로 주말 여부를 판단한다 — 아래 isWeekendForWorkDate 주석 참고.
+  const isWeekendToday = isWeekendForWorkDate(workDate);
   // 좌표는 저장하지 않고, 본사와의 거리 비교에만 즉시 사용하고 폐기한다.
-  const location = req.body?.location as { lat: number; lng: number } | undefined;
+  const location = locationParsed.data;
   // 카카오맵 역지오코딩 주소(frontend에서 이미 변환해서 보내줌) — 좌표와 마찬가지로 대조 후 폐기.
   const locationAddress = req.body?.locationAddress as string | undefined;
   // 2026-09-16: 그 순간 GPS가 스스로 보고한 오차범위(미터) — /status와 동일하게 반경 판정에 반영한다.
@@ -330,19 +321,6 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   const earlyLeaveReason = typeof req.body?.earlyLeaveReason === 'string' && req.body.earlyLeaveReason.trim()
     ? req.body.earlyLeaveReason.trim().slice(0, 300)
     : undefined;
-  // 2026-09-26: "일일업무일지" 1단계(대표이사 요청) — 퇴근 시 "이슈/특이사항"과 "내일 예정 업무"
-  // 두 줄을 반드시 받아야 그날이 마감된다. 자동초안(2단계, GET /daily-work-log/draft)으로
-  // 프론트가 미리 채워주지만, 최종 저장 검증은 항상 여기(서버)에서 한다.
-  const dailyWorkLogBody = (req.body?.dailyWorkLog ?? {}) as Record<string, unknown>;
-  const dwlIssues = typeof dailyWorkLogBody.issues === 'string' ? dailyWorkLogBody.issues.trim() : '';
-  const dwlTomorrowPlan = typeof dailyWorkLogBody.tomorrowPlan === 'string' ? dailyWorkLogBody.tomorrowPlan.trim() : '';
-  if (!dwlIssues || !dwlTomorrowPlan) {
-    return res.status(400).json({
-      success: false,
-      error: { code: 'DAILY_WORK_LOG_REQUIRED', message: '퇴근 전에 "이슈/특이사항"과 "내일 예정 업무"를 입력해주세요.' },
-    });
-  }
-  const dwlUnloggedGapReason = typeof dailyWorkLogBody.unloggedGapReason === 'string' ? dailyWorkLogBody.unloggedGapReason.trim() : '';
 
   const existing = await prisma.attendanceRecord.findUnique({
     where: { userId_workDate: { userId, workDate } },
@@ -398,24 +376,6 @@ attendanceRouter.post('/clock-out', async (req, res) => {
 
   const clockOutAt = new Date();
 
-  // 2026-09-29: "미등록 공백시간" 검증(대표이사 결정 — 근로시간 계산은 그대로 두고 사유만 강제).
-  // 예: 고객사작업을 16:00에 완료로 마감해놓고 그 뒤로 아무 상태도 새로 등록하지 않은 채 19:10에
-  // 퇴근하면, 그 3시간10분이 "뭘 했는지 기록이 없는데 근무시간엔 그대로 잡히는" 공백이 된다.
-  // 프론트가 GET /daily-work-log/draft로 미리 보여주지만, 최종 판정은 항상 여기(퇴근 확정 시점
-  // 기준)에서 다시 한번 독립적으로 계산해서 검증한다.
-  const unloggedGap = await computeUnloggedGapMinutes(userId, workDate, clockOutAt);
-  if (unloggedGap && !dwlUnloggedGapReason) {
-    const gapH = Math.floor(unloggedGap.minutes / 60);
-    const gapM = unloggedGap.minutes % 60;
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'UNLOGGED_GAP_REASON_REQUIRED',
-        message: `마지막 등록된 작업 종료 이후 ${gapH}시간 ${gapM}분 동안 등록된 활동이 없습니다. 그 사이 무엇을 하셨는지 사유를 입력해주세요.`,
-      },
-    });
-  }
-
   // 정규 퇴근 마감: 정규 근무 상태(야간작업 제외)로 저녁 경고시각(기본 19시) 이후까지 퇴근을 안 누르면,
   // 막지는 않되 정규 근무시간은 마감시각(기본 18시)까지만 인정하고 그 이후분은 "야간작업으로 별도
   // 등록해달라"고 안내한다(자동으로 야간작업 세션을 만들지는 않는다 — 본인 확인 없이 시스템이 임의로
@@ -464,26 +424,6 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   // "퇴근" 버튼으로 정상 처리됐으니, 혹시 위치이탈 자동감지가 미리 만들어둔 대기중 제안(있다면)은
   // 더 이상 의미가 없다 — 승인함에 오탐(false positive)으로 남지 않도록 같이 정리한다.
   await cancelPendingAutoDepartureSuggestion(existing.id, userId, '본인이 정상적으로 "퇴근" 버튼을 눌러 처리됨');
-
-  // 일일업무일지 upsert — 위에서 이미 필수값(이슈/내일 예정 업무)을 검증했다. 나머지 필드는
-  // 2단계 자동초안을 프론트가 그대로(또는 수정해서) 실어보낸 값이며, 근태 확정과 같은 트랜잭션
-  // 시점에 함께 저장해 "퇴근 = 하루 마감"이 한 번의 동작으로 끝나게 한다.
-  const dwlFormType = dailyWorkLogBody.formType === 'DETAILED' ? 'DETAILED' as const : 'SIMPLE' as const;
-  await upsertDailyWorkLog(userId, workDate, {
-    issues: dwlIssues,
-    tomorrowPlan: dwlTomorrowPlan,
-    formType: dwlFormType,
-    workTypeSnapshot: typeof dailyWorkLogBody.workTypeSnapshot === 'string' ? dailyWorkLogBody.workTypeSnapshot.slice(0, 60) : undefined,
-    visitedClients: typeof dailyWorkLogBody.visitedClients === 'string' ? dailyWorkLogBody.visitedClients.slice(0, 500) : undefined,
-    workContent: typeof dailyWorkLogBody.workContent === 'string' ? dailyWorkLogBody.workContent.slice(0, 4000) : undefined,
-    followUp: typeof dailyWorkLogBody.followUp === 'string' ? dailyWorkLogBody.followUp.slice(0, 2000) : undefined,
-    supportRequest: typeof dailyWorkLogBody.supportRequest === 'string' ? dailyWorkLogBody.supportRequest.slice(0, 2000) : undefined,
-    autoDraftSnapshot: typeof dailyWorkLogBody.autoDraftSnapshot === 'string' ? dailyWorkLogBody.autoDraftSnapshot.slice(0, 6000) : undefined,
-    totalWorkedMinutes,
-    actualEffortMinutes: typeof dailyWorkLogBody.actualEffortMinutes === 'number' ? dailyWorkLogBody.actualEffortMinutes : undefined,
-    unloggedGapMinutes: unloggedGap?.minutes,
-    unloggedGapReason: unloggedGap ? dwlUnloggedGapReason.slice(0, 1000) : undefined,
-  });
 
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes, lateClockOutOverMinutes } });
 
@@ -561,13 +501,6 @@ const statusSchema = z.object({
   // status_change_logs에 저장되며(EffortLog/NightWorkSession은 상태별로 나뉘어 있어 조회가 불편함),
   // 퇴근 처리 시 "직출/직퇴라 위치 필수" 판단에 이 값을 사용한다.
   siteType: z.enum(['REMOTE', 'ONSITE']).optional(),
-  // 2026-09-30: 대표이사 요청 — 등록된 고객사 좌표와 GPS가 실제로 안 맞을 때(예: 국민대학교
-  // 실내에서 GPS가 잘 안 잡히는 경우) 무조건 막기만 하면 진짜로 현장에 있는 직원도 등록을 못 하게
-  // 된다. 그래서 프론트가 "그래도 이 위치에서 등록할게요"(카카오맵으로 본인이 직접 위치를 확인)
-  // 흐름을 거치면 이 값을 true로 함께 보내 하드블록을 우회할 수 있게 한다 — 단, 그렇게 등록된
-  // 건은 locationMatch=false로 그대로 남아 관리자 화면에서 "위치 불일치"로 계속 보인다(따로
-  // 숨기지 않음 — 대표이사가 "관리자가 별도로 관리할 수 있게" 요청).
-  selfConfirmMismatch: z.boolean().optional(),
 });
 
 // 이 상태들은 고객사를 반드시 알아야 한다(CLIENT_NAME_REQUIRED 판정에만 쓴다) — 위치대조
@@ -603,24 +536,29 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '상태값을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
-  const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus, locationAddress, accuracyMeters, selfConfirmMismatch } = parsed.data;
+  const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus, locationAddress, accuracyMeters } = parsed.data;
 
-  // 휴일(주말 토/일 + 법정공휴일, KST) 게이트(2026-09-06 요청, 2026-09-25 공휴일 반영): 휴일엔
-  // "주말작업"만 등록할 수 있고 나머지 상태는 막는다 — 반대로 평일(공휴일 아닌 날)엔 "주말작업"을
-  // 등록할 수 없다. 관리자 계정도 예외 없이 적용한다(프론트 아이콘 잠금은 관리자 계정에는 안
-  // 걸어두지만, 실제 등록은 여기서 최종적으로 검증되므로 관리자가 테스트 삼아 눌러도 이 규칙은
-  // 그대로 지켜진다).
-  const isWeekendNow = await isRestDayKST();
+  // 주말(토/일, KST) 게이트(2026-09-06 요청): 주말엔 "주말작업"만 등록할 수 있고 나머지 상태는
+  // 막는다 — 반대로 평일엔 "주말작업"을 등록할 수 없다. 관리자 계정도 예외 없이 적용한다(프론트
+  // 아이콘 잠금은 관리자 계정에는 안 걸어두지만, 실제 등록은 여기서 최종적으로 검증되므로 관리자가
+  // 테스트 삼아 눌러도 이 규칙은 그대로 지켜진다).
+  // 2026-09-30: isWeekendKST()(자정 기준 실제 달력요일) 대신 workDate(새벽 3시 경계로 보정된
+  // 근무일) 기준으로 판단한다 — attendance-helpers.ts의 isWeekendForWorkDate 주석 참고. 이걸
+  // 안 바꾸면 금요일 밤 야간작업을 토요일 새벽까지 이어가는 직원이 03시 전에 상태를 다시 등록할 때
+  // "주말엔 주말작업만" 게이트에 막혀버린다(야간작업자는 새벽에도 등록할 수 있어야 한다는 기존
+  // 방침과 정면으로 어긋남).
+  const workDate = todayDateOnly();
+  const isWeekendNow = isWeekendForWorkDate(workDate);
   if (isWeekendNow && status !== 'WEEKEND_WORK') {
     return res.status(400).json({
       success: false,
-      error: { code: 'WEEKEND_ONLY_WEEKEND_WORK', message: '주말/공휴일에는 "주말작업" 상태만 등록할 수 있습니다.' },
+      error: { code: 'WEEKEND_ONLY_WEEKEND_WORK', message: '주말에는 "주말작업" 상태만 등록할 수 있습니다.' },
     });
   }
   if (!isWeekendNow && status === 'WEEKEND_WORK') {
     return res.status(400).json({
       success: false,
-      error: { code: 'WEEKEND_WORK_ONLY_ON_WEEKEND', message: '주말작업은 토요일/일요일 또는 법정공휴일에만 등록할 수 있습니다.' },
+      error: { code: 'WEEKEND_WORK_ONLY_ON_WEEKEND', message: '주말작업은 토요일/일요일에만 등록할 수 있습니다.' },
     });
   }
 
@@ -749,20 +687,12 @@ attendanceRouter.post('/status', async (req, res) => {
     const hqLng = await getPolicyString('HQ_LONGITUDE', '');
     if (hqLat && hqLng) {
       hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS, accuracyMeters);
-      // 2026-09-30: 대표이사 결정으로 "위치 불일치 시 막지 않고 기록만" 완화를 되돌린다 — GPS가
-      // 스스로 정확하다고 보고했는데도 실제 거리가 멀면(예: 집에서 본사근무를 누르는 경우) 등록
-      // 자체를 막는다. GPS 오차범위가 큰 경우(고층건물 등)나, 직원이 카카오맵으로 본인 위치를
-      // 직접 확인하고 "그래도 등록"을 선택한 경우(selfConfirmMismatch)만 예외로 통과시킨다.
-      if (hqLocationResult && !hqLocationResult.locationMatch && !isMismatchAccuracyExempt(accuracyMeters) && !selfConfirmMismatch) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'LOCATION_MISMATCH_BLOCKED',
-            message: `등록된 본사 위치에서 약 ${hqLocationResult.locationDistanceMeters}m 떨어져 있어 본사근무로 등록할 수 없습니다. 실제로 계신 곳에 맞는 근무형태(고객사작업 등)를 선택해주세요.`,
-            distanceMeters: hqLocationResult.locationDistanceMeters,
-          },
-        });
-      }
+      // 2026-09-14: 김유범 피드백 — 신한이노플렉스 등 고층건물 실내에서는 GPS가 최대 2.8km까지도
+      // 빗나가는 사례가 실제로 있어(반경을 1km까지 넓혀도 여전히 벗어남), 거리 불일치만으로
+      // 본사근무 등록 자체를 막지 않는다. 2026-09-08에 고객사미팅/고객사작업에는 이미 적용한
+      // "막지 않고 locationMatch=false·거리값만 기록" 완화를 본사근무에도 동일하게 적용한다
+      // (locationMismatchException 패턴 참고). 사내망 IP·주소 매칭이라는 다른 안전장치는 여전히
+      // 남아있고, 위치 자체가 순간이동급으로 튄 경우는 프론트에서 별도로 차단한다(jumpDetected).
       if (!hqLocationResult) {
         const { start: dayStartForHq, end: dayEndForHq } = realDayWindow(todayDateOnly());
         const priorHqLocationFailures = await prisma.statusChangeLog.count({
@@ -824,23 +754,13 @@ attendanceRouter.post('/status', async (req, res) => {
   // 등록된 고객사 좌표가 있는 경우에만 강제한다(현장 사칭 방지).
   // - 위치 확보 자체가 실패(권한거부/타임아웃 등)했으면: 오늘 첫 실패는 봐주고 통과시키되,
   //   이미 한 번 봐준 뒤부터는 실제로 위치가 일치해야만 통과시킨다.
-  // - 위치는 잡혔는데 실제 거리가 멀면: 2026-09-30 대표이사 결정으로 "집이나 다른 곳에서
-  //   고객사작업 등으로 등록하지 못하게" 다시 차단한다(2026-09-08에 "막지 않고 기록만" 하던
-  //   완화를 되돌림). 다만 GPS 오차범위 자체가 큰 경우(고층건물 등 실측 사례)는 여전히 예외로
-  //   통과시키고 locationMismatchException으로 표시해 상황판에서 확인 가능하게 한다.
+  // - 위치는 잡혔는데 실제 거리가 멀면: 2026-09-08 이전에는 몇 번을 시도해도 항상 차단했는데,
+  //   등록된 고객사 좌표는 맞는데도 실내 GPS 오차·근사위치 설정 등으로 정상적으로 그 자리에
+  //   있으면서도 계속 막히는 사례가 실제로 발생해(관리자 확인 요청) 막지는 않되, locationMatch=false·
+  //   거리값을 그대로 기록해 상황판에 "위치 불일치"로 표시되게 한다 — 관리자가 필요시 사후 확인.
   let locationMismatchException = false;
   if (LOCATION_CHECK_ELIGIBLE_STATUSES.has(status) && matchedClientForLocation?.latitude != null && matchedClientForLocation?.longitude != null) {
     if (locationResult && !locationResult.locationMatch) {
-      if (!isMismatchAccuracyExempt(accuracyMeters) && !selfConfirmMismatch) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'LOCATION_MISMATCH_BLOCKED',
-            message: `등록된 고객사 위치에서 약 ${locationResult.locationDistanceMeters}m 떨어져 있어 등록할 수 없습니다. 실제 그 자리에 계신 게 맞다면, 지도에서 지금 위치를 직접 확인하고 등록해주세요.`,
-            distanceMeters: locationResult.locationDistanceMeters,
-          },
-        });
-      }
       locationMismatchException = true;
     }
     if (!locationResult) {
@@ -886,12 +806,7 @@ attendanceRouter.post('/status', async (req, res) => {
       where: { userId_workDate: { userId, workDate: workDateForLocationGate } },
     });
     const alreadyClockedIn = Boolean(existingRecordForLocationGate?.clockInAt);
-    // 2026-09-30: 대표이사 결정 — "재택은 집이어도 위치확인 없이 재택으로 처리". 2026-09-20에
-    // 도입한 "오늘 첫 상태 등록은 GPS 캡처 자체는 반드시 성공해야 한다" 규칙에서 재택만 예외로
-    // 뺀다(다른 상태는 그대로 강제). 프론트는 여전히 위치를 시도해서 성공하면 감사용
-    // (remoteAuditLatitude/Longitude, statusLogFields 참고)으로 남기지만, 실패해도 절대 등록을
-    // 막지 않는다 — 집 위치는 대조할 등록된 좌표가 없어 "맞다/틀리다" 판단 자체가 불가능하므로.
-    const exemptByAlternateMeans = (status === 'HQ_WORKING' && hqVerifiedByAlternateMeans) || status === 'REMOTE';
+    const exemptByAlternateMeans = status === 'HQ_WORKING' && hqVerifiedByAlternateMeans;
     if (!alreadyClockedIn && !exemptByAlternateMeans && locationCaptureStatus !== 'OK') {
       return res.status(400).json({
         success: false,
@@ -940,21 +855,9 @@ attendanceRouter.post('/status', async (req, res) => {
   }
 
   const statusMismatchCoords = buildMismatchCoords(location, locationResult ?? hqLocationResult);
-  // 2026-09-30: 위치 불일치인데도 직원이 "그래도 등록"을 선택한 경우, 관리자가 노트만 보고도
-  // 바로 구분할 수 있도록 표시를 남긴다(GPS 오차범위가 커서 자동으로 통과된 경우와는 다른
-  // 케이스라 — 이건 직원이 직접 확인·확정한 것). locationMismatchException은 고객사작업/미팅류
-  // 전용 플래그(본사근무 예외 배너에는 안 쓰임)라 여기서는 별도로 "실제로 불일치였는지"를
-  // hqLocationResult/locationResult 양쪽에서 직접 확인한다 — 그래야 본사근무를 카카오맵으로
-  // 직접 확인해 등록한 경우도 같은 표시가 남는다(빠뜨리면 본사근무만 구분이 안 되는 문제 발생).
-  const anyLocationMismatch = Boolean(
-    (locationResult && !locationResult.locationMatch) || (hqLocationResult && !hqLocationResult.locationMatch)
-  );
-  const finalNote = (anyLocationMismatch && selfConfirmMismatch)
-    ? `[위치 불일치 — 직원이 실제 위치를 직접 확인하고 등록함]${note ? ` ${note}` : ''}`
-    : note;
   const statusLogFields = {
     status,
-    note: finalNote,
+    note,
     source: 'WEB' as const,
     locationMatch: (locationResult ?? hqLocationResult)?.locationMatch ?? null,
     locationDistanceMeters: (locationResult ?? hqLocationResult)?.locationDistanceMeters ?? null,
@@ -1326,10 +1229,6 @@ attendanceRouter.post('/departure-suggest/dismiss', async (req, res) => {
 
 const effortDepartureConfirmSchema = z.object({
   estimatedEndAt: z.string().min(1),
-  // 2026-09-29: "이탈장소 기록"(대표이사 요청) — 이탈 감지 순간의 좌표. 등록된 고객사 좌표와
-  // 얼마나 떨어져 있었는지(locationDistanceMeters) 계산하는 데만 쓰고, 기존 "불일치 건만 좌표
-  // 저장" 원칙(common/location.ts buildMismatchCoords) 그대로 적용해 원본 좌표는 불일치일 때만 남긴다.
-  location: z.object({ lat: z.number(), lng: z.number() }).optional(),
 });
 
 /**
@@ -1375,28 +1274,13 @@ attendanceRouter.post('/effort-departure-confirm', async (req, res) => {
     description: openEffort.description ?? undefined,
   });
 
-  // 2026-09-29: 이탈 감지 순간의 좌표를 등록된 고객사 좌표와 대조한다 — "고객사와 이탈장소가
-  // 다르다"는 걸 근거로 남겨서, 관리자가 실제 작업 종료시각을 가늠하는 데 참고할 수 있게 한다.
-  // 다른 위치대조 지점(CLIENT_WORK 등록 등)과 동일하게 "불일치 건만 좌표 저장" 원칙을 그대로
-  // 적용한다(common/location.ts buildMismatchCoords) — 일치하면 좌표는 남기지 않는다.
-  const matchedClientForDeparture = openEffort.clientName
-    ? await prisma.client.findFirst({ where: { name: { contains: openEffort.clientName.trim(), mode: 'insensitive' } } })
-    : null;
-  const departureLocationResult = checkLocationMatch(parsed.data.location, matchedClientForDeparture);
-  const departureMismatchCoords = buildMismatchCoords(parsed.data.location, departureLocationResult);
-
   const hhmm = estimatedEndAt.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });
-  const distanceNote = departureLocationResult ? ` (등록된 고객사 위치에서 약 ${departureLocationResult.locationDistanceMeters}m 이탈)` : '';
   const movingLog = await prisma.statusChangeLog.create({
     data: {
       userId,
       status: 'MOVING',
-      note: `[위치이탈 자동감지] 고객사작업(${openEffort.clientName || '고객사'})을 ${hhmm}에 마치신 걸로 등록하고 이동중으로 전환했습니다.${distanceNote}`,
+      note: `[위치이탈 자동감지] 고객사작업(${openEffort.clientName || '고객사'})을 ${hhmm}에 마치신 걸로 등록하고 이동중으로 전환했습니다.`,
       source: 'WEB',
-      locationMatch: departureLocationResult?.locationMatch ?? null,
-      locationDistanceMeters: departureLocationResult?.locationDistanceMeters ?? null,
-      mismatchLatitude: departureMismatchCoords.mismatchLatitude,
-      mismatchLongitude: departureMismatchCoords.mismatchLongitude,
     },
   });
 
@@ -1434,17 +1318,9 @@ attendanceRouter.get('/me', async (req, res) => {
   // 이어가시겠어요?" 배너를 관리자 정책값과 맞춰 띄울 수 있도록, 값을 그대로 내려준다
   // (하드코딩하면 관리자가 정책값을 바꿨을 때 프론트만 안 맞게 되는 문제가 있어서).
   const regularWorkEndHour = await getPolicyNumber('REGULAR_WORK_END_HOUR', 18);
-  // 2026-09-25: 법정공휴일 목록(PUBLIC_HOLIDAYS_KST)은 서버 정책값에만 있어서 프론트 혼자서는
-  // "오늘이 휴일인지" 판단할 수 없다(주말은 요일 계산만으로 가능하지만 공휴일은 불가능) — "출근"
-  // 버튼·상태 아이콘 잠금이 서버의 휴일 게이트(POST /status WEEKEND_ONLY_WEEKEND_WORK)와 항상
-  // 일치하도록 여기서 함께 내려준다. holidayName은 "추석"처럼 그 공휴일의 이름(순수 주말이면
-  // null) — 대표이사 지적대로, 공휴일엔 인사말(greetings.ts)이 "불금" 같은 평일 문구 대신 그
-  // 공휴일 이름을 부를 수 있도록 함께 내려준다.
-  const isRestDay = await isRestDayKST();
-  const holidayName = await getPublicHolidayNameKST();
   return res.json({
     success: true,
-    data: { record, latestStatus, latestEffort: latestEffort ? { clientName: latestEffort.clientName } : null, regularWorkEndHour, isRestDay, holidayName },
+    data: { record, latestStatus, latestEffort: latestEffort ? { clientName: latestEffort.clientName } : null, regularWorkEndHour },
   });
 });
 

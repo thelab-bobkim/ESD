@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch, apiDownload } from '@/lib/api';
 import { classifyDeptGroup } from '@/lib/deptGroup';
@@ -353,12 +353,20 @@ export default function AdminReportsPage() {
     }
   }
 
+  // 2026-09-30 수정: 관리자가 A 직원 행을 눌렀다가 응답이 오기 전에 B 직원 행을 또 누르면, A의
+  // 응답이 B보다 늦게 도착했을 때 지금 화면(B의 이름/헤더)에 A의 타임라인 데이터가 그대로
+  // 덮어써지는 문제가 있었다 — 요청마다 번호를 매겨서, 그 사이 더 최신 요청이 없었을 때만 결과를 반영한다.
+  const timelineRequestRef = useRef(0);
   function openTimeline(userId: string, date: string) {
+    const requestId = ++timelineRequestRef.current;
     setTimelineTarget({ userId, date });
     setTimeline(null);
     apiFetch<DailyTimeline>(`/reports/daily-timeline?date=${date}&userId=${userId}`)
-      .then(setTimeline)
-      .catch((err) => setError(err instanceof Error ? err.message : '타임라인을 불러오지 못했습니다.'));
+      .then((data) => { if (timelineRequestRef.current === requestId) setTimeline(data); })
+      .catch((err) => {
+        if (timelineRequestRef.current !== requestId) return;
+        setError(err instanceof Error ? err.message : '타임라인을 불러오지 못했습니다.');
+      });
   }
 
   const tabRange = useMemo(() => computeRange(period, anchor), [period, anchor]);
@@ -368,21 +376,30 @@ export default function AdminReportsPage() {
   const isSingleDay = effectiveFrom === effectiveTo;
   const rangeLabel = isCustom ? `${customFrom} ~ ${customTo}(직접 선택)` : tabRange.label;
 
+  // 2026-09-30 수정: "‹ 이전"/"다음 ›"을 빠르게 여러 번 누르면(자연스러운 관리자 동작) 요청들이
+  // 겹치는데, 먼저 보낸(더 이전 날짜의) 응답이 나중에 도착하면 화면은 이미 다른 날짜로 넘어갔는데
+  // 데이터만 옛 날짜 것으로 되돌아가는 문제가 있었다 — 타임라인 모달과 동일한 요청 번호 가드를 쓴다.
+  const viewRequestRef = useRef(0);
   useEffect(() => {
+    const requestId = ++viewRequestRef.current;
     setError(null);
     if (isSingleDay) {
       setWorktime(null);
       apiFetch<AttendanceDetail>(`/reports/attendance-detail?date=${effectiveFrom}`)
-        .then(setAttendanceDetail)
+        .then((data) => { if (viewRequestRef.current === requestId) setAttendanceDetail(data); })
         .catch((err) => {
+          if (viewRequestRef.current !== requestId) return;
           if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰'))) router.push('/login');
           setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
         });
     } else {
       setAttendanceDetail(null);
       apiFetch<WorktimeSummary>(`/reports/worktime-summary?from=${effectiveFrom}&to=${effectiveTo}`)
-        .then(setWorktime)
-        .catch((err) => setError(err instanceof Error ? err.message : '오류가 발생했습니다.'));
+        .then((data) => { if (viewRequestRef.current === requestId) setWorktime(data); })
+        .catch((err) => {
+          if (viewRequestRef.current !== requestId) return;
+          setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
+        });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveFrom, effectiveTo, isSingleDay]);

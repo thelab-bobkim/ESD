@@ -53,8 +53,20 @@ export interface EffortInput {
  * 경우까지 합쳐지는 걸 막는다.
  */
 async function findResubmitTarget(userId: string, status: string, data: EffortInput) {
+  // 2026-09-30 수정: 예전엔 고객사명(clientName)을 안 보고 "진행중(endTime null)" 기록이면
+  // 무조건 이어받았다 — 그런데 그 사이 실제로 다른 고객사를 다녀왔다면(예: A사 진행중 기록을 안
+  // 닫은 채 B사 작업을 새로 저장) 전혀 다른 B사 기록이 A사의 열린 기록에 잘못 합쳐져서, A사
+  // 기록은 통째로 사라지고 B사 근무시간이 A사 시작시각부터로 부풀려지는 문제가 있었다(같은 문제를
+  // StatusChangeLog 쪽은 이미 "직전 로그의 상태가 같을 때만 갱신"으로 막아뒀는데, 여기 공수기록
+  // 쪽엔 그 대응하는 고객사 일치 조건이 빠져 있었다). 같은 고객사·같은 상태일 때만 이어받는다.
   const openEntry = await prisma.effortLog.findFirst({
-    where: { userId, sourceStatus: status, endTime: null, startTime: { gte: new Date(Date.now() - CONTINUE_WINDOW_MS) } },
+    where: {
+      userId,
+      sourceStatus: status,
+      clientName: data.clientName,
+      endTime: null,
+      startTime: { gte: new Date(Date.now() - CONTINUE_WINDOW_MS) },
+    },
     orderBy: { startTime: 'desc' },
   });
   if (openEntry) return openEntry;

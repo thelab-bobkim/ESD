@@ -66,6 +66,11 @@ export async function unsubscribeFromPush(): Promise<void> {
   const sub = await reg.pushManager.getSubscription();
   if (!sub) return;
   const endpoint = sub.endpoint;
-  await sub.unsubscribe();
+  // 2026-09-30 수정: 원래는 브라우저 구독부터 끊고 나서 서버에 알렸는데, 서버 호출이 실패하면
+  // (네트워크 오류·토큰 만료 등) 이미 브라우저 쪽 구독은 되돌릴 수 없이 사라진 뒤라 서버에는 죽은
+  // endpoint가 그대로 남는다 — 순서를 바꿔 서버가 먼저 성공적으로 지운 걸 확인한 뒤에만 브라우저
+  // 구독을 끊는다(서버 호출이 실패하면 이 함수도 실패로 끝나고 구독은 그대로 유지되어, 호출한
+  // 쪽(다시 시도 가능한 상태)과 실제 구독 상태가 어긋나지 않는다).
   await apiFetch('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint }) });
+  await sub.unsubscribe();
 }

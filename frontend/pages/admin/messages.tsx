@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch } from '@/lib/api';
 import AdminHeader from '@/components/AdminHeader';
@@ -81,7 +81,11 @@ export default function AdminMessagesPage() {
       .catch((err) => setError(err instanceof Error ? err.message : '직원 목록을 불러오지 못했습니다.'));
   }
 
+  // 2026-09-30 수정: dashboard.tsx의 동일한 메시지창과 같은 이유 — 다른 직원을 연달아 빠르게
+  // 클릭하면 먼저 보낸 요청이 늦게 도착해 엉뚱한 대화내용이 섞여 표시될 수 있었다.
+  const messageThreadRequestRef = useRef(0);
   async function openMessageModal(userId: string, name: string) {
+    const requestId = ++messageThreadRequestRef.current;
     setMessageTarget({ userId, name });
     setMessageText('');
     setMessageResult(null);
@@ -90,14 +94,15 @@ export default function AdminMessagesPage() {
     setShowNewMessagePanel(false);
     try {
       const thread = await apiFetch<ThreadMessage[]>(`/messages/thread/${userId}`);
+      if (messageThreadRequestRef.current !== requestId) return;
       setMessageThread(thread);
       // 대화창을 여는 순간 서버가 그 직원의 안 읽은 답장을 전부 읽음 처리하므로, 목록의 배지도
       // 바로 사라지도록 즉시 새로고침한다.
       loadConversations();
     } catch {
-      setMessageThread([]);
+      if (messageThreadRequestRef.current === requestId) setMessageThread([]);
     } finally {
-      setLoadingThread(false);
+      if (messageThreadRequestRef.current === requestId) setLoadingThread(false);
     }
   }
 

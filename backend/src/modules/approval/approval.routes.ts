@@ -14,7 +14,7 @@ approvalRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADM
  * HR_ADMIN/SYSTEM_ADMIN은 전사 권한이라 그대로 전 부서를 보고, TEAM_LEAD는 본인 소속 부서 +
  * scopeDepartmentId로 지정된 담당 부서까지만 보고 처리할 수 있게 좁혔다.
  */
-async function getApprovableDepartmentIds(approver: AuthUser): Promise<string[] | null> {
+export async function getApprovableDepartmentIds(approver: AuthUser): Promise<string[] | null> {
   if (approver.roles.includes('HR_ADMIN') || approver.roles.includes('SYSTEM_ADMIN')) return null; // null = 전 부서
   const scoped = await prisma.userRole.findMany({
     where: { userId: approver.userId, role: { code: 'TEAM_LEAD' }, scopeDepartmentId: { not: null } },
@@ -83,10 +83,21 @@ approvalRouter.post('/requests/:id/approve', async (req, res) => {
     }
   }
 
-  const updated = await prisma.approvalRequest.update({
-    where: { id },
+  // 2026-09-30 수정: 위의 "request.status !== 'PENDING'" 확인과 그 아래 실제 update 사이에는
+  // 시간차가 있어서(레이스 컨디션), 같은 요청을 두 승인권자(또는 같은 승인권자가 두 번 빠르게
+  // 클릭)가 거의 동시에 승인하면 둘 다 그 확인을 통과해버릴 수 있었다 — 그러면 휴가잔액이 두 번
+  // 증가하거나(대체휴무 전환) 근태기록이 두 번 반영되는 등 중복 처리로 이어진다. updateMany의
+  // where에 status: 'PENDING'을 넣어 DB가 원자적으로 "지금 PENDING인 것만" 갱신하게 해서, 두
+  // 요청 중 하나만 count===1로 성공하고 나머지는 0으로 실패하게 만든다(ApprovalRequest에
+  // 별도 버전/락 컬럼이 없어도 이 방식으로 동일한 효과를 낸다).
+  const claim = await prisma.approvalRequest.updateMany({
+    where: { id, status: 'PENDING' },
     data: { status: 'APPROVED', approverId, decidedAt: new Date(), comment: parsed.success ? parsed.data.comment : undefined },
   });
+  if (claim.count === 0) {
+    return res.status(409).json({ success: false, error: { code: 'ALREADY_DECIDED', message: '이미 다른 곳에서 처리된 요청입니다.' } });
+  }
+  const updated = await prisma.approvalRequest.findUniqueOrThrow({ where: { id } });
 
   // 대체휴무/보상휴가 전환 승인인 경우, 휴가 잔여시간을 갱신한다.
   if (request.type === 'LEAVE_CONVERSION' && request.leaveConversionRequestId) {
@@ -140,10 +151,16 @@ approvalRouter.post('/requests/:id/reject', async (req, res) => {
     return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '다른 부서의 요청은 처리할 권한이 없습니다.' } });
   }
 
-  const updated = await prisma.approvalRequest.update({
-    where: { id },
+  // 2026-09-30: approve와 동일한 이유로 원자적 조건부 갱신을 쓴다 — 동시에 승인/반려가 겹치면
+  // 하나만 성공해야 한다.
+  const claim = await prisma.approvalRequest.updateMany({
+    where: { id, status: 'PENDING' },
     data: { status: 'REJECTED', approverId, decidedAt: new Date(), comment: parsed.data.comment },
   });
+  if (claim.count === 0) {
+    return res.status(409).json({ success: false, error: { code: 'ALREADY_DECIDED', message: '이미 다른 곳에서 처리된 요청입니다.' } });
+  }
+  const updated = await prisma.approvalRequest.findUniqueOrThrow({ where: { id } });
 
   if (request.type === 'LEAVE_CONVERSION' && request.leaveConversionRequestId) {
     await prisma.leaveConversionRequest.update({ where: { id: request.leaveConversionRequestId }, data: { status: 'REJECTED' } });

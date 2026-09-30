@@ -190,8 +190,12 @@ export default function ApprovalsPage() {
               </div>
               {r.status === 'PENDING' && (
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button style={{ width: 'auto', margin: 0 }} disabled={busyId === r.id} onClick={() => approve(r.id)}>승인</button>
-                  <button className="secondary" style={{ width: 'auto', margin: 0 }} disabled={busyId === r.id} onClick={() => reject(r.id)}>반려</button>
+                  {/* 2026-09-30 수정: 전체 승인(approveAll)이 이 건에 아직 도달하지 않은 사이에도
+                      개별 승인/반려 버튼은 계속 눌려있어서, 일괄승인 진행 중 같은 건을 또 눌러
+                      승인/반려가 겹칠 수 있었다 — 일괄승인 진행 중에는 개별 버튼도 함께 막는다
+                      (백엔드도 원자적 처리로 이중승인을 막지만, 불필요한 실패 요청을 애초에 줄인다). */}
+                  <button style={{ width: 'auto', margin: 0 }} disabled={busyId === r.id || bulkBusy} onClick={() => approve(r.id)}>승인</button>
+                  <button className="secondary" style={{ width: 'auto', margin: 0 }} disabled={busyId === r.id || bulkBusy} onClick={() => reject(r.id)}>반려</button>
                 </div>
               )}
             </div>

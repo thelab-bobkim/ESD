@@ -4,6 +4,8 @@ import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { realDayWindow, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 import { recordAuditLog } from '../../common/audit';
+// 2026-09-30 보안수정: approval.routes.ts와 동일한 부서 스코핑 판단을 재사용한다(아래 /correct-status 참고).
+import { getApprovableDepartmentIds } from '../approval/approval.routes';
 
 // 본사근무/고객사작업/고객사미팅/재택은 "우선 등록, 세부내용은 나중에" 원칙상 등록 직후엔
 // note가 비어있을 수 있다(attendance.routes.ts EFFORT_STATUSES와 동일하게 유지). 이 경우에도
@@ -286,6 +288,15 @@ dashboardRouter.post('/correct-status', requireRole('TEAM_LEAD', 'HR_ADMIN', 'SY
   const targetUser = await prisma.user.findUnique({ where: { id: userId } });
   if (!targetUser) {
     return res.status(404).json({ success: false, message: '대상 직원을 찾을 수 없습니다.' });
+  }
+
+  // 2026-09-30 보안수정: approval.routes.ts(승인 처리)는 이미 2026-08-30에 "TEAM_LEAD는 본인
+  // 소속/담당 부서까지만" 스코핑을 넣었는데, 이 관리자 상태정정 엔드포인트는 그 조치에서 빠져있어
+  // 부서와 무관한 아무 TEAM_LEAD나 전사 아무 직원의 상태를 정정할 수 있었다(HR_ADMIN/SYSTEM_ADMIN은
+  // 기존과 동일하게 전사 권한 유지 — getApprovableDepartmentIds가 이 경우 null을 반환).
+  const departmentIds = await getApprovableDepartmentIds(req.authUser!);
+  if (departmentIds && !departmentIds.includes(targetUser.departmentId ?? '')) {
+    return res.status(403).json({ success: false, message: '다른 부서 직원의 상태는 정정할 권한이 없습니다.' });
   }
 
   // 상황판과 동일한 "하루" 경계 기준으로, 지금 화면에 보이는 오늘 상태를 정정 대상으로 삼는다.

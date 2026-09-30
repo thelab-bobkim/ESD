@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch } from '@/lib/api';
 import AdminHeader from '@/components/AdminHeader';
@@ -213,7 +213,12 @@ export default function AdminDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [board]);
 
+  // 2026-09-30 수정: 한 직원의 메시지창을 여는 중(응답 대기)에 다른 직원을 또 클릭하면, 먼저 연
+  // 직원의 스레드 응답이 늦게 도착했을 때 지금 화면(나중에 연 직원의 이름/헤더)에 엉뚱한 사람의
+  // 대화내용이 섞여 들어갈 수 있었다 — 요청 번호 가드로 막는다.
+  const messageThreadRequestRef = useRef(0);
   async function openMessageModal(userId: string, name: string) {
+    const requestId = ++messageThreadRequestRef.current;
     setMessageTarget({ userId, name });
     setMessageText('');
     setMessageResult(null);
@@ -221,14 +226,15 @@ export default function AdminDashboard() {
     setLoadingThread(true);
     try {
       const thread = await apiFetch<ThreadMessage[]>(`/messages/thread/${userId}`);
+      if (messageThreadRequestRef.current !== requestId) return;
       setMessageThread(thread);
       // 대화창을 여는 순간 서버에서 그 직원의 안 읽은 답장을 전부 읽음 처리하므로(thread 엔드포인트
       // 참고), 여기서도 카운트를 즉시 새로고침해 배지가 바로 사라지게 한다.
       loadUnreadReplies();
     } catch {
-      setMessageThread([]);
+      if (messageThreadRequestRef.current === requestId) setMessageThread([]);
     } finally {
-      setLoadingThread(false);
+      if (messageThreadRequestRef.current === requestId) setLoadingThread(false);
     }
   }
 

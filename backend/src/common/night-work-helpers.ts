@@ -8,8 +8,21 @@ import { getPolicyString } from './policy-engine/policy-engine';
 // EffortLog 쪽보다 오히려 더 심각한 경우. NightWorkSession에는 등록시각(createdAt) 컬럼이 없어
 // EffortLog처럼 "최근 N시간 이내"로 창을 두진 못하지만, 시작·종료 시각이 초 단위까지 완전히
 // 같은 두 세션이 실제로는 서로 다른 근무인 경우는 사실상 없다고 봐도 안전하다.
+//
+// 2026-09-30 수정: 위 "진행중(IN_PROGRESS)이면 무조건 이어받는다" 판단에 기간 제한이 전혀 없어서
+// 실제 버그가 있었다 — /end를 안 눌러 몇 주째 방치된 옛 IN_PROGRESS 세션이 있으면, 완전히 새로운
+// 야간작업을 상세폼(시작~종료 한번에 입력)으로 등록해도 그 옛 세션을 그대로 이어받아, 종료시각은
+// 이번에 입력한 값인데 시작시각은 몇 주 전 그대로라 근무시간이 수만 분 단위로 부풀려지고, 그만큼
+// 부풀려진 대체휴무 전환 후보(DRAFT)가 자동 생성됐다. startedAt이 최근 것일 때만("혹시 아직
+// 진행중인 방금 그 세션"일 때만) 이어받고, 그보다 오래된 진행중 세션은 방치된 것으로 보고
+// 건드리지 않는다(별도 세션으로 새로 만듦 — 옛 세션은 관리자가 나중에 확인/정리).
+const IN_PROGRESS_CONTINUE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 async function findResubmitTarget(userId: string, startedAt: Date, endedAt: Date | null) {
-  const inProgress = await prisma.nightWorkSession.findFirst({ where: { userId, status: 'IN_PROGRESS' } });
+  const inProgress = await prisma.nightWorkSession.findFirst({
+    where: { userId, status: 'IN_PROGRESS', startedAt: { gte: new Date(Date.now() - IN_PROGRESS_CONTINUE_WINDOW_MS) } },
+    orderBy: { startedAt: 'desc' },
+  });
   if (inProgress) return inProgress;
   if (!endedAt) return null;
   return prisma.nightWorkSession.findFirst({

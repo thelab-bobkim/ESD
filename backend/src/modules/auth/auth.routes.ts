@@ -59,6 +59,19 @@ authRouter.post('/register-password', async (req, res) => {
       error: { code: 'ALREADY_REGISTERED', message: '이미 비밀번호가 등록된 계정입니다. 로그인 화면에서 로그인해주세요.' },
     });
   }
+  // 2026-09-30 보안수정(치명적): 사번+이름은 조직도로 누구나 알 수 있는 값이라 완전한 신원확인이
+  // 아니다(바로 위 주석 참고) — 그런데 이 셀프등록으로 AUDITOR 계정의 비밀번호를 공격자가 원하는
+  // 값으로 설정할 수 있으면, /audit-login에 그 비밀번호로 로그인해 OTP가 아직 등록 안 된 상태(신규
+  // 감사인 지정 직후)를 그대로 이용해 공격자 본인 기기로 OTP를 등록해버릴 수 있다(2단계 인증이
+  // "누가 먼저 비밀번호를 아느냐"로 완전히 무력화됨 — rolesExcludingAuditor가 막는 것은 토큰 발급
+  // 시점의 역할 노출뿐, 비밀번호 자체를 바꿔버리는 이 경로는 막지 못했었다). AUDITOR 계정은 이
+  // 셀프등록/재설정 대상에서 제외하고 SYSTEM_ADMIN이 직접 처리하게 한다.
+  if (user.userRoles.some((ur: { role: { code: string } }) => ur.role.code === 'AUDITOR')) {
+    return res.status(403).json({
+      success: false,
+      error: { code: 'AUDITOR_SELF_SERVICE_DISABLED', message: '감사인 계정은 이 화면에서 등록할 수 없습니다. 시스템 관리자에게 문의해주세요.' },
+    });
+  }
 
   const newHash = await bcrypt.hash(newPassword, 10);
   await prisma.user.update({
@@ -115,6 +128,18 @@ authRouter.post('/reset-password', async (req, res) => {
   }
   if (user.name.trim() !== name.trim()) {
     return res.status(401).json({ success: false, error: { code: 'MISMATCH', message: '사번과 이름이 일치하지 않습니다.' } });
+  }
+  // 2026-09-30 보안수정(치명적): register-password와 같은 이유로 AUDITOR 계정은 셀프 재설정 대상에서
+  // 제외한다 — 이 엔드포인트가 막아주는 건 "그 비밀번호로 일반 토큰에 AUDITOR 권한이 실리는 것"
+  // 뿐인데, 공격자가 사번+이름(비밀글 아님)만으로 비밀번호 자체를 바꿔버리면 그 새 비밀번호로
+  // /audit-login에 들어가 OTP 미등록 상태(auditorTotpEnabledAt=null)를 그대로 이용해 자기 기기로
+  // OTP를 등록해 감사인 권한 토큰을 발급받을 수 있었다 — "감사인은 OTP 2단계 인증 필수"라는
+  // 설계 전체가 이 경로 하나로 무력화됨.
+  if (user.userRoles.some((ur: { role: { code: string } }) => ur.role.code === 'AUDITOR')) {
+    return res.status(403).json({
+      success: false,
+      error: { code: 'AUDITOR_SELF_SERVICE_DISABLED', message: '감사인 계정은 이 화면에서 재설정할 수 없습니다. 시스템 관리자에게 문의해주세요.' },
+    });
   }
 
   const newHash = await bcrypt.hash(newPassword, 10);
@@ -340,10 +365,28 @@ authRouter.post('/audit-login/enroll-confirm', async (req, res) => {
   if (!user || user.id !== payload.userId || !isAuditor) {
     return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '권한이 없습니다.' } });
   }
+  // 2026-09-30 수정: verify 단계는 잠금상태 확인 + 실패시도 카운트/계정잠금을 하는데, 이 등록확인
+  // 단계는 그게 없어서 같은 OTP 무차별대입 공격면인데도 보호수준이 낮았다(IP 기준 rate-limit만
+  // 적용됨) — verify와 동일한 계정단위 잠금을 적용한다.
+  if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
+    const minutesLeft = Math.max(1, Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60_000));
+    return res.status(423).json({
+      success: false,
+      error: { code: 'ACCOUNT_LOCKED', message: `시도가 너무 많아 계정이 잠겼습니다. ${minutesLeft}분 후 다시 시도해주세요.` },
+    });
+  }
   if (!authenticator.check(code, payload.secret)) {
+    const attempts = user.failedLoginAttempts + 1;
+    const shouldLock = attempts >= MAX_FAILED_LOGIN_ATTEMPTS;
+    await prisma.user.update({
+      where: { id: user.id },
+      data: shouldLock
+        ? { failedLoginAttempts: 0, lockedUntil: new Date(Date.now() + ACCOUNT_LOCK_DURATION_MS) }
+        : { failedLoginAttempts: attempts },
+    });
     return res.status(401).json({ success: false, error: { code: 'INVALID_OTP', message: '인증번호가 올바르지 않습니다. 인증앱의 최신 코드를 다시 확인해주세요.' } });
   }
-  await prisma.user.update({ where: { id: user.id }, data: { auditorTotpSecret: payload.secret, auditorTotpEnabledAt: new Date(), lastLoginAt: new Date() } });
+  await prisma.user.update({ where: { id: user.id }, data: { auditorTotpSecret: payload.secret, auditorTotpEnabledAt: new Date(), lastLoginAt: new Date(), failedLoginAttempts: 0, lockedUntil: null } });
   const issued = await issueAuditAccessToken(user.id);
   return res.json({ success: true, data: issued });
 });

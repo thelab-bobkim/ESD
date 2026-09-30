@@ -380,7 +380,10 @@ reportsRouter.get('/effort-export', async (req, res) => {
   const logs = await prisma.effortLog.findMany({
     include: { user: { select: { name: true, employeeNo: true } } },
     orderBy: { workDate: 'desc' },
-    take: 2000,
+    // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
+    // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
+    // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
+    // 낮게 나와도 에러 없이 그대로 내려가던 문제).
   });
   const rows = logs.map((l) => ({
     employeeNo: l.user.employeeNo,
@@ -411,7 +414,10 @@ reportsRouter.get('/client-work-daily-export', async (_req, res) => {
     where: { minutes: { not: null } },
     include: { user: { select: { name: true, employeeNo: true } } },
     orderBy: { workDate: 'desc' },
-    take: 5000,
+    // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
+    // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
+    // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
+    // 낮게 나와도 에러 없이 그대로 내려가던 문제).
   });
 
   interface DailyClientGroup {
@@ -452,7 +458,10 @@ reportsRouter.get('/attendance-export', async (req, res) => {
     where: { user: { includedInBoard: true } },
     include: { user: { select: { name: true, employeeNo: true } } },
     orderBy: { workDate: 'desc' },
-    take: 1000,
+    // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
+    // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
+    // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
+    // 낮게 나와도 에러 없이 그대로 내려가던 문제).
   });
   const rows = records.map((r) => ({
     employeeNo: r.user.employeeNo,
@@ -510,13 +519,19 @@ reportsRouter.get('/attendance-work-export', async (_req, res) => {
       where: { user: { includedInBoard: true } },
       include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
       orderBy: { workDate: 'desc' },
-      take: 1000,
+      // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
+    // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
+    // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
+    // 낮게 나와도 에러 없이 그대로 내려가던 문제).
     }),
     prisma.effortLog.findMany({
       where: { minutes: { not: null } },
       include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
       orderBy: { workDate: 'desc' },
-      take: 5000,
+      // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
+    // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
+    // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
+    // 낮게 나와도 에러 없이 그대로 내려가던 문제).
     }),
   ]);
 
@@ -669,7 +684,10 @@ reportsRouter.get('/night-work-export', async (req, res) => {
     where: { user: { includedInBoard: true } },
     include: { user: { select: { name: true, employeeNo: true } }, leaveConversionRequest: true },
     orderBy: { startedAt: 'desc' },
-    take: 1000,
+    // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
+    // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
+    // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
+    // 낮게 나와도 에러 없이 그대로 내려가던 문제).
   });
   const rows = sessions.map((s) => ({
     employeeNo: s.user.employeeNo,

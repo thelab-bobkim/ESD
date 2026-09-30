@@ -46,17 +46,21 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
     // 서버가 내려준 에러 코드(예: AWAY_FROM_HQ)를 같이 실어 보낸다 — 호출하는 쪽에서 메시지
     // 문자열이 아니라 이 코드로 특정 상황(위치 재시도 등)을 구분해서 처리할 수 있게.
     (err as Error & { code?: string }).code = json?.error?.code;
-    // 2026-09-30: LOCATION_MISMATCH_BLOCKED의 distanceMeters처럼, code/message 외에 서버가 함께
-    // 내려준 추가 필드가 있으면 그대로 에러 객체에 얹어준다 — 호출하는 쪽이 한국어 메시지 문자열을
-    // 파싱하지 않고 바로 값(예: 거리)을 쓸 수 있게 하기 위함.
-    if (json?.error && typeof json.error === 'object') {
-      for (const [key, value] of Object.entries(json.error)) {
-        if (key !== 'code' && key !== 'message') (err as unknown as Record<string, unknown>)[key] = value;
-      }
-    }
     throw err;
   }
   return json.data as T;
+}
+
+// 2026-09-30 수정: 여러 화면이 "로그인이 필요합니다" 판단을 err.message에 '로그인'/'토큰'/'권한'
+// 같은 단어가 들어있는지로 문자열 매칭해왔다 — 그런데 일반적인 403 권한부족 에러(예: "다른 부서의
+// 요청은 처리할 권한이 없습니다", approval.routes.ts)도 '권한'이 들어있어서, 그 특정 작업 하나를
+// 할 권한이 없을 뿐인데 전체 로그아웃되어 로그인화면으로 튕겨나가는 오탐이 있었다. 서버가 이미
+// 실어 보내는 err.code(로그인 자체가 필요한 경우에만 쓰이는 값들)로 정확히 구분한다.
+const AUTH_EXPIRED_CODES = new Set(['UNAUTHENTICATED', 'INVALID_TOKEN', 'TOKEN_REVOKED']);
+export function isAuthExpiredError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as Error & { code?: string }).code;
+  return Boolean(code && AUTH_EXPIRED_CODES.has(code));
 }
 
 /** CSV 등 파일 다운로드 — 일반 JSON 응답이 아니라 브라우저에서 바로 파일로 저장한다(인증 헤더 포함). */

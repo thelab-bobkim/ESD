@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
-import { apiFetch, clearToken } from '@/lib/api';
+import { apiFetch, clearToken, isAuthExpiredError } from '@/lib/api';
 
 interface RemoteAuditEntry {
   id: string;
@@ -30,20 +30,35 @@ export default function AuditPage() {
   const [retentionDays, setRetentionDays] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  // 2026-09-30 수정: "새로고침" 버튼에 중복클릭 방지가 없고, 첫 마운트 시 useEffect가 이미
+  // 불러오는 중에도 다시 누를 수 있었다 — 두 요청이 겹치면 나중에 시작한 게 아니라 "나중에 도착한"
+  // 응답이 화면을 덮어써서, 더 최신 요청의 결과가 먼저 도착한 옛 요청 결과로 되돌아갈 수 있었다
+  // (감사기록 화면이라 오래된/틀린 데이터가 보여도 티가 안 나는 게 특히 문제). 요청 번호 가드 추가.
+  const [loading, setLoading] = useState(false);
+  const loadRequestRef = useRef(0);
 
   async function load() {
+    const requestId = ++loadRequestRef.current;
+    setLoading(true);
     setError(null);
     try {
       const res = await apiFetch<{ retentionDays: number; entries: RemoteAuditEntry[] }>('/audit-location/remote');
+      if (loadRequestRef.current !== requestId) return;
       setEntries(res.entries);
       setRetentionDays(res.retentionDays);
     } catch (err) {
-      if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰') || err.message.includes('권한'))) {
+      if (loadRequestRef.current !== requestId) return;
+      // 2026-09-30 수정: '권한'이라는 단어만으로 판단하면, 감사인 권한 자체는 유효한데 다른 이유로
+      // 뜨는 일반적인 403 오류(예: 미래에 이 화면에 권한부족 세부 에러가 추가되는 경우)까지
+      // 로그아웃시킬 수 있었다 — 서버가 "로그인 자체가 필요하다"고 명시한 경우에만 튕겨낸다.
+      if (isAuthExpiredError(err)) {
         clearToken();
         router.push('/audit-login');
         return;
       }
       setError(err instanceof Error ? err.message : '불러오기에 실패했습니다.');
+    } finally {
+      if (loadRequestRef.current === requestId) setLoading(false);
     }
   }
 
@@ -94,7 +109,7 @@ export default function AuditPage() {
           onChange={(e) => setSearch(e.target.value)}
         />
         <div className="spacer" />
-        <button onClick={load}>새로고침</button>
+        <button onClick={load} disabled={loading}>{loading ? '불러오는 중...' : '새로고침'}</button>
       </div>
 
       {!entries && !error && <div className="board-empty">불러오는 중...</div>}
