@@ -505,6 +505,8 @@ export default function EmployeeHome() {
   const [leaveDestination, setLeaveDestination] = useState('');
   const [leaveContact, setLeaveContact] = useState('');
   const detailFormRef = useRef<HTMLDivElement | null>(null);
+  // 2026-09-30: "출근" 버튼을 눌렀을 때 실제 상태 아이콘 쪽으로 시선을 유도하기 위한 참조.
+  const statusIconGridRef = useRef<HTMLDivElement | null>(null);
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
   // 2026-09-03 추가, 2026-09-19 변경: 처음엔 "네, 알림 받을게요" 배너로 먼저 동의를 구했는데,
@@ -1897,49 +1899,15 @@ export default function EmployeeHome() {
             <button
               className={myStatus?.record?.clockInAt ? 'done' : ''}
               disabled={Boolean(myStatus?.record?.clockInAt)}
-              onClick={async () => {
-                setMessage(null);
-                setMessageIsError(false);
-                try {
-                  const clockInBody: Record<string, unknown> = {};
-                  const clockInLocationMeta: { accuracy: number | null; jumpDetected: boolean } = { accuracy: null, jumpDetected: false };
-                  const refreshClockInLocation = async () => {
-                    const { status: locStatus, coords, accuracyMeters, jumpDetected } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
-                    clockInBody.locationStatus = locStatus;
-                    clockInLocationMeta.accuracy = accuracyMeters;
-                    clockInLocationMeta.jumpDetected = jumpDetected;
-                    if (coords) {
-                      clockInBody.location = coords;
-                      // 2026-09-16: 오차범위를 서버로 함께 보낸다(위치 미확인/불일치 개선 1순위).
-                      clockInBody.locationAccuracyMeters = accuracyMeters ?? undefined;
-                      clockInBody.locationAddress = (await reverseGeocode(coords.lat, coords.lng)) ?? undefined;
-                    } else {
-                      delete clockInBody.location;
-                      delete clockInBody.locationAddress;
-                      delete clockInBody.locationAccuracyMeters;
-                    }
-                  };
-                  await refreshClockInLocation();
-                  // 이상치(순간이동) 감지 시 등록 자체를 막고 재측정을 유도한다(2026-09 요청 — 등록 차단).
-                  if (clockInLocationMeta.jumpDetected) {
-                    setMessage(LOCATION_JUMP_WARNING);
-                    setMessageIsError(true);
-                    return;
-                  }
-                  const result = await attemptWithLocationRetry(
-                    () => apiFetch<{ locationConfirmed?: boolean }>('/attendance/clock-in', {
-                      method: 'POST',
-                      body: JSON.stringify(clockInBody),
-                    }),
-                    refreshClockInLocation
-                  );
-                  const accuracySuffix = isLowAccuracy(clockInLocationMeta.accuracy) ? ` (${accuracyWarningLabel(clockInLocationMeta.accuracy)})` : '';
-                  setMessage((result.locationConfirmed ? '✅ 위치 확인 완료 — 정상출근 처리되었습니다.' : '출근 처리되었습니다.') + accuracySuffix);
-                  refreshMyStatus();
-                } catch (err) {
-                  setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
-                  setMessageIsError(true);
-                }
+              onClick={() => {
+                // 2026-09-30: 대표이사 결정 — "출근" 버튼이 위치확인만 되면 실제 근무형태(고객사작업
+                // 등)를 안 고른 채로도 조용히 "본사근무 임시등록"을 확정해버리던 게 문제의 원인이었다
+                // (상황판 "지금 확인이 필요한 직원"에 계속 쌓이던 케이스). 이제 이 버튼은 스스로
+                // 아무것도 등록하지 않고, 아래 실제 상태 아이콘 선택을 안내만 한다 — 출근은 그
+                // 아이콘을 누르는 순간 각 상태별 위치확인 규칙과 함께 자동으로 확정된다(ensureClockIn).
+                setMessage('⚠️ "출근"은 이제 실제 근무형태를 선택해야 확정돼요. 아래에서 오늘 근무형태(본사근무·고객사작업·고객사미팅·출장·고객사상주·재택 등)를 눌러주세요 — 그 순간 자동으로 출근 처리됩니다.');
+                setMessageIsError(true);
+                statusIconGridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
               }}
             >
               {myStatus?.record?.clockInAt ? `✓ 출근 완료 · ${fmtClock(myStatus.record.clockInAt)}` : '출근'}
@@ -2006,9 +1974,9 @@ export default function EmployeeHome() {
             )}
             {!isWeekendToday && (
             <div className="notice-inline-orange">
-              ⚠️ 출근은 자동이에요 — 상태를 누르면 그 순간이 출근시각이 됩니다.
+              ⚠️ 출근은 자동이에요 — 아래 실제 근무형태 아이콘을 누르면 그 순간이 출근시각이 됩니다.
               <span style={{ fontWeight: 400 }}>
-                {' '}"출근" 버튼은 본사 위치가 확인될 때만 처리돼요. 고객사로 바로 가는 날, 출장이나 상주근무인 날은 "출근" 버튼 대신 도착 후 상태를 눌러주세요. 하루를 마치면 꼭 "퇴근"을 눌러야 근무가 확정돼요.
+                {' '}"출근" 버튼 자체는 더 이상 직접 등록하지 않아요 — 오늘 근무형태(본사근무·고객사작업·고객사미팅·출장·고객사상주·재택 등)를 아래에서 골라주세요. 하루를 마치면 꼭 "퇴근"을 눌러야 근무가 확정돼요.
               </span>
             </div>
             )}
@@ -2047,7 +2015,7 @@ export default function EmployeeHome() {
                 🗓️ 오늘은 주말/공휴일이에요 — &quot;주말작업&quot;만 등록할 수 있어요. 평일 상태 아이콘은 다음 근무일에 다시 열려요.
               </div>
             )}
-            <div className="status-icon-grid">
+            <div className="status-icon-grid" ref={statusIconGridRef}>
               {visibleStatusOrder.map((code) => {
                 // 퇴근(낮근무 종료) 후에도 야간작업자는 계속 상태를 등록해야 하니 예외로 둔다.
                 // 지난 근무일 퇴근 미해결 건이 있으면(정정 신청 전까지) 야간작업 예외 없이 전부 잠근다 —

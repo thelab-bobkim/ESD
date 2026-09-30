@@ -130,7 +130,14 @@ async function cancelPendingAutoDepartureSuggestion(attendanceRecordId: string, 
   }
 }
 
-/** 출근 처리(수동) — 위 자동인식 대상이 아닌 경우를 위한 수동 버튼 */
+/**
+ * 출근 처리(수동) — 위 자동인식 대상이 아닌 경우를 위한 수동 버튼.
+ * 2026-09-30: 대표이사 지적 — "출근 버튼만 누르고 실제 상태(고객사작업 등)를 안 고른 채 방치"되는
+ * 사례가 반복돼(상황판 "지금 확인이 필요한 직원" 목록에 위치확인 전 임시 본사근무로 계속 쌓임),
+ * 프론트("출근" 버튼)가 더 이상 이 엔드포인트를 호출하지 않도록 바꿨다(index.tsx 참고 — 버튼을
+ * 누르면 이제 실제 상태 아이콘 선택을 안내할 뿐, 이 API를 직접 부르지 않는다). 이 라우트 자체는
+ * 혹시 모를 외부/구버전 클라이언트 호환을 위해 그대로 남겨두되, 새로 만드는 흐름에서는 쓰지 않는다.
+ */
 attendanceRouter.post('/clock-in', async (req, res) => {
   const userId = req.authUser!.userId;
   const workDate = todayDateOnly();
@@ -844,7 +851,12 @@ attendanceRouter.post('/status', async (req, res) => {
       where: { userId_workDate: { userId, workDate: workDateForLocationGate } },
     });
     const alreadyClockedIn = Boolean(existingRecordForLocationGate?.clockInAt);
-    const exemptByAlternateMeans = status === 'HQ_WORKING' && hqVerifiedByAlternateMeans;
+    // 2026-09-30: 대표이사 결정 — "재택은 집이어도 위치확인 없이 재택으로 처리". 2026-09-20에
+    // 도입한 "오늘 첫 상태 등록은 GPS 캡처 자체는 반드시 성공해야 한다" 규칙에서 재택만 예외로
+    // 뺀다(다른 상태는 그대로 강제). 프론트는 여전히 위치를 시도해서 성공하면 감사용
+    // (remoteAuditLatitude/Longitude, statusLogFields 참고)으로 남기지만, 실패해도 절대 등록을
+    // 막지 않는다 — 집 위치는 대조할 등록된 좌표가 없어 "맞다/틀리다" 판단 자체가 불가능하므로.
+    const exemptByAlternateMeans = (status === 'HQ_WORKING' && hqVerifiedByAlternateMeans) || status === 'REMOTE';
     if (!alreadyClockedIn && !exemptByAlternateMeans && locationCaptureStatus !== 'OK') {
       return res.status(400).json({
         success: false,
