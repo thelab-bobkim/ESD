@@ -8,6 +8,13 @@ declare global {
 
 interface Props {
   initialAddress?: string;
+  // 2026-09-30: "위치 불일치 시 카카오맵으로 직접 확인" 흐름(직원이 GPS로 잡힌 본인 위치를 지도에서
+  // 확인/보정) 전용 — 텍스트 검색 없이 이 좌표를 바로 지도 중심에 놓고 마커를 찍어둔다. 새 고객사
+  // 위치를 찾는 기존 흐름(initialAddress)과 동시에 쓰이지 않는다.
+  initialCoords?: { lat: number; lng: number };
+  title?: string;
+  helpText?: string;
+  confirmLabel?: string;
   onSelect: (lat: number, lng: number, address?: string, placeName?: string) => void;
   onClose: () => void;
 }
@@ -28,7 +35,7 @@ function loadKakaoScript(): Promise<void> {
   });
 }
 
-export default function MapPickerModal({ initialAddress, onSelect, onClose }: Props) {
+export default function MapPickerModal({ initialAddress, initialCoords, title, helpText, confirmLabel, onSelect, onClose }: Props) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
@@ -48,8 +55,10 @@ export default function MapPickerModal({ initialAddress, onSelect, onClose }: Pr
       .then(() => {
         if (!mapContainerRef.current) return;
         const map = new window.kakao.maps.Map(mapContainerRef.current, {
-          center: new window.kakao.maps.LatLng(37.5665, 126.978),
-          level: 4,
+          center: initialCoords
+            ? new window.kakao.maps.LatLng(initialCoords.lat, initialCoords.lng)
+            : new window.kakao.maps.LatLng(37.5665, 126.978),
+          level: initialCoords ? 3 : 4,
         });
         mapRef.current = map;
         geocoderRef.current = new window.kakao.maps.services.Geocoder();
@@ -67,7 +76,18 @@ export default function MapPickerModal({ initialAddress, onSelect, onClose }: Pr
         });
 
         setLoading(false);
-        if (initialAddress) doSearch(initialAddress, map);
+        if (initialCoords) {
+          // GPS로 잡힌 좌표를 그대로 마커로 먼저 찍어둔다(직원이 "이 위치가 맞다"고 바로 확정할 수
+          // 있게) — 역지오코딩은 표시용 주소만 보완하는 것이라 실패해도 마커는 그대로 유지한다.
+          geocoderRef.current.coord2Address(initialCoords.lng, initialCoords.lat, (result: any[], status: string) => {
+            const address = status === window.kakao.maps.services.Status.OK
+              ? result[0]?.road_address?.address_name || result[0]?.address?.address_name
+              : undefined;
+            placeMarker(initialCoords.lat, initialCoords.lng, address);
+          });
+        } else if (initialAddress) {
+          doSearch(initialAddress, map);
+        }
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : '지도를 불러오지 못했습니다.');
@@ -108,18 +128,20 @@ export default function MapPickerModal({ initialAddress, onSelect, onClose }: Pr
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <div style={{ background: '#fff', borderRadius: 16, padding: 20, maxWidth: 640, width: '100%' }}>
-        <h2 style={{ marginTop: 0 }}>🗺️ 지도에서 고객사 위치 찾기</h2>
+        <h2 style={{ marginTop: 0 }}>{title ?? '🗺️ 지도에서 고객사 위치 찾기'}</h2>
         {error && <div className="error">{error}</div>}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-          <input
-            style={{ margin: 0, flex: 1 }}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="고객사명 또는 주소 검색"
-            onKeyDown={(e) => e.key === 'Enter' && doSearch()}
-          />
-          <button style={{ width: 'auto', margin: 0 }} onClick={() => doSearch()}>검색</button>
-        </div>
+        {!initialCoords && (
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+            <input
+              style={{ margin: 0, flex: 1 }}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="고객사명 또는 주소 검색"
+              onKeyDown={(e) => e.key === 'Enter' && doSearch()}
+            />
+            <button style={{ width: 'auto', margin: 0 }} onClick={() => doSearch()}>검색</button>
+          </div>
+        )}
         {loading && <div className="board-empty">지도를 불러오는 중...</div>}
         <div ref={mapContainerRef} style={{ width: '100%', height: 360, borderRadius: 10, background: '#eee' }} />
         {selected && (
@@ -130,11 +152,11 @@ export default function MapPickerModal({ initialAddress, onSelect, onClose }: Pr
           </div>
         )}
         <p style={{ fontSize: 12, color: '#868e96', marginTop: 8 }}>
-          검색 후 정확한 위치가 아니면 지도를 클릭해서 직접 위치를 찍어주세요.
+          {helpText ?? '검색 후 정확한 위치가 아니면 지도를 클릭해서 직접 위치를 찍어주세요.'}
         </p>
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
           <button disabled={!selected} onClick={() => selected && onSelect(selected.lat, selected.lng, selected.address, selected.placeName)}>
-            이 위치로 저장
+            {confirmLabel ?? '이 위치로 저장'}
           </button>
           <button className="secondary" onClick={onClose}>취소</button>
         </div>

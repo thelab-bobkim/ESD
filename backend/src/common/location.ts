@@ -32,7 +32,11 @@ export const HQ_LOCATION_MATCH_RADIUS_METERS = 1000;
 // 판단할 수 있다. 다만 오차범위 값 자체를 무한정 믿어줄 수는 없다 — 그러면 "오차범위가 50km"라고
 // 우기는 조작된 값 하나로 어디서든 통과되어 버려 위치대조(특히 고객사 현장 사칭 방지 목적)가
 // 무력화된다. 그래서 봐주는 양에 상한(MAX_ACCURACY_ALLOWANCE_METERS)을 둔다.
-const MAX_ACCURACY_ALLOWANCE_METERS = 1000;
+// 2026-09-30: attendance.routes.ts의 "위치 불일치 하드블록"(대표이사 결정 — 집 등 엉뚱한 곳에서
+// 본사근무/고객사작업 등으로 출근을 확정하지 못하게 함)이, GPS 자체가 이 값보다 더 부정확하다고
+// 스스로 보고한 경우(신한이노플렉스 등 고층건물 실내 최대 2.8km 오차 실측 사례)만 예외로 봐주기
+// 위해 이 상수를 그대로 가져다 쓴다 — 그래서 모듈 내부 전용(private)에서 export로 바꿨다.
+export const MAX_ACCURACY_ALLOWANCE_METERS = 1000;
 
 /** accuracyMeters를 반경에 더해줄 "허용치"로 환산한다 — 상한을 넘는 값은 상한까지만 인정한다. */
 function accuracyAllowanceMeters(accuracyMeters: number | null | undefined): number {

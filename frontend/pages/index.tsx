@@ -807,8 +807,57 @@ export default function EmployeeHome() {
       refreshMyStatus();
       onSuccess?.(data);
     } catch (err) {
+      // 2026-09-30: 위치불일치 하드블록(LOCATION_MISMATCH_BLOCKED)은 withMismatchConfirm이 이미
+      // "카카오맵으로 실제 위치 확인" 팝업을 띄우는 등 알아서 처리했다는 뜻으로 이 표식(silent)을
+      // 남기고 다시 던진다 — 여기서 또 오류 문구로 화면을 덮어쓰지 않는다(사용자가 팝업을 취소한
+      // 경우 조용히 아무 일도 없었던 것처럼 끝난다).
+      if ((err as Error & { silent?: boolean } | undefined)?.silent) return;
       setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
       setMessageIsError(true);
+    }
+  }
+
+  // 2026-09-30: 대표이사 요청 — "국민대학교처럼 GPS가 잘 안 맞는 현장에서, 진짜로 거기 있는
+  // 직원이 카카오맵으로 본인 위치를 직접 확인하고 등록할 수 있게" 해주는 공용 흐름. 서버가
+  // LOCATION_MISMATCH_BLOCKED로 막으면(위치 불일치 하드블록) 곧바로 오류로 표시하는 대신, GPS로
+  // 잡힌 좌표를 지도에 띄워 "여기가 맞다"고 확정(또는 지도를 클릭해 실제 위치로 보정)하게 하고,
+  // 그러면 body.selfConfirmMismatch=true를 더해 딱 한 번 자동으로 재제출한다. 취소하면 조용히
+  // (오류 문구 없이) 등록을 중단한다 — 관리자 화면에는 이렇게 등록된 건이 note 표식으로 남는다.
+  const [mismatchConfirm, setMismatchConfirm] = useState<{
+    distanceMeters?: number;
+    lat?: number;
+    lng?: number;
+    resolve: (result: { lat: number; lng: number } | null) => void;
+  } | null>(null);
+
+  function askMismatchConfirm(
+    distanceMeters: number | undefined,
+    lat: number | undefined,
+    lng: number | undefined
+  ): Promise<{ lat: number; lng: number } | null> {
+    return new Promise((resolve) => {
+      setMismatchConfirm({ distanceMeters, lat, lng, resolve });
+    });
+  }
+
+  async function withMismatchConfirm<T>(body: Record<string, unknown>, submit: () => Promise<T>): Promise<T> {
+    try {
+      return await submit();
+    } catch (err) {
+      const code = err instanceof Error ? (err as Error & { code?: string }).code : undefined;
+      if (code !== 'LOCATION_MISMATCH_BLOCKED') throw err;
+      const distance = (err as Error & { distanceMeters?: number }).distanceMeters;
+      const loc = body.location as { lat: number; lng: number } | undefined;
+      const confirmed = await askMismatchConfirm(distance, loc?.lat, loc?.lng);
+      if (!confirmed) {
+        const silentErr = new Error(err instanceof Error ? err.message : '취소되었습니다.');
+        (silentErr as Error & { silent?: boolean }).silent = true;
+        throw silentErr;
+      }
+      // 사용자가 지도에서 확정(또는 클릭해 보정)한 좌표를 그대로 최종 등록 위치로 쓴다.
+      body.location = { lat: confirmed.lat, lng: confirmed.lng };
+      body.selfConfirmMismatch = true;
+      return submit();
     }
   }
 
@@ -1140,9 +1189,11 @@ export default function EmployeeHome() {
       const accuracyWarningSuffix = isLowAccuracy(hqQuickLocationMeta.accuracy) ? ` (${accuracyWarningLabel(hqQuickLocationMeta.accuracy)})` : '';
       run(
         () =>
-          attemptWithLocationRetry(
-            () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-            isFirstStatusToday && WORK_START_STATUSES_FRONT.has(code) ? refreshHqQuickLocation : undefined
+          withMismatchConfirm(body, () =>
+            attemptWithLocationRetry(
+              () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+              isFirstStatusToday && WORK_START_STATUSES_FRONT.has(code) ? refreshHqQuickLocation : undefined
+            )
           ),
         pendingPrev
           ? `⚠️ 상태가 '${STATUS_META[code].label}'(으)로 변경됐지만, 직전 '${STATUS_META[pendingPrev.status]?.label ?? pendingPrev.status}' 내용을 아직 안 채우셨어요! 잊지 말고 채워주세요.`
@@ -1377,15 +1428,21 @@ export default function EmployeeHome() {
       setMessage(null);
       setMessageIsError(false);
       try {
-        const res = await apiFetch<{ statusLog: unknown; nightWork: { altDayOffRecommended?: boolean } | null }>(
-          '/attendance/status', { method: 'POST', body: JSON.stringify(body) }
+        const res = await withMismatchConfirm(body, () =>
+          apiFetch<{ statusLog: unknown; nightWork: { altDayOffRecommended?: boolean } | null }>(
+            '/attendance/status', { method: 'POST', body: JSON.stringify(body) }
+          )
         );
         setMessage(`상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`);
         refreshMyStatus();
         if (res.nightWork?.altDayOffRecommended) setShowAltDayOffPrompt(true);
       } catch (err) {
-        setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
-        setMessageIsError(true);
+        // 위치확인 팝업을 취소한 경우(silent)는 조용히 넘어간다 — withMismatchConfirm의 run() 쪽
+        // 처리와 동일한 규칙을 여기(run()을 안 거치는 야간작업 경로)에도 그대로 적용한다.
+        if (!(err as Error & { silent?: boolean } | undefined)?.silent) {
+          setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+          setMessageIsError(true);
+        }
       }
       setDetailStatus(null);
       return;
@@ -1393,9 +1450,11 @@ export default function EmployeeHome() {
 
     run(
       () =>
-        attemptWithLocationRetry(
-          () => apiFetch<{ locationMismatchException?: boolean }>('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-          needsLocationCheck ? refreshDetailFormLocation : undefined
+        withMismatchConfirm(body, () =>
+          attemptWithLocationRetry(
+            () => apiFetch<{ locationMismatchException?: boolean }>('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+            needsLocationCheck ? refreshDetailFormLocation : undefined
+          )
         ),
       `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊${
         isLowAccuracy(detailFormLocationMeta.accuracy) ? ` (${accuracyWarningLabel(detailFormLocationMeta.accuracy)})` : ''
@@ -1970,6 +2029,29 @@ export default function EmployeeHome() {
                 initialAddress={clientLocationPicker.name}
                 onClose={() => setClientLocationPicker(null)}
                 onSelect={(lat, lng, address) => confirmNewClientWithLocation(lat, lng, address)}
+              />
+            )}
+            {mismatchConfirm && (
+              // 2026-09-30: 위치 불일치 하드블록(LOCATION_MISMATCH_BLOCKED)을 만났을 때 뜨는 팝업 —
+              // GPS로 잡힌 좌표를 그대로 지도에 띄워, 실제로 그 자리에 있는 직원이 "여기가 맞다"고
+              // 확정하거나 지도를 클릭해 실제 위치로 보정할 수 있게 한다.
+              <MapPickerModal
+                title="📍 실제 위치를 확인해주세요"
+                helpText={`등록된 위치에서 약 ${mismatchConfirm.distanceMeters ?? '?'}m 떨어져 있어 등록이 막혔어요. 지금 계신 곳이 지도에 표시된 위치가 맞으면 그대로 아래 버튼을 눌러주세요. 위치가 다르면 지도를 클릭해서 실제 계신 곳을 다시 찍어주세요.`}
+                confirmLabel="여기가 맞습니다 · 등록 계속하기"
+                initialCoords={
+                  mismatchConfirm.lat != null && mismatchConfirm.lng != null
+                    ? { lat: mismatchConfirm.lat, lng: mismatchConfirm.lng }
+                    : undefined
+                }
+                onClose={() => {
+                  mismatchConfirm.resolve(null);
+                  setMismatchConfirm(null);
+                }}
+                onSelect={(lat, lng) => {
+                  mismatchConfirm.resolve({ lat, lng });
+                  setMismatchConfirm(null);
+                }}
               />
             )}
             {!isWeekendToday && (

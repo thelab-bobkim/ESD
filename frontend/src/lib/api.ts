@@ -46,6 +46,14 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
     // 서버가 내려준 에러 코드(예: AWAY_FROM_HQ)를 같이 실어 보낸다 — 호출하는 쪽에서 메시지
     // 문자열이 아니라 이 코드로 특정 상황(위치 재시도 등)을 구분해서 처리할 수 있게.
     (err as Error & { code?: string }).code = json?.error?.code;
+    // 2026-09-30: LOCATION_MISMATCH_BLOCKED의 distanceMeters처럼, code/message 외에 서버가 함께
+    // 내려준 추가 필드가 있으면 그대로 에러 객체에 얹어준다 — 호출하는 쪽이 한국어 메시지 문자열을
+    // 파싱하지 않고 바로 값(예: 거리)을 쓸 수 있게 하기 위함.
+    if (json?.error && typeof json.error === 'object') {
+      for (const [key, value] of Object.entries(json.error)) {
+        if (key !== 'code' && key !== 'message') (err as unknown as Record<string, unknown>)[key] = value;
+      }
+    }
     throw err;
   }
   return json.data as T;
