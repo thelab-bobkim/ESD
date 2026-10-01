@@ -8,7 +8,7 @@ import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST, isWeekendForWorkDate, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 import { recordNightWork, willResumeNightWork } from '../../common/night-work-helpers';
 import { recordEffort, findOpenEffort, willUpdateExistingEffort } from '../../common/effort-helpers';
-import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, buildMismatchCoords } from '../../common/location';
+import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, MAX_ACCURACY_ALLOWANCE_METERS, buildMismatchCoords } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
 // 2026-09-30 수정(Critical): 일일업무일지 1단계(퇴근 시 강제 마감)를 /clock-out에서 실제로
 // 저장하기 위해 가져온다 — 이 연결이 없던 동안, 모달이 필수 입력까지 받아 만든 업무일지가
@@ -1002,6 +1002,40 @@ attendanceRouter.post('/status', async (req, res) => {
       orderBy: { changedAt: 'desc' },
     });
     if (lastLog && lastLog.status === status) {
+      // 2026-10-01 추가(보안 — 프론트 "카카오맵 위치 정정" 기능과 함께 도입): 직전에 "위치 불일치"로
+      // 기록된 로그를 다시 제출(갱신)하는 경우, 이번에 보낸 좌표가 그때 실제로 측정됐던 GPS 지점
+      // (lastLog의 mismatchLatitude/Longitude — 불일치 건에만 남기는 원본 좌표, location.ts의
+      // buildMismatchCoords 참고)에서 너무 멀면 거부한다. 이 거리 제한이 없으면 "지도에서 본인
+      // 위치를 다시 확인/보정"하는 기능이 "실제로 가지 않은 곳(예: 고객사 주소)을 지도에서 그냥
+      // 클릭해서 위치대조를 우회"하는 통로가 돼버린다 — 대표이사 피드백: "GPS로 잡힌 본인 위치를
+      // 보정하라는 것이지 다른 위치를 찍어도 넘어가라는 게 아니다." 허용 범위는 이 앱이 이미 "GPS
+      // 오차로 봐줄 수 있는 최대치"로 정해둔 MAX_ACCURACY_ALLOWANCE_METERS(1km, location.ts)를
+      // 그대로 재사용한다 — 정상적인 재측정(기기 GPS가 자연스럽게 살짝 다른 값을 주는 경우)은 이
+      // 범위 안에 충분히 들어오고, 실제 측정 지점에서 km 단위로 떨어진 곳을 의도적으로 찍는 경우만
+      // 걸러낸다. 프론트가 보내는 값은 신뢰하지 않고(위조 가능), 서버가 직접 저장해둔 lastLog의
+      // 원본 좌표만 기준으로 삼는다.
+      if (
+        LOCATION_CHECK_ELIGIBLE_STATUSES.has(status) &&
+        lastLog.locationMatch === false &&
+        lastLog.mismatchLatitude != null &&
+        lastLog.mismatchLongitude != null &&
+        location
+      ) {
+        const correctionCheck = checkLocationMatch(
+          location,
+          { latitude: lastLog.mismatchLatitude, longitude: lastLog.mismatchLongitude },
+          MAX_ACCURACY_ALLOWANCE_METERS
+        );
+        if (correctionCheck && !correctionCheck.locationMatch) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'LOCATION_CORRECTION_TOO_FAR',
+              message: `처음 측정된 내 위치에서 ${correctionCheck.locationDistanceMeters}m 떨어져 있어 정정으로 인정되지 않습니다. 실제 계신 곳 근처에서 다시 시도해주세요.`,
+            },
+          });
+        }
+      }
       log = await prisma.statusChangeLog.update({ where: { id: lastLog.id }, data: statusLogFields });
     }
   }

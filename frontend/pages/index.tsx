@@ -364,6 +364,22 @@ export default function EmployeeHome() {
   // 에서도 이미 쓰고 있는 MapPickerModal(카카오맵 검색+클릭 선택)이 뜬다 — "위치 미확인" 원인
   // 분석 중 발견한 문제(현장 즉석등록 고객사가 좌표 없이 남는 것)를 근본적으로 막기 위한 조치.
   const [clientLocationPicker, setClientLocationPicker] = useState<{ name: string } | null>(null);
+  // 2026-10-01 추가: 위치 불일치로 "예외 등록"된 직후, 그 자리에서 바로 카카오맵으로 본인 위치를
+  // 확인/보정해 재등록할 수 있게 하는 흐름 — MapPickerModal의 initialCoords prop(2026-09-30,
+  // "위치 불일치 시 카카오맵으로 직접 확인" 용도로 이미 만들어져 있었으나 어디서도 호출되지 않고
+  // 있었다)을 여기서 처음 실제로 연결한다. body/code는 방금 보낸 요청을 그대로 다시 쓰기 위해
+  // 들고 있는다(같은 날 같은 상태 재제출이면 서버가 기존 기록을 새로 만들지 않고 갱신한다 —
+  // attendance.routes.ts의 willUpdateExistingEffort/willResumeNightWork 참고).
+  const [locationCorrection, setLocationCorrection] = useState<{
+    code: string;
+    body: Record<string, unknown>;
+    lat: number;
+    lng: number;
+  } | null>(null);
+  const [locationCorrectionBusy, setLocationCorrectionBusy] = useState(false);
+  // 서버가 "정정 범위 초과"(LOCATION_CORRECTION_TOO_FAR) 등으로 거부한 사유 — 지도 모달이
+  // 전체화면이라 바깥 메시지 배너가 안 보이므로, 모달 안에 바로 보여준다(닫지 않고 다시 시도 가능).
+  const [locationCorrectionError, setLocationCorrectionError] = useState<string | null>(null);
   const hqPromptSnoozedUntilRef = useRef(0);
   const clientPromptSnoozedUntilRef = useRef(0);
   // 마지막 근무위치(본사/고객사) 이탈 감지용 — 계속 벗어나 있는 시간을 재기 위한 시작시각과,
@@ -1144,14 +1160,19 @@ export default function EmployeeHome() {
           // 2026-09-16: 이미 계산해뒀던 오차범위를 서버로도 함께 보낸다 — 서버가 "거리 - 오차범위
           // <= 반경"으로 반영해서, 반경 상수 자체를 계속 늘리지 않고도 정확도 낮은 측정을 봐줄 수
           // 있게 한다(위치 미확인/불일치 개선 1순위).
-          body.locationAccuracyMeters = accuracyMeters ?? undefined;
+          // 2026-10-01 수정: 서버 zod 스키마(statusSchema)와 퀵 출근 엔드포인트 모두 필드명을
+          // accuracyMeters로 읽는다(attendance.routes.ts) — locationAccuracyMeters라는 잘못된
+          // 이름으로 보내고 있어서 서버가 이 값을 전혀 받지 못해(undefined로 무시됨) 오차범위
+          // 봐주기(accuracyAllowanceMeters, 최대 1km)가 한 번도 적용된 적이 없었다(실데이터 확인:
+          // location_accuracy_meters 컬럼이 전부 NULL). 필드명을 서버와 맞춘다.
+          body.accuracyMeters = accuracyMeters ?? undefined;
           // 카카오맵 역지오코딩 — GPS 오차가 커도(예: 신한이노플렉스 사무실 835m 오차 사례) 주소가
           // 본사 건물명/도로명과 일치하면 서버에서 통과시켜줄 수 있게, 변환된 주소도 같이 보낸다.
           body.locationAddress = (await reverseGeocode(coords.lat, coords.lng)) ?? undefined;
         } else {
           delete body.location;
           delete body.locationAddress;
-          delete body.locationAccuracyMeters;
+          delete body.accuracyMeters;
         }
       };
       // 2026-09-20: "직원 출근은 무조건 위치 대조를 강제해야 한다"(대표이사 지침) — 예전엔
@@ -1409,14 +1430,16 @@ export default function EmployeeHome() {
         body.location = coords;
         // 2026-09-16: 오차범위를 서버로 함께 보낸다(위치 미확인/불일치 개선 1순위, HQ_WORKING과
         // 동일한 이유 — refreshHqQuickLocation 주석 참고).
-        body.locationAccuracyMeters = accuracyMeters ?? undefined;
+        // 2026-10-01 수정: 서버가 읽는 필드명(accuracyMeters)으로 맞춘다 — refreshHqQuickLocation
+        // 주석 참고(기존 locationAccuracyMeters라는 이름으로는 서버가 이 값을 받지 못했다).
+        body.accuracyMeters = accuracyMeters ?? undefined;
         // 본사근무만 역지오코딩 주소를 같이 보낸다 — 고객사미팅/작업은 등록된 고객사 좌표와
         // 직접 대조하므로 주소 매칭이 필요 없다(불필요한 카카오맵 호출도 줄인다).
         body.locationAddress = code === 'HQ_WORKING' ? (await reverseGeocode(coords.lat, coords.lng)) ?? undefined : undefined;
       } else {
         delete body.location;
         delete body.locationAddress;
-        delete body.locationAccuracyMeters;
+        delete body.accuracyMeters;
       }
     };
     if (needsLocationCheck) {
@@ -1462,12 +1485,80 @@ export default function EmployeeHome() {
       // "위치 불일치" 배지로도 남아 사후 확인이 가능하다.
       (data) => {
         if ((data as { locationMismatchException?: boolean } | undefined)?.locationMismatchException) {
-          setMessage('⚠ 위치가 등록된 고객사와 달라 예외로 등록됐어요 — 관리자 확인이 필요할 수 있어요.');
-          setMessageIsError(false);
+          const sentLocation = body.location as { lat: number; lng: number } | undefined;
+          if (sentLocation) {
+            // 2026-10-01 추가: 안내만 하고 끝내지 않고, 그 자리에서 카카오맵으로 본인 위치를 다시
+            // 확인/보정해 등록할 수 있게 제안한다(resubmitWithCorrectedLocation 참고).
+            setMessage('⚠ 위치가 등록된 고객사와 달라 예외로 등록됐어요 — 아래에서 지도로 실제 위치를 확인하면 바로 정정할 수 있어요.');
+            setMessageIsError(false);
+            setLocationCorrection({ code, body, lat: sentLocation.lat, lng: sentLocation.lng });
+          } else {
+            setMessage('⚠ 위치가 등록된 고객사와 달라 예외로 등록됐어요 — 관리자 확인이 필요할 수 있어요.');
+            setMessageIsError(false);
+          }
         }
       }
     );
     setDetailStatus(null);
+  }
+
+  /**
+   * 2026-10-01 추가: 위치 불일치로 예외 등록된 직후, 직원이 카카오맵에서 확인/보정한 좌표로
+   * 같은 상태를 다시 제출한다. 같은 날 같은 상태 재제출은 서버가 기존 StatusChangeLog를 새로
+   * 만들지 않고 그대로 갱신하므로(willUpdateExistingEffort/willResumeNightWork), 보정에 성공하면
+   * (등록된 고객사 좌표와의 거리가 반경 이내면) 그 기록의 locationMatch가 true로 바뀌어 관리자
+   * 상황판의 불일치 표시도 함께 해소된다(dashboard.routes.ts의 "당일 한 번이라도 성공하면
+   * 해소" 로직) — 새 엔드포인트나 별도 예외 경로를 만들지 않고 기존 /attendance/status 제출
+   * 경로와 동일한 위치대조 로직을 그대로 재사용한다(보안/검증 로직을 약화하지 않기 위함).
+   * 지도에서 직접 클릭/확정한 좌표는 GPS 오차가 아니라 본인이 확정한 지점이므로, 오차범위
+   * 봐주기(accuracyAllowanceMeters)는 적용하지 않고 accuracyMeters를 0으로 보낸다.
+   */
+  // 서버(attendance.routes.ts)의 MAX_ACCURACY_ALLOWANCE_METERS와 반드시 같은 값을 유지해야 한다 —
+  // 여기서는 네트워크 왕복 없이 바로 안내하기 위한 선검증일 뿐이고, 실제 허용 여부는 항상 서버가
+  // 최종 판단한다(위조 방지를 위해 서버는 이 클라이언트 값을 신뢰하지 않고 자체 기록과 비교한다).
+  const MAX_SELF_CORRECTION_METERS = 1000;
+
+  async function resubmitWithCorrectedLocation(lat: number, lng: number) {
+    if (!locationCorrection || locationCorrectionBusy) return;
+    const { code, body } = locationCorrection;
+    setLocationCorrectionError(null);
+    const distanceFromGps = distanceMeters(locationCorrection.lat, locationCorrection.lng, lat, lng);
+    if (distanceFromGps > MAX_SELF_CORRECTION_METERS) {
+      setLocationCorrectionError(
+        `처음 측정된 내 위치에서 약 ${Math.round(distanceFromGps)}m 떨어져 있어요(최대 ${MAX_SELF_CORRECTION_METERS}m까지만 보정 가능). 실제 계신 곳 근처를 다시 찍어주세요.`
+      );
+      return;
+    }
+    setLocationCorrectionBusy(true);
+    setMessage(null);
+    setMessageIsError(false);
+    try {
+      const correctedBody: Record<string, unknown> = { ...body, location: { lat, lng }, accuracyMeters: 0 };
+      const data = await apiFetch<{ locationMismatchException?: boolean }>('/attendance/status', {
+        method: 'POST',
+        body: JSON.stringify(correctedBody),
+      });
+      setLocationCorrection(null);
+      if (data?.locationMismatchException) {
+        setMessage('⚠ 다시 확인한 위치도 등록된 고객사 위치와 거리가 있어요 — 관리자 확인이 필요할 수 있어요.');
+        setMessageIsError(false);
+      } else {
+        setMessage(`✅ 위치를 다시 확인해서 '${STATUS_META[code]?.label ?? code}' 정상 등록으로 반영했어요.`);
+        setMessageIsError(false);
+      }
+      refreshMyStatus();
+    } catch (err) {
+      // 2026-10-01: 서버가 "정정 허용범위 초과"(LOCATION_CORRECTION_TOO_FAR — 실제 측정된 GPS
+      // 지점에서 너무 멀리 떨어진 곳을 지도에서 찍은 경우, attendance.routes.ts 참고)로 거부하면,
+      // 이 지도 모달은 전체화면이라 바깥 메시지 배너가 안 보이므로 모달을 닫지 않고 그 안에
+      // 사유를 보여줘서 실제 위치 근처에서 다시 찍어보도록 유도한다.
+      const errMessage = err instanceof Error ? err.message : '위치 재등록에 실패했습니다.';
+      setLocationCorrectionError(errMessage);
+      setMessage(errMessage);
+      setMessageIsError(true);
+    } finally {
+      setLocationCorrectionBusy(false);
+    }
   }
 
   function logout() {
@@ -1967,12 +2058,14 @@ export default function EmployeeHome() {
                     if (coords) {
                       clockInBody.location = coords;
                       // 2026-09-16: 오차범위를 서버로 함께 보낸다(위치 미확인/불일치 개선 1순위).
-                      clockInBody.locationAccuracyMeters = accuracyMeters ?? undefined;
+                      // 2026-10-01 수정: 서버가 읽는 필드명(accuracyMeters)으로 맞춘다 —
+                      // refreshHqQuickLocation 주석 참고.
+                      clockInBody.accuracyMeters = accuracyMeters ?? undefined;
                       clockInBody.locationAddress = (await reverseGeocode(coords.lat, coords.lng)) ?? undefined;
                     } else {
                       delete clockInBody.location;
                       delete clockInBody.locationAddress;
-                      delete clockInBody.locationAccuracyMeters;
+                      delete clockInBody.accuracyMeters;
                     }
                   };
                   await refreshClockInLocation();
@@ -2067,6 +2160,29 @@ export default function EmployeeHome() {
                 initialAddress={clientLocationPicker.name}
                 onClose={() => setClientLocationPicker(null)}
                 onSelect={(lat, lng, address) => confirmNewClientWithLocation(lat, lng, address)}
+              />
+            )}
+            {locationCorrection && (
+              <MapPickerModal
+                initialCoords={{ lat: locationCorrection.lat, lng: locationCorrection.lng }}
+                title="📍 내 위치 확인/정정"
+                helpText={
+                  locationCorrectionBusy
+                    ? '다시 등록하는 중...'
+                    // 2026-10-01: "다른 곳을 찍어도 통과된다"는 오해를 막기 위해, 이건 GPS로 잡힌
+                    // 내 위치를 보정하는 용도이지 임의의 장소(예: 고객사 주소)를 찍는 용도가
+                    // 아니라는 점을 명시한다 — 실제로 서버도 처음 측정된 GPS 지점에서 너무 먼
+                    // 곳은 거부한다(attendance.routes.ts의 LOCATION_CORRECTION_TOO_FAR).
+                    : '지금 계신 곳의 GPS 위치가 지도에 표시돼요. 위치가 맞으면 그대로 "이 위치로 다시 등록"을 눌러주세요. 실내 등 GPS 오차로 핀이 살짝 어긋났다면, 실제로 지금 계신 곳 근처를 다시 찍어 보정해주세요. (고객사 주소 등 실제로 계시지 않은 곳을 찍으면 정정으로 인정되지 않아요.)'
+                }
+                confirmLabel="이 위치로 다시 등록"
+                errorOverride={locationCorrectionError}
+                onClose={() => {
+                  if (locationCorrectionBusy) return;
+                  setLocationCorrection(null);
+                  setLocationCorrectionError(null);
+                }}
+                onSelect={(lat, lng) => resubmitWithCorrectedLocation(lat, lng)}
               />
             )}
             <div className="notice-inline-orange">

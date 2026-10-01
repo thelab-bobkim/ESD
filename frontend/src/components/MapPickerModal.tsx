@@ -15,6 +15,10 @@ interface Props {
   title?: string;
   helpText?: string;
   confirmLabel?: string;
+  // 2026-10-01 추가: 선택을 확정했는데(onSelect) 호출한 쪽에서 서버 검증 등으로 거부된 경우,
+  // 모달을 닫지 않고 그 사유를 보여줄 수 있게 한다(예: 위치 정정 허용범위 초과) — 이 모달은
+  // 전체화면을 덮으므로(zIndex 1000), 바깥 화면의 메시지 배너로는 전달되지 않는다.
+  errorOverride?: string | null;
   onSelect: (lat: number, lng: number, address?: string, placeName?: string) => void;
   onClose: () => void;
 }
@@ -35,7 +39,7 @@ function loadKakaoScript(): Promise<void> {
   });
 }
 
-export default function MapPickerModal({ initialAddress, initialCoords, title, helpText, confirmLabel, onSelect, onClose }: Props) {
+export default function MapPickerModal({ initialAddress, initialCoords, title, helpText, confirmLabel, errorOverride, onSelect, onClose }: Props) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
@@ -129,7 +133,7 @@ export default function MapPickerModal({ initialAddress, initialCoords, title, h
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <div style={{ background: '#fff', borderRadius: 16, padding: 20, maxWidth: 640, width: '100%' }}>
         <h2 style={{ marginTop: 0 }}>{title ?? '🗺️ 지도에서 고객사 위치 찾기'}</h2>
-        {error && <div className="error">{error}</div>}
+        {(errorOverride || error) && <div className="error">{errorOverride || error}</div>}
         {!initialCoords && (
           <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
             <input
