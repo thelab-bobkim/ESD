@@ -1,4 +1,7 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
+import { takeWithTruncation, setTruncationHeaders } from '../../common/list-limit';
+
+const DAILY_WORK_LOG_LIST_LIMIT = 1000;
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
@@ -18,7 +21,7 @@ import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
  *  3단계(관리자 열람): GET /admin/list, GET /admin/summary — night-work-mail 관리자 화면과
  *                    같은 패턴(목록 + 집계)으로 제공한다.
  */
-export const dailyWorkLogRouter = Router();
+export const dailyWorkLogRouter = createRouter();
 
 // 이 상태로 하루를 보낸 날은 기록할 내용이 많다고 보고 "상세형"으로 자동 분류한다(2단계 판단
 // 기준) — 고객사/현장/야간·주말 근무가 여기 해당한다. 나머지(본사근무/재택/휴가/대체휴무 등)는
@@ -100,9 +103,11 @@ export const dailyWorkLogInputSchema = z.object({
   workTypeSnapshot: z.string().max(60).optional(),
   visitedClients: z.string().max(500).optional(),
   workContent: z.string().max(4000).optional(),
-  issues: z.string().min(1, '이슈/특이사항을 입력해주세요.').max(2000),
+  // 2026-09-30 수정: upsertDailyWorkLog가 저장 직전에 trim하므로, 공백문자만 보낸 값("   ")은
+  // min(1)을 통과해 DB에 빈 문자열로 저장될 수 있었다 — trim 후 검증하도록 바꾼다.
+  issues: z.string().trim().min(1, '이슈/특이사항을 입력해주세요.').max(2000),
   followUp: z.string().max(2000).optional(),
-  tomorrowPlan: z.string().min(1, '내일 예정 업무를 입력해주세요.').max(2000),
+  tomorrowPlan: z.string().trim().min(1, '내일 예정 업무를 입력해주세요.').max(2000),
   supportRequest: z.string().max(2000).optional(),
   totalWorkedMinutes: z.number().int().min(0).optional(),
   actualEffortMinutes: z.number().int().min(0).optional(),
@@ -255,7 +260,7 @@ dailyWorkLogRouter.post('/', async (req, res) => {
 });
 
 // 아래부터는 관리자 전용(3단계) — night-work-mail 관리자 화면과 동일한 권한 체계.
-const adminRouter = Router();
+const adminRouter = createRouter();
 adminRouter.use(requireRole('HR_ADMIN', 'SYSTEM_ADMIN'));
 
 const adminQuerySchema = z.object({
@@ -330,12 +335,15 @@ adminRouter.get('/list', async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '조회 조건을 확인하세요.' } });
   }
-  const rows = await prisma.dailyWorkLog.findMany({
+  const fetched = await prisma.dailyWorkLog.findMany({
     where: buildAdminWhere(parsed.data),
     include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
     orderBy: [{ workDate: 'desc' }, { submittedAt: 'desc' }],
-    take: 1000,
+    // 2026-09-30(M-3): 1건 더 조회해 잘림 여부를 판정하고 헤더로 알린다.
+    take: DAILY_WORK_LOG_LIST_LIMIT + 1,
   });
+  const { rows, truncated } = takeWithTruncation(fetched, DAILY_WORK_LOG_LIST_LIMIT);
+  setTruncationHeaders(res, truncated, DAILY_WORK_LOG_LIST_LIMIT);
   const departureById = await attachDepartureEvents(rows);
   return res.json({
     success: true,

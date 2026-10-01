@@ -26,7 +26,9 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://app_user:CONFIGURABLE_change_me@db:5432/employee_status?schema=public
-      JWT_SECRET: CONFIGURABLE_change_me_in_env
+      # 2026-09-30(H-6): 예전 기본값('CONFIGURABLE_change_me_in_env')은 서버가 더 이상 받지 않는다(기동 거부).
+      # 로컬 개발 시 셸이나 .env에 JWT_SECRET을 임의의 긴 문자열로 설정하세요. 예) export JWT_SECRET=$(openssl rand -hex 32)
+      JWT_SECRET: "${JWT_SECRET:?로컬 개발에도 JWT_SECRET 환경변수를 설정하세요 - 예시 openssl rand -hex 32}"
       PORT: 4000
     ports:
       - "4000:4000"

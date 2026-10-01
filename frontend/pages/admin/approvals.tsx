@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, isAuthExpiredError } from '@/lib/api';
 import AdminHeader from '@/components/AdminHeader';
 
 type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
@@ -64,9 +64,10 @@ export default function ApprovalsPage() {
     apiFetch<ApprovalRequestRow[]>(`/approval/requests?status=${tab}`)
       .then(setRequests)
       .catch((err) => {
-        if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰') || err.message.includes('권한'))) {
-          setMessage(err.message);
-        }
+        // 2026-09-30 수정(Medium): '권한'까지 포함한 문자열 매칭은 "다른 부서의 요청은 처리할
+        // 권한이 없습니다"(approval.routes.ts의 정상 403)까지 잡아 불필요하게 로그아웃시킬 수 있었다.
+        if (isAuthExpiredError(err)) router.push('/login');
+        setMessage(err instanceof Error ? err.message : '요청 목록을 불러오지 못했습니다.');
       })
       .finally(() => setLoading(false));
   }

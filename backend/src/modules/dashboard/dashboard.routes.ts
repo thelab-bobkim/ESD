@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
@@ -26,7 +26,7 @@ const LOCATION_CHECK_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT
 // "관리자 전용 노출"). 상황판 자체(위치 불일치 여부/거리)는 기존과 동일하게 전 역할에 내려간다.
 const MISMATCH_COORD_VIEW_ROLES = new Set(['HR_ADMIN', 'SYSTEM_ADMIN']);
 
-export const dashboardRouter = Router();
+export const dashboardRouter = createRouter();
 dashboardRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'));
 
 /**
@@ -40,11 +40,26 @@ function dateOnlyUTC(d?: Date): Date {
   return new Date(Date.UTC(kstShifted.getUTCFullYear(), kstShifted.getUTCMonth(), kstShifted.getUTCDate()));
 }
 
+/** 정렬된 목록에서 userId별 첫 행(=가장 최근 행)만 남긴다. */
+function firstByUser<T extends { userId: string }>(rows: T[]): Map<string, T> {
+  const m = new Map<string, T>();
+  for (const r of rows) if (!m.has(r.userId)) m.set(r.userId, r);
+  return m;
+}
+
 /**
- * 사용자별 "그 날짜"의 마지막 상태 변경 로그를 모아 상황판을 만든다 (간단한 MVP 집계 방식).
+ * 사용자별 "그 날짜"의 마지막 상태 변경 로그를 모아 상황판을 만든다.
  * forDate를 안 넘기면 오늘 기준(라이브 상황판), 과거 날짜를 넘기면 그날의 스냅샷(캘린더 조회용)이 된다.
+ *
+ * 2026-09-30 재작성(Medium, N+1 제거): 예전엔 직원 1명마다 최대 5~6번씩 쿼리를 날렸다
+ * (상태로그·도착체크·근태·공수·위치성공로그·고객사진단). 표시대상 90~150명이면 요청 1번에
+ * 400~750개 쿼리였고, 관리자 상황판은 15초마다 폴링하므로 접속한 관리자 수만큼 그대로 곱해졌다.
+ * 이제 그날 하루치를 테이블당 한 번씩만 일괄 조회(총 5회 + 서로 다른 진단 고객사명 수만큼)한 뒤
+ * 메모리에서 사용자별로 나눈다. 사용자별 판정 로직(무엇을 "그날의 상태"로 볼지, 위치 배지를
+ * 어떻게 고를지 등)은 한 줄도 바꾸지 않았다 — 기존 구현과 결과가 같은지는
+ * __tests__/status-board.test.ts가 무작위 데이터로 직접 비교한다.
  */
-async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(), includeMismatchCoords = false) {
+export async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(), includeMismatchCoords = false) {
   const workDateLabel = forDate;
   const { start: dayStart, end: dayEnd } = realDayWindow(workDateLabel);
 
@@ -59,52 +74,70 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
     },
     include: { department: true, assignedClient: true },
   });
+  if (users.length === 0) return [];
+  const ids = users.map((u) => u.id);
+
+  // ── 하루치 일괄 조회 (정렬은 기존 findFirst의 orderBy와 동일하게) ──────────────────
+  const [dayLogs, dayCheckins, dayAttendance, dayEfforts] = await Promise.all([
+    prisma.statusChangeLog.findMany({
+      where: { userId: { in: ids }, changedAt: { gte: dayStart, lt: dayEnd } },
+      orderBy: { changedAt: 'desc' },
+    }),
+    prisma.residentCheckin.findMany({
+      where: { userId: { in: ids }, checkinAt: { gte: dayStart, lt: dayEnd } },
+      orderBy: { checkinAt: 'desc' },
+    }),
+    prisma.attendanceRecord.findMany({
+      where: { userId: { in: ids }, workDate: workDateLabel },
+    }),
+    prisma.effortLog.findMany({
+      where: { userId: { in: ids }, workDate: workDateLabel },
+      orderBy: { startTime: 'desc' },
+    }),
+  ]);
+
+  const statusByUser = firstByUser(dayLogs);
+  const checkinByUser = firstByUser(dayCheckins);
+  const attendanceByUser = new Map(dayAttendance.map((a) => [a.userId, a] as const));
+  const effortByUser = firstByUser(dayEfforts);
+  // 기존: status in LOCATION_CHECK_STATUSES && locationMatch=true 중 가장 최근 1건 — 같은 하루치
+  // 로그(dayLogs, 이미 최신순)에서 그대로 골라낸다(별도 쿼리 불필요).
+  const bestLocationByUser = firstByUser(
+    dayLogs.filter((l) => LOCATION_CHECK_STATUSES.has(l.status) && l.locationMatch === true)
+  );
+
+  // 고객사 위치 진단 — 기존과 "완전히 같은 쿼리"를 쓰되, 같은 고객사명은 한 번만 조회한다
+  // (같은 고객사에 여러 명이 가 있는 경우가 흔해 대부분 몇 건으로 줄어든다).
+  const diagnosisCache = new Map<string, Promise<{ latitude: number | null; longitude: number | null } | null>>();
+  function findClientForDiagnosis(name: string) {
+    let p = diagnosisCache.get(name);
+    if (!p) {
+      p = prisma.client.findFirst({ where: { name: { contains: name, mode: 'insensitive' } } });
+      diagnosisCache.set(name, p);
+    }
+    return p;
+  }
 
   const board = await Promise.all(
     users.map(async (u) => {
-      const statusOnDay = await prisma.statusChangeLog.findFirst({
-        where: { userId: u.id, changedAt: { gte: dayStart, lt: dayEnd } },
-        orderBy: { changedAt: 'desc' },
-      });
-      const checkinOnDay = await prisma.residentCheckin.findFirst({
-        where: { userId: u.id, checkinAt: { gte: dayStart, lt: dayEnd } },
-        orderBy: { checkinAt: 'desc' },
-      });
+      const statusOnDay = statusByUser.get(u.id) ?? null;
+      const checkinOnDay = checkinByUser.get(u.id) ?? null;
       // 퇴근했으면 상황판에서 "마지막 상태" 대신 "퇴근완료"로 보여줄 수 있게 별도로 알려준다.
       // 단, 야간작업자는 퇴근 후에도 계속 상태를 등록할 수 있으므로, 퇴근시각 이후 새로 등록된
       // 상태가 있으면(=야간작업 등) 그 상태를 그대로 보여주고 "퇴근완료"로 덮어쓰지 않는다.
-      const attendanceOnDay = await prisma.attendanceRecord.findUnique({
-        where: { userId_workDate: { userId: u.id, workDate: workDateLabel } },
-      });
+      const attendanceOnDay = attendanceByUser.get(u.id) ?? null;
       const clockedOut = Boolean(attendanceOnDay?.clockOutAt)
         && (!statusOnDay || statusOnDay.changedAt <= attendanceOnDay!.clockOutAt!);
       // note가 비어있는데 상태가 공수 대상(EFFORT_STATUSES)이면, 세부폼 제출 전이라도 이미
       // 남아있을 수 있는 effort_logs의 고객사명을 대신 조회해서 보여준다(위 EFFORT_STATUSES 주석 참고).
       const needsEffortFallback = !statusOnDay?.note && statusOnDay?.status && EFFORT_STATUSES.has(statusOnDay.status);
-      const fallbackEffort = needsEffortFallback
-        ? await prisma.effortLog.findFirst({ where: { userId: u.id, workDate: workDateLabel }, orderBy: { startTime: 'desc' } })
-        : null;
-      // 2026-09-09: 상황판 위치 배지가 "그날 마지막 상태변경 로그" 1건의 locationMatch만 보고
-      // 판단하던 문제를 개선 — 위치대조 대상 상태(본사근무/고객사미팅/고객사작업)를 하루에 여러 번
-      // 등록하는 직원은, 예를 들어 오전 본사근무 등록 때 위치가 정상 확인됐어도 오후에 좌표 등록이
-      // 안 된 고객사로 재등록하면 마지막 로그만 보고 하루 종일 "위치 미확인"으로 표시됐다(관리자
-      // 문의 "위치 미확인 다수" 원인). 그날 같은 종류의 상태 등록 중 단 한 번이라도 위치 확인에
-      // 성공(locationMatch=true)한 이력이 있으면, 그 이력을 기준으로 확인됨 처리한다.
+      const fallbackEffort = needsEffortFallback ? (effortByUser.get(u.id) ?? null) : null;
+      // 2026-09-09: 그날 같은 종류의 상태 등록 중 단 한 번이라도 위치 확인에 성공(locationMatch=true)한
+      // 이력이 있으면, 그 이력을 기준으로 확인됨 처리한다(마지막 로그 1건만 보면 하루 종일 "위치 미확인"으로
+      // 표시되던 문제).
       const statusIsLocationChecked = Boolean(statusOnDay?.status && LOCATION_CHECK_STATUSES.has(statusOnDay.status));
       const bestLocationLogToday = statusIsLocationChecked && statusOnDay?.locationMatch !== true
-        ? await prisma.statusChangeLog.findFirst({
-            where: {
-              userId: u.id,
-              changedAt: { gte: dayStart, lt: dayEnd },
-              // 2026-09-19: 위 LOCATION_CHECK_STATUSES를 그대로 spread하면 string[]로 넓혀져 Prisma의
-              // AttendanceStatus enum 타입과 안 맞을 수 있어(로컬 스텁은 못 잡고 실제 서버 빌드에서만
-              // 걸리는 유형 — attendance.routes.ts에서도 겪음) 안전하게 리터럴로 나열한다. 이 네 값은
-              // 위 LOCATION_CHECK_STATUSES 정의와 반드시 같이 유지되어야 한다.
-              status: { in: ['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK'] },
-              locationMatch: true,
-            },
-            orderBy: { changedAt: 'desc' },
-          })
+        ? (bestLocationByUser.get(u.id) ?? null)
         : null;
       const effectiveLocationMatch = bestLocationLogToday
         ? true
@@ -115,15 +148,11 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
       const effectiveLocationCaptureStatus = bestLocationLogToday
         ? (bestLocationLogToday.locationCaptureStatus ?? 'OK')
         : (statusOnDay?.locationCaptureStatus ?? null);
-      // 2026-09-16: 위치 판정에 이미 반영된 GPS 오차범위를 상황판에도 같이 보여준다 — "위치
-      // 불일치"인데 오차범위 자체가 컸는지(애매한 케이스)와 오차범위가 작은데도 멀리 떨어진 것인지
-      // (명백한 불일치)를 관리자가 구분할 수 있게 한다.
+      // 2026-09-16: 위치 판정에 이미 반영된 GPS 오차범위를 상황판에도 같이 보여준다.
       const effectiveLocationAccuracyMeters = bestLocationLogToday
         ? bestLocationLogToday.locationAccuracyMeters
         : (statusOnDay?.locationAccuracyMeters ?? checkinOnDay?.locationAccuracyMeters ?? null);
-      // 2026-09-18: "불일치 건만 좌표 저장" 정책 — 위와 동일한 방식으로 "그 시점 판정에 쓰인 기록"
-      // 기준으로 뽑는다(호출부(includeMismatchCoords=false)에서는 아예 안 내려줘서 관리자 외
-      // 역할에는 응답 자체에 포함되지 않는다).
+      // 2026-09-18: "불일치 건만 좌표 저장" 정책 — 관리자 역할 요청일 때만 채운다.
       const effectiveMismatchLatitude = includeMismatchCoords
         ? (bestLocationLogToday
             ? bestLocationLogToday.mismatchLatitude
@@ -135,27 +164,15 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
             : (statusOnDay?.mismatchLongitude ?? checkinOnDay?.mismatchLongitude ?? null))
         : undefined;
 
-      // 2026-09-17: "위치 미확인"이 매일 10명 넘게 반복된다는 지적으로 원인을 다시 살펴보니,
-      // 상당수가 GPS 정확도 문제가 아니라 그날 등록한 고객사 자체가 아직 시스템에 없거나(오타/신규
-      // 임시등록) 등록은 돼 있어도 좌표가 비어있어서(attendance.routes.ts의 checkLocationMatch가
-      // client를 못 찾거나 client.latitude/longitude가 null이면 그냥 null을 반환) 애초에 대조를
-      // 시도조차 못 하는 경우였다. 지금까지는 이 경우와 "GPS 캡처 실패"가 똑같이 "위치 미확인"
-      // 배지 하나로만 보여서 관리자가 원인을 구분할 방법이 없었다 — 여기서 실제로 어떤 경우인지
-      // 판정해서 내려주면 프론트가 "이 고객사 좌표를 등록해주세요" 같은 구체적 조치를 안내할 수 있다.
+      // 2026-09-17: "위치 미확인"의 원인이 GPS가 아니라 고객사 미등록/좌표 없음인지 진단한다.
       const isClientLocationStatus = statusOnDay?.status === 'CLIENT_MEETING' || statusOnDay?.status === 'CLIENT_WORK';
       let clientLocationDiagnosis: 'NO_CLIENT_MATCH' | 'CLIENT_NO_COORDS' | null = null;
       let clientLocationDiagnosisName: string | null = null;
       if (isClientLocationStatus && effectiveLocationMatch !== true && statusOnDay?.siteType !== 'REMOTE') {
-        const effortForDiagnosis = fallbackEffort
-          ?? await prisma.effortLog.findFirst({ where: { userId: u.id, workDate: workDateLabel }, orderBy: { startTime: 'desc' } });
+        const effortForDiagnosis = fallbackEffort ?? (effortByUser.get(u.id) ?? null);
         const diagnosisClientName = effortForDiagnosis?.clientName?.trim();
         if (diagnosisClientName) {
-          // attendance.routes.ts와 동일한 방식(이름 부분일치, 대소문자 무시)으로 다시 찾아본다 —
-          // 그 등록 순간에 어떤 지점(clientId)을 정확히 골랐는지는 저장돼 있지 않아 완벽히 같은
-          // 결과를 보장할 순 없지만, "아예 없음/좌표 없음" 여부를 가리기엔 충분하다.
-          const matchedClient = await prisma.client.findFirst({
-            where: { name: { contains: diagnosisClientName, mode: 'insensitive' } },
-          });
+          const matchedClient = await findClientForDiagnosis(diagnosisClientName);
           if (!matchedClient) {
             clientLocationDiagnosis = 'NO_CLIENT_MATCH';
           } else if (matchedClient.latitude == null || matchedClient.longitude == null) {
@@ -179,38 +196,20 @@ async function buildStatusBoard(userIds?: string[], forDate: Date = dateOnlyUTC(
         locationMatch: effectiveLocationMatch,
         locationDistanceMeters: effectiveLocationDistanceMeters,
         locationAccuracyMeters: effectiveLocationAccuracyMeters,
-        // 2026-09-02: locationMatch가 null인 이유를 상황판에서 구분해서 보여주기 위해 추가.
-        // (1) 위치확인 자체를 안 하는 상태(재택/출장 등)라 애초에 시도조차 안 한 건지,
-        // (2) 동의는 했는데 그 순간 캡처가 실패했는지(권한거부/시간초과 등, ResidentCheckin에는
-        //     이 값이 없어 그 경우는 항상 null), (3) 애초에 동의를 안 해서 시도조차 못 한 건지 —
-        // 프론트에서 이 값과 아래 동의 여부를 같이 보고 판단한다.
-        // (2026-09-09: 위 bestLocationLogToday로 하루 중 확인 성공 이력이 있으면 이 값도 그
-        // 성공 이력 기준(대개 'OK')으로 맞춰 내려간다 — 실제로는 확인됐는데 문구만 미확인으로
-        // 보이는 걸 막기 위함.)
+        // 위치대조 결과가 null인 이유(시도 안 함/캡처 실패/미동의)를 프론트가 구분하는 데 쓴다.
         locationCaptureStatus: effectiveLocationCaptureStatus,
-        // 2026-09-18: 관리자(HR_ADMIN/SYSTEM_ADMIN) 요청일 때만 값이 채워진다(그 외엔 undefined라
-        // 응답 JSON에서 아예 빠짐) — "위치 불일치" 건에 한해서만 값이 있고, 일치/미확인 건은 항상
-        // null이다(buildMismatchCoords 원칙, common/location.ts 참고).
         mismatchLatitude: effectiveMismatchLatitude,
         mismatchLongitude: effectiveMismatchLongitude,
-        // 2026-09-17: 위에서 계산한 "왜 위치대조가 아예 불가능했는지" 진단 — null이면 이 원인이
-        // 아니라는 뜻(GPS 캡처 실패 등 기존 사유로 봐야 함).
         clientLocationDiagnosis,
         clientLocationDiagnosisName,
-        // 2026-09-09: "원격"(재택/원격지원 등)으로 등록된 고객사미팅/작업은 현장에 있을 필요가
-        // 없어서 attendance.routes.ts가 위치대조 자체를 건너뛴다 — 그 결과 locationMatch가 null로
-        // 남는 게 정상인데, 프론트가 이 값을 몰라서 "위치 미확인"으로 잘못 flag하고 있었다(관리자
-        // 문의로 발견, 예: 손세기 사원 코람코자산운용 "원격" 등록 건). 프론트에서 이 값을 보고
-        // 원격 등록은 위치대조 대상에서 아예 제외하도록 내려준다.
+        // "원격" 등록은 위치대조 대상이 아니다(프론트가 이 값을 보고 제외).
         siteType: statusOnDay?.siteType ?? null,
         locationConsentGiven: u.locationConsentAt != null,
         privacyConsentGiven: u.privacyConsentAt != null,
         lastConfirmedAt: checkinOnDay?.lastConfirmedAt ?? null,
         clockedOut,
         clockOutAt: attendanceOnDay?.clockOutAt ?? null,
-        // 2026-09-16: "출근" 버튼만 누르고 그날 상태를 직접 고른 적이 없어 잠정으로 HQ_WORKING이
-        // 채워진 기록인지 여부 — 상황판(admin/dashboard.tsx)이 이 값을 보고 "본사근무로 확정됨"과
-        // "아직 확인 대기중"을 구분해서 보여준다(라벨은 본사근무인데 거리는 수십km인 모순 표시 방지).
+        // "출근" 버튼만 누르고 상태를 고른 적이 없어 잠정 HQ_WORKING으로 채워진 기록인지 여부.
         isProvisional: statusOnDay?.note === PROVISIONAL_HQ_NOTE,
       };
     })
@@ -338,7 +337,12 @@ dashboardRouter.get('/day', async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'date(YYYY-MM-DD)가 필요합니다.' } });
   }
+  // 2026-09-30 수정: 정규식만으로는 "9999-99-99" 같은 값이 통과해 Invalid Date가 되고, 그 값이
+  // Prisma where로 넘어가 async 핸들러에서 예외(→ 프로세스 종료)로 이어질 수 있었다.
   const forDate = new Date(`${parsed.data.date}T00:00:00.000Z`);
+  if (Number.isNaN(forDate.getTime())) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'date(YYYY-MM-DD)가 올바르지 않습니다.' } });
+  }
   const board = await buildStatusBoard(undefined, forDate, canViewMismatchCoords(req));
   const summary: Record<string, number> = {};
   for (const row of board) {

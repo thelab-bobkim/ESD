@@ -18,12 +18,23 @@ import { getPolicyString } from './policy-engine/policy-engine';
 // 건드리지 않는다(별도 세션으로 새로 만듦 — 옛 세션은 관리자가 나중에 확인/정리).
 const IN_PROGRESS_CONTINUE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+// 2026-09-30 수정(High): 위 24시간 창만으로는 부족했다 — 같은 날 18:30에 "시작시간만" 입력해둔
+// 세션을 방치한 채, 몇 시간 뒤 완전히 다른 야간작업(22:00~23:30)을 상세폼으로 등록하면 그 방치된
+// 세션을 그대로 이어받아, 시작시각은 18:30 그대로인데 종료시각만 23:30이 되어 근무시간이 5시간으로
+// 부풀려지고 그만큼 대체휴무 전환 후보(DRAFT)가 자동 생성됐다.
+// "이어받기"의 정당한 용도는 "방금 그 세션을 마저 완료 처리하는 것"뿐이므로, 새로 입력한 시작시각과
+// 사실상 같은 세션일 때만 이어받는다(프론트가 /attendance/effort/in-progress로 받아 되채운 시작시각은
+// HH:MM 반올림 때문에 몇 초 차이가 날 수 있어 5분 허용).
+const IN_PROGRESS_MATCH_TOLERANCE_MS = 5 * 60 * 1000;
+
 async function findResubmitTarget(userId: string, startedAt: Date, endedAt: Date | null) {
   const inProgress = await prisma.nightWorkSession.findFirst({
     where: { userId, status: 'IN_PROGRESS', startedAt: { gte: new Date(Date.now() - IN_PROGRESS_CONTINUE_WINDOW_MS) } },
     orderBy: { startedAt: 'desc' },
   });
-  if (inProgress) return inProgress;
+  if (inProgress && Math.abs(inProgress.startedAt.getTime() - startedAt.getTime()) <= IN_PROGRESS_MATCH_TOLERANCE_MS) {
+    return inProgress;
+  }
   if (!endedAt) return null;
   return prisma.nightWorkSession.findFirst({
     where: { userId, startedAt, endedAt, status: 'COMPLETED' },

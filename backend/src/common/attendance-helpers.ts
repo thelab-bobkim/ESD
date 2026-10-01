@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { prisma } from './prisma';
 import { getPolicyNumber, getPolicyJSON, getPolicyString } from './policy-engine/policy-engine';
 
@@ -216,8 +217,14 @@ export async function checkMinWorkedMinutes(
  * earlyLeaveReason: 최소근무시간 미충족 상태로 확정하는 경우의 사유(본인이 입력했거나, 관리자
  * 승인 시 남긴 코멘트) — /clock-out과 동일하게 근태기록에 남겨서 왜 짧게 확정됐는지 추적 가능하게 한다.
  */
-export async function applyAttendanceCorrection(correctionRequestId: string, earlyLeaveReason?: string) {
-  const correction = await prisma.attendanceCorrectionRequest.findUnique({
+export async function applyAttendanceCorrection(
+  correctionRequestId: string,
+  earlyLeaveReason?: string,
+  // 2026-09-30 수정(Medium): 승인 처리처럼 여러 쓰기를 한 트랜잭션으로 묶어야 하는 호출부가
+  // 이 함수를 그대로 재사용할 수 있도록 클라이언트를 주입받는다(기본값은 전역 prisma).
+  client: Prisma.TransactionClient = prisma
+) {
+  const correction = await client.attendanceCorrectionRequest.findUnique({
     where: { id: correctionRequestId },
     include: { attendanceRecord: { include: { breakSessions: true } } },
   });
@@ -230,7 +237,7 @@ export async function applyAttendanceCorrection(correctionRequestId: string, ear
   // /clock-out을 다시 정상적으로 탈 수 있게 한다(단, isCorrected/correctionReason은 남겨서
   // "이 기록은 한 번 정정됐다"는 흔적을 감사로그와 별개로 근태 기록 자체에도 남긴다).
   if (correction.type === 'CANCEL_CLOCK_OUT') {
-    const updatedRecord = await prisma.attendanceRecord.update({
+    const updatedRecord = await client.attendanceRecord.update({
       where: { id: targetRecord.id },
       data: {
         clockOutAt: null,
@@ -242,7 +249,7 @@ export async function applyAttendanceCorrection(correctionRequestId: string, ear
         correctionReason: correction.reason,
       },
     });
-    await prisma.attendanceCorrectionRequest.update({ where: { id: correction.id }, data: { status: 'APPROVED' } });
+    await client.attendanceCorrectionRequest.update({ where: { id: correction.id }, data: { status: 'APPROVED' } });
     return { updatedRecord, totalWorkedMinutes: null as number | null, correction };
   }
 
@@ -258,7 +265,7 @@ export async function applyAttendanceCorrection(correctionRequestId: string, ear
   const lunchBreakMinutes = await getLunchBreakMinutes();
   const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes - lunchBreakMinutes);
 
-  const updatedRecord = await prisma.attendanceRecord.update({
+  const updatedRecord = await client.attendanceRecord.update({
     where: { id: targetRecord.id },
     data: {
       clockOutAt: proposedClockOutAt,
@@ -268,7 +275,7 @@ export async function applyAttendanceCorrection(correctionRequestId: string, ear
       ...(earlyLeaveReason ? { earlyLeaveReason } : {}),
     },
   });
-  await prisma.attendanceCorrectionRequest.update({ where: { id: correction.id }, data: { status: 'APPROVED' } });
+  await client.attendanceCorrectionRequest.update({ where: { id: correction.id }, data: { status: 'APPROVED' } });
 
   return { updatedRecord, totalWorkedMinutes: totalWorkedMinutes as number | null, correction };
 }

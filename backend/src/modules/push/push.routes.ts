@@ -1,10 +1,10 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { isPushConfigured } from '../../common/push';
 
-export const pushRouter = Router();
+export const pushRouter = createRouter();
 pushRouter.use(requireAuth);
 
 /** 프론트엔드가 구독을 만들 때 필요한 VAPID 공개키 */

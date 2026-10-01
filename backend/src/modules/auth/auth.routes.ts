@@ -1,12 +1,89 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { authenticator } from 'otplib';
 import QRCode from 'qrcode';
 import { prisma } from '../../common/prisma';
 import { requireAuth, signAccessToken, signAuditPendingToken, verifyAuditPendingToken } from '../../common/guards/auth';
+import { recordAuditLog } from '../../common/audit';
 
-export const authRouter = Router();
+/**
+ * 2026-09-30 수정(M-7): 사번+이름만으로 비밀번호를 설정/재설정하는 셀프서비스는 "전 직원이 스스로
+ * 해결"하려는 운영 요구(2026-09-04) 때문에 경로 자체는 유지한다. 대신 악용을 어렵게 만드는 장치를 더한다.
+ *  1) 계정 존재 여부/이름 일치 여부를 구분해서 알려주지 않는다 — 예전엔 "사번 없음(404)"과
+ *     "이름 불일치(401)"를 따로 응답해서, 사번 목록만으로 재직자 이름을 한 명씩 맞혀볼 수 있었다.
+ *  2) 계정 단위 실패 잠금 — IP 제한(app.ts)만으로는 여러 IP로 나눈 시도를 못 막는다.
+ *  3) 관리자 권한(HR_ADMIN/SYSTEM_ADMIN) 계정은 셀프 재설정 불가 — 이름만 알면 관리자 비밀번호를
+ *     바꿔 관리자 권한을 가로챌 수 있었다(감사인 계정을 막은 것과 같은 이유).
+ *  4) 성공/실패를 감사로그에 남긴다 — 예전엔 console.log뿐이라 사후 추적이 어려웠다.
+ */
+const SELF_SERVICE_BLOCKED_ROLES = new Set(['AUDITOR', 'HR_ADMIN', 'SYSTEM_ADMIN']);
+const SELF_SERVICE_MAX_FAILURES = 5;
+const SELF_SERVICE_LOCK_MS = 30 * 60_000;
+const SELF_SERVICE_GENERIC_MISMATCH = '사번 또는 이름이 올바르지 않습니다. 다시 확인해주세요.';
+
+type SelfServiceUser = {
+  id: string;
+  name: string;
+  employmentStatus: string;
+  failedLoginAttempts: number;
+  lockedUntil: Date | null;
+  userRoles: { role: { code: string } }[];
+};
+
+/**
+ * 셀프 등록/재설정 공통 본인확인. 실패 시 응답을 직접 보내고 null을 돌려준다.
+ * 이름 불일치는 계정 잠금 카운터(로그인과 같은 필드)를 올린다 — 실제 사용자라면 이름을 틀릴 일이
+ * 거의 없으므로, 반복 불일치는 추측 공격으로 본다.
+ */
+async function verifySelfServiceIdentity(
+  req: import('express').Request,
+  res: import('express').Response,
+  employeeNo: string,
+  name: string,
+  action: 'register' | 'reset'
+): Promise<SelfServiceUser | null> {
+  const user = (await prisma.user.findUnique({
+    where: { employeeNo },
+    include: { userRoles: { include: { role: true } } },
+  })) as SelfServiceUser | null;
+  const ip = req.ip;
+  if (!user) {
+    await recordAuditLog({ actorUserId: null, actionType: 'STATUS_CHANGE', targetType: `self_service_${action}_failed`, afterValue: { employeeNo, reason: 'NO_USER', ip } });
+    res.status(401).json({ success: false, error: { code: 'MISMATCH', message: SELF_SERVICE_GENERIC_MISMATCH } });
+    return null;
+  }
+  if (user.lockedUntil && user.lockedUntil > new Date()) {
+    res.status(423).json({ success: false, error: { code: 'ACCOUNT_LOCKED', message: '확인 실패가 반복되어 잠시 잠겼습니다. 30분 뒤 다시 시도하거나 관리자에게 문의해주세요.' } });
+    return null;
+  }
+  if (user.name.trim() !== name.trim()) {
+    const attempts = user.failedLoginAttempts + 1;
+    const shouldLock = attempts >= SELF_SERVICE_MAX_FAILURES;
+    await prisma.user.update({
+      where: { id: user.id },
+      data: shouldLock ? { failedLoginAttempts: 0, lockedUntil: new Date(Date.now() + SELF_SERVICE_LOCK_MS) } : { failedLoginAttempts: attempts },
+    });
+    await recordAuditLog({ actorUserId: null, actionType: 'STATUS_CHANGE', targetType: `self_service_${action}_failed`, targetId: user.id, afterValue: { reason: 'NAME_MISMATCH', locked: shouldLock, ip } });
+    res.status(401).json({ success: false, error: { code: 'MISMATCH', message: SELF_SERVICE_GENERIC_MISMATCH } });
+    return null;
+  }
+  if (user.employmentStatus !== 'ACTIVE') {
+    res.status(403).json({ success: false, error: { code: 'ACCOUNT_INACTIVE', message: '재직 상태가 아닌 계정입니다. 관리자에게 문의해주세요.' } });
+    return null;
+  }
+  if (user.userRoles.some((ur) => SELF_SERVICE_BLOCKED_ROLES.has(ur.role.code))) {
+    await recordAuditLog({ actorUserId: null, actionType: 'STATUS_CHANGE', targetType: `self_service_${action}_blocked`, targetId: user.id, afterValue: { reason: 'PRIVILEGED_ACCOUNT', ip } });
+    res.status(403).json({
+      success: false,
+      error: { code: 'AUDITOR_SELF_SERVICE_DISABLED', message: '관리자·감사인 계정은 이 화면에서 비밀번호를 설정할 수 없습니다. 시스템 관리자에게 문의해주세요.' },
+    });
+    return null;
+  }
+  return user;
+}
+
+export const authRouter = createRouter();
 
 /**
  * 2026-09-20: "감사인 계정은 따로 빼서"(대표이사 요청) — AUDITOR 역할은 DB(UserRole)에는 남아있어도,
@@ -43,16 +120,12 @@ authRouter.post('/register-password', async (req, res) => {
   }
   const { employeeNo, name, newPassword } = parsed.data;
 
-  const user = await prisma.user.findUnique({
-    where: { employeeNo },
+  const verified = await verifySelfServiceIdentity(req, res, employeeNo, name, 'register');
+  if (!verified) return;
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: verified.id },
     include: { userRoles: { include: { role: true } } },
   });
-  if (!user) {
-    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '사번을 찾을 수 없습니다. 사번을 다시 확인해주세요.' } });
-  }
-  if (user.name.trim() !== name.trim()) {
-    return res.status(401).json({ success: false, error: { code: 'MISMATCH', message: '사번과 이름이 일치하지 않습니다.' } });
-  }
   if (!user.mustChangePassword) {
     return res.status(400).json({
       success: false,
@@ -76,8 +149,9 @@ authRouter.post('/register-password', async (req, res) => {
   const newHash = await bcrypt.hash(newPassword, 10);
   await prisma.user.update({
     where: { id: user.id },
-    data: { passwordHash: newHash, mustChangePassword: false },
+    data: { passwordHash: newHash, mustChangePassword: false, failedLoginAttempts: 0, lockedUntil: null },
   });
+  await recordAuditLog({ actorUserId: user.id, actionType: 'STATUS_CHANGE', targetType: 'self_service_register_success', targetId: user.id, afterValue: { ip: req.ip } });
 
   const roles = rolesExcludingAuditor(user.userRoles.map((ur) => ur.role.code));
   const token = signAccessToken({ userId: user.id, roles, departmentId: user.departmentId, tokenVersion: user.tokenVersion });
@@ -119,16 +193,12 @@ authRouter.post('/reset-password', async (req, res) => {
   }
   const { employeeNo, name, newPassword } = parsed.data;
 
-  const user = await prisma.user.findUnique({
-    where: { employeeNo },
+  const verified = await verifySelfServiceIdentity(req, res, employeeNo, name, 'reset');
+  if (!verified) return;
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: verified.id },
     include: { userRoles: { include: { role: true } } },
   });
-  if (!user) {
-    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '사번을 찾을 수 없습니다. 사번을 다시 확인해주세요.' } });
-  }
-  if (user.name.trim() !== name.trim()) {
-    return res.status(401).json({ success: false, error: { code: 'MISMATCH', message: '사번과 이름이 일치하지 않습니다.' } });
-  }
   // 2026-09-30 보안수정(치명적): register-password와 같은 이유로 AUDITOR 계정은 셀프 재설정 대상에서
   // 제외한다 — 이 엔드포인트가 막아주는 건 "그 비밀번호로 일반 토큰에 AUDITOR 권한이 실리는 것"
   // 뿐인데, 공격자가 사번+이름(비밀글 아님)만으로 비밀번호 자체를 바꿔버리면 그 새 비밀번호로
@@ -155,6 +225,7 @@ authRouter.post('/reset-password', async (req, res) => {
   });
   // eslint-disable-next-line no-console
   console.log(`[PasswordReset] ${updated.employeeNo}(${updated.name}) 비밀번호 셀프 재설정`);
+  await recordAuditLog({ actorUserId: updated.id, actionType: 'STATUS_CHANGE', targetType: 'self_service_reset_success', targetId: updated.id, afterValue: { ip: req.ip } });
 
   const roles = rolesExcludingAuditor(user.userRoles.map((ur: { role: { code: string } }) => ur.role.code));
   const token = signAccessToken({ userId: updated.id, roles, departmentId: updated.departmentId, tokenVersion: updated.tokenVersion });
@@ -219,6 +290,11 @@ authRouter.post('/login', async (req, res) => {
         : { failedLoginAttempts: attempts },
     });
     return res.status(401).json({ success: false, error: { code: 'INVALID_CREDENTIALS', message: '아이디 또는 비밀번호가 올바르지 않습니다.' } });
+  }
+  // 2026-09-30 수정(High): 비밀번호가 맞아도 재직 상태가 아니면 토큰을 주지 않는다 — 예전엔
+  // 다우오피스 동기화로 TERMINATED 처리된 퇴사자도 계속 로그인해 근태/공수 데이터를 만들 수 있었다.
+  if (user.employmentStatus !== 'ACTIVE') {
+    return res.status(403).json({ success: false, error: { code: 'ACCOUNT_INACTIVE', message: '재직 상태가 아닌 계정입니다. 관리자에게 문의해주세요.' } });
   }
   // 2026-09-04: "앱을 실제로 쓰는지" 관리자가 확인할 수 있게 로그인 성공 시각을 남긴다
   // (admin/board-scope 화면 참고). 실패 카운터 초기화가 필요 없는 경우에도 이 값은 항상 갱신한다.
@@ -320,6 +396,10 @@ authRouter.post('/audit-login', async (req, res) => {
         : { failedLoginAttempts: attempts },
     });
     return res.status(401).json({ success: false, error: { code: 'INVALID_CREDENTIALS', message: '아이디 또는 비밀번호가 올바르지 않습니다.' } });
+  }
+  // 2026-09-30 수정(High): 감사인 전용 로그인도 재직 상태를 확인한다(일반 로그인과 동일한 이유).
+  if (user.employmentStatus !== 'ACTIVE') {
+    return res.status(403).json({ success: false, error: { code: 'ACCOUNT_INACTIVE', message: '재직 상태가 아닌 계정입니다. 관리자에게 문의해주세요.' } });
   }
 
   if (!user.auditorTotpEnabledAt) {

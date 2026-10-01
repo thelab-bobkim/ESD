@@ -25,6 +25,11 @@ export interface EffortInput {
   startTime: Date;
   endTime: Date | null;
   description?: string;
+  // ESD 2.0 (2026-10-01 추가): 등록된 프로젝트/Task를 선택한 경우의 구조화된 FK. projectName은
+  // projectId가 있을 때 이미 호출측(attendance.routes.ts)에서 DB 정식 명칭으로 치환되어 들어온다 —
+  // 이 모듈은 그 값을 그대로 저장만 하고, 클라이언트 신뢰 여부를 다시 판단하지 않는다.
+  projectId?: string;
+  taskId?: string;
 }
 
 /**
@@ -59,11 +64,16 @@ async function findResubmitTarget(userId: string, status: string, data: EffortIn
   // 기록은 통째로 사라지고 B사 근무시간이 A사 시작시각부터로 부풀려지는 문제가 있었다(같은 문제를
   // StatusChangeLog 쪽은 이미 "직전 로그의 상태가 같을 때만 갱신"으로 막아뒀는데, 여기 공수기록
   // 쪽엔 그 대응하는 고객사 일치 조건이 빠져 있었다). 같은 고객사·같은 상태일 때만 이어받는다.
+  // ESD 2.0 (2026-10-01 추가): 등록된 프로젝트를 선택한 경우, 같은 고객사라도 다른 프로젝트로
+  // 전환했으면(또는 프로젝트 선택을 아예 껐으면) 별개 작업으로 보고 이어받지 않는다 — null도 명시적
+  // 값으로 비교해서, "프로젝트 미선택" 기록과 "특정 프로젝트" 기록이 서로 잘못 합쳐지지 않게 한다.
+  const projectIdForMatch = data.projectId ?? null;
   const openEntry = await prisma.effortLog.findFirst({
     where: {
       userId,
       sourceStatus: status,
       clientName: data.clientName,
+      projectId: projectIdForMatch,
       endTime: null,
       startTime: { gte: new Date(Date.now() - CONTINUE_WINDOW_MS) },
     },
@@ -76,6 +86,7 @@ async function findResubmitTarget(userId: string, status: string, data: EffortIn
       userId,
       sourceStatus: status,
       clientName: data.clientName,
+      projectId: projectIdForMatch,
       startTime: data.startTime,
       endTime: data.endTime,
       createdAt: { gte: new Date(Date.now() - CONTINUE_WINDOW_MS) },
@@ -100,6 +111,8 @@ export async function recordEffort(userId: string, status: string, data: EffortI
         minutes,
         actualMinutes,
         description: data.description,
+        projectId: data.projectId ?? null,
+        taskId: data.taskId ?? null,
       },
     });
   }
@@ -119,6 +132,8 @@ export async function recordEffort(userId: string, status: string, data: EffortI
       actualMinutes,
       description: data.description,
       sourceStatus: status,
+      projectId: data.projectId ?? null,
+      taskId: data.taskId ?? null,
     },
   });
 }

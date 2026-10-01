@@ -86,6 +86,17 @@ export const MISMATCH_COORD_RETENTION_DAYS = 30;
 export const REMOTE_AUDIT_COORD_RETENTION_DAYS = 180;
 
 /**
+ * 2026-09-30 추가(M-16): 재택 원본 좌표 보관기간을 정책값(REMOTE_AUDIT_COORD_RETENTION_DAYS)으로
+ * 조정할 수 있게 한다 — 위 주석대로 30일을 넘는 보관은 취업규칙·처리방침 명시와 법무 검토가 전제이므로,
+ * 검토 결과에 따라 코드 배포 없이 즉시 줄일 수 있어야 한다. 안전을 위해 "줄이는 방향"만 허용한다
+ * (정책값이 180보다 크거나 잘못된 값이면 180을 쓴다 — 실수로 보관기간이 늘어나는 일이 없도록).
+ */
+export function clampRemoteAuditRetentionDays(policyValue: number): number {
+  if (!Number.isFinite(policyValue) || policyValue < 1) return REMOTE_AUDIT_COORD_RETENTION_DAYS;
+  return Math.min(Math.floor(policyValue), REMOTE_AUDIT_COORD_RETENTION_DAYS);
+}
+
+/**
  * "불일치 건만 좌표 저장" 정책(2026-09-18, 사용자 승인) 전용 헬퍼.
  *
  * 근무 태만(위치 확인이 안 되는 허점을 이용한 무단 이탈 등) 방지를 위해, 딱 하나의 예외만

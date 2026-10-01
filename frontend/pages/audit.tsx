@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
-import { apiFetch, clearToken, isAuthExpiredError } from '@/lib/api';
+import { apiFetch, clearToken, isAuthExpiredError, truncationNotice } from '@/lib/api';
 
 interface RemoteAuditEntry {
   id: string;
@@ -28,6 +28,8 @@ export default function AuditPage() {
   const router = useRouter();
   const [entries, setEntries] = useState<RemoteAuditEntry[] | null>(null);
   const [retentionDays, setRetentionDays] = useState<number | null>(null);
+  // 2026-09-30(M-3): 서버 상한(500건)으로 잘렸는지 — 감사 화면이라 "기록 없음"으로 오해하지 않게 알린다.
+  const [truncatedLimit, setTruncatedLimit] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   // 2026-09-30 수정: "새로고침" 버튼에 중복클릭 방지가 없고, 첫 마운트 시 useEffect가 이미
@@ -42,10 +44,11 @@ export default function AuditPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await apiFetch<{ retentionDays: number; entries: RemoteAuditEntry[] }>('/audit-location/remote');
+      const res = await apiFetch<{ retentionDays: number; truncated?: boolean; limit?: number; entries: RemoteAuditEntry[] }>('/audit-location/remote');
       if (loadRequestRef.current !== requestId) return;
       setEntries(res.entries);
       setRetentionDays(res.retentionDays);
+      setTruncatedLimit(res.truncated ? (res.limit ?? null) : null);
     } catch (err) {
       if (loadRequestRef.current !== requestId) return;
       // 2026-09-30 수정: '권한'이라는 단어만으로 판단하면, 감사인 권한 자체는 유효한데 다른 이유로
@@ -93,6 +96,7 @@ export default function AuditPage() {
         {retentionDays != null && ` 보관기간은 ${retentionDays}일이며, 그보다 오래된 기록은 자동삭제되어 나타나지 않습니다.`}
       </p>
       {error && <div className="error">{error}</div>}
+      {truncatedLimit != null && <div className="error">⚠️ {truncationNotice(truncatedLimit)}</div>}
 
       <div className="stat-row">
         <div className="stat-card">

@@ -102,6 +102,10 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
   const [supportRequest, setSupportRequest] = useState('');
   const [unloggedGapReason, setUnloggedGapReason] = useState('');
   const [showWorkLogError, setShowWorkLogError] = useState(false);
+  // 2026-09-30 수정: 서버가 퇴근 확정을 거절한 사유(예: 미등록 공백시간 사유 누락)를 모달 안에
+  // 보여주기 위한 상태 — 예전엔 실패해도 모달이 그냥 닫혀서, 방금 입력한 업무일지가 사라지고
+  // 페이지 뒤쪽 메시지도 모달에 가려 보이지 않았다.
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,6 +170,7 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
       setShowWorkLogError(true);
       return false;
     }
+    setSubmitError(null);
     setSubmitting(true);
     try {
       const result = locationResult === 'checking' ? { status: 'TIMEOUT' as const, address: null, accuracyMeters: null } : locationResult;
@@ -189,6 +194,11 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
         },
       });
       return true;
+    } catch (err) {
+      // 2026-09-30 수정: 서버가 거절하면 모달을 닫지 않고 그 사유를 안에서 보여준다 —
+      // 작성한 업무일지/사유가 사라지지 않게 하기 위함(호출부가 에러를 다시 던져준다).
+      setSubmitError(err instanceof Error ? err.message : '퇴근 처리에 실패했습니다.');
+      return false;
     } finally {
       setSubmitting(false);
     }
@@ -347,6 +357,12 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
             </div>
           )}
         </div>
+
+        {submitError && (
+          <div style={{ background: 'rgba(239,68,68,0.14)', border: '1px solid #7f1d1d', borderRadius: 8, padding: '10px 12px', fontSize: 12.5, color: '#f87171', marginBottom: 12, lineHeight: 1.6 }}>
+            ⚠ {submitError}
+          </div>
+        )}
 
         {/* 2026-09-16: "퇴근을 잘못 눌렀다"는 신고(채수권·윤유상 등)가 반복돼서, 되돌릴 수 없다고
             안내만 하던 탭 버튼을 밀어서 확정하는 슬라이더로 바꿨다 — 뜬 직후 잠깐은 밀어도 반응하지

@@ -75,6 +75,23 @@ export default function AdminBoardScopePage() {
     }
   }
 
+  // 2026-09-30(M-7): 관리자 임시 비밀번호 발급 — 셀프 재설정이 막힌 관리자·감사인 계정이나 잠긴 직원을 위한
+  // 공식 경로. SYSTEM_ADMIN만 가능(서버가 403으로 거부하면 그 안내를 그대로 보여준다).
+  const [issuingId, setIssuingId] = useState<string | null>(null);
+  async function issueTemporaryPassword(u: BoardScopeUser) {
+    if (!window.confirm(`${u.name}(${u.employeeNo})님의 비밀번호를 임시 비밀번호로 초기화할까요?\n기존 로그인은 모두 끊기고, 첫 로그인 때 새 비밀번호로 바꿔야 합니다.`)) return;
+    setIssuingId(u.id);
+    setError(null);
+    try {
+      const res = await apiFetch<{ temporaryPassword: string; note: string }>(`/users/${u.id}/temporary-password`, { method: 'POST', body: JSON.stringify({}) });
+      window.prompt(`${u.name}님 임시 비밀번호 (지금 한 번만 표시됩니다 — 복사해서 전달하세요)`, res.temporaryPassword);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '임시 비밀번호 발급에 실패했습니다.');
+    } finally {
+      setIssuingId(null);
+    }
+  }
+
   const grouped = useMemo(() => {
     const q = search.trim().toLowerCase();
     const map = new Map<string, { deptName: string; rows: BoardScopeUser[] }>();
@@ -170,6 +187,7 @@ export default function AdminBoardScopePage() {
                     <th>사번</th>
                     <th>최근 로그인</th>
                     <th>알림</th>
+                    <th>비밀번호</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -201,6 +219,16 @@ export default function AdminBoardScopePage() {
                           ) : (
                             <span className="att-pill att-pill-neutral">🔕 꺼짐</span>
                           )}
+                        </td>
+                        <td>
+                          <button
+                            className="secondary"
+                            style={{ width: 'auto', margin: 0, fontSize: 12, padding: '4px 8px' }}
+                            disabled={issuingId !== null}
+                            onClick={() => issueTemporaryPassword(u)}
+                          >
+                            {issuingId === u.id ? '발급 중...' : '임시 비번 발급'}
+                          </button>
                         </td>
                       </tr>
                     );

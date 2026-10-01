@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
@@ -9,7 +9,7 @@ import { getPolicyString, setPolicyString, getPolicyJSON, setPolicyJSON } from '
 // isRequestFromOfficeNetwork가 실제 판정에 사용, 2026-09-06).
 const ipOrCidrPattern = /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/;
 
-export const clientsRouter = Router();
+export const clientsRouter = createRouter();
 clientsRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN'));
 
 /** 본사 좌표 조회 — "본사 복귀 자동감지" 기능의 기준 좌표. 미등록이면 그 기능은 비활성화된다. */

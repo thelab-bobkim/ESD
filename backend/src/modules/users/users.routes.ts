@@ -1,10 +1,12 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
+import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 
-export const usersRouter = Router();
+export const usersRouter = createRouter();
 usersRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN'));
 
 /**
@@ -211,3 +213,40 @@ function maskEmail(email: string | null): string | null {
   const visible = localPart.slice(0, 2);
   return `${visible}${'*'.repeat(Math.max(1, localPart.length - 2))}@${domain}`;
 }
+
+
+/**
+ * 2026-09-30 추가(M-7): 관리자 임시 비밀번호 발급.
+ * 셀프 재설정 대상에서 제외된 관리자·감사인 계정, 또는 셀프 재설정이 잠긴 직원을 위한 공식 경로.
+ * 무작위 임시 비밀번호를 한 번만 응답으로 돌려주고(DB에는 해시만 저장), mustChangePassword=true로
+ * 만들어 첫 로그인에서 반드시 바꾸게 한다(서버 강제, guards/auth.ts). 기존 세션은 전부 무효화한다.
+ * SYSTEM_ADMIN만 호출 가능하며 감사로그에 남긴다.
+ */
+usersRouter.post('/:id/temporary-password', requireRole('SYSTEM_ADMIN'), async (req, res) => {
+  const target = await prisma.user.findUnique({ where: { id: String(req.params.id) } }).catch(() => null);
+  if (!target) {
+    return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '직원을 찾을 수 없습니다.' } });
+  }
+  // 헷갈리는 문자(0/O, 1/l/I)를 뺀 12자 — 전화로 불러주기 쉽게.
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  const bytes = crypto.randomBytes(12);
+  const temporaryPassword = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
+  await prisma.user.update({
+    where: { id: target.id },
+    data: {
+      passwordHash: await bcrypt.hash(temporaryPassword, 10),
+      mustChangePassword: true,
+      tokenVersion: { increment: 1 },
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+    },
+  });
+  await recordAuditLog({
+    actorUserId: req.authUser!.userId,
+    actionType: 'STATUS_CHANGE',
+    targetType: 'user_temporary_password_issued',
+    targetId: target.id,
+    afterValue: { employeeNo: target.employeeNo },
+  });
+  return res.json({ success: true, data: { temporaryPassword, note: '이 비밀번호는 지금 한 번만 표시됩니다. 첫 로그인 시 반드시 변경해야 합니다.' } });
+});

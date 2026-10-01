@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, isAuthExpiredError } from '@/lib/api';
 import AdminHeader from '@/components/AdminHeader';
 
 const STATUS_META: Record<string, { label: string; icon: string; color: string }> = {
@@ -52,7 +52,8 @@ export default function AdminCalendarPage() {
     apiFetch<CalendarData>(`/dashboard/calendar?year=${year}&month=${month}`)
       .then(setCalendar)
       .catch((err) => {
-        if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰'))) router.push('/login');
+        // 2026-09-30: 문자열 매칭 대신 서버 에러코드로 판정(오탐 방지).
+        if (isAuthExpiredError(err)) router.push('/login');
         setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps

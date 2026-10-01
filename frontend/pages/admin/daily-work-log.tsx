@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, apiFetchWithMeta, isAuthExpiredError, truncationNotice } from '@/lib/api';
 import AdminHeader from '@/components/AdminHeader';
 
 /**
@@ -93,16 +93,27 @@ export default function AdminDailyWorkLogPage() {
     return params.toString();
   }
 
+  // 2026-09-30(M-3): 목록이 서버 상한으로 잘렸는지 — 잘렸으면 배너로 알린다(예전엔 조용히 잘렸다).
+  const [truncatedLimit, setTruncatedLimit] = useState<number | null>(null);
+  // 2026-09-30: 필터를 빠르게 바꿀 때 늦게 도착한 옛 응답이 최신 조회 결과를 덮지 않게 한다.
+  const loadRequestRef = useRef(0);
+
   function load() {
     const qs = buildQuery();
-    apiFetch<RowData[]>(`/daily-work-log/admin/list?${qs}`)
-      .then(setRows)
+    const requestId = ++loadRequestRef.current;
+    apiFetchWithMeta<RowData[]>(`/daily-work-log/admin/list?${qs}`)
+      .then(({ data, truncated, limit }) => {
+        if (loadRequestRef.current !== requestId) return;
+        setRows(data);
+        setTruncatedLimit(truncated ? limit : null);
+      })
       .catch((err) => {
-        if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰'))) router.push('/login');
+        if (loadRequestRef.current !== requestId) return;
+        if (isAuthExpiredError(err)) router.push('/login');
         setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
       });
     apiFetch<SummaryData>(`/daily-work-log/admin/summary?${qs}`)
-      .then(setSummary)
+      .then((s) => { if (loadRequestRef.current === requestId) setSummary(s); })
       .catch(() => {});
   }
 
@@ -122,6 +133,7 @@ export default function AdminDailyWorkLogPage() {
         모인 방문 고객사·작업내용을 한눈에 봅니다. 상세형은 고객사/현장 근무일에 자동 판정된 항목입니다.
       </p>
       {error && <div className="error">{error}</div>}
+      {truncatedLimit != null && <div className="notice-inline-orange">⚠️ {truncationNotice(truncatedLimit)}</div>}
 
       <div className="card">
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>

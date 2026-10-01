@@ -28,7 +28,10 @@ export function startDauofficeScheduler() {
       const intervalHours = await getPolicyNumber('DAUOFFICE_SYNC_INTERVAL_HOURS', 6);
       const now = new Date();
       // 매 intervalHours마다 정시 근처에만 실행 (간단한 MVP 스케줄링 — 정밀한 cron은 아님)
-      if (now.getHours() % Math.max(1, intervalHours) !== 0 || now.getMinutes() >= 10) return;
+      // 2026-09-30 수정(L-8): getHours()는 컨테이너 로컬 시각(UTC)이라 "정시"가 KST와 9시간 어긋났다
+      // (purge 스케줄러는 a10b7c8에서 같은 문제를 고쳤는데 이 파일은 빠져 있었다). KST 기준으로 판정한다.
+      const kstHour = (now.getUTCHours() + 9) % 24;
+      if (kstHour % Math.max(1, intervalHours) !== 0 || now.getUTCMinutes() >= 10) return;
 
       // eslint-disable-next-line no-console
       console.log('[DauofficeScheduler] 자동 동기화 시작(조직도만)');

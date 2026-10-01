@@ -1,4 +1,5 @@
-import { Router, type Request } from 'express';
+import { type Request } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
@@ -9,6 +10,10 @@ import { recordNightWork, willResumeNightWork } from '../../common/night-work-he
 import { recordEffort, findOpenEffort, willUpdateExistingEffort } from '../../common/effort-helpers';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, buildMismatchCoords } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
+// 2026-09-30 수정(Critical): 일일업무일지 1단계(퇴근 시 강제 마감)를 /clock-out에서 실제로
+// 저장하기 위해 가져온다 — 이 연결이 없던 동안, 모달이 필수 입력까지 받아 만든 업무일지가
+// 서버에 단 한 건도 저장되지 않았다(daily-work-log.routes.ts의 upsertDailyWorkLog/스키마 재사용).
+import { dailyWorkLogInputSchema, upsertDailyWorkLog, computeUnloggedGapMinutes } from '../daily-work-log/daily-work-log.routes';
 
 /** "123.45.67.0/24" 형태의 CIDR 표기를 IPv4 대역으로 해석해 clientIp가 그 안에 속하는지 본다. */
 function ipInCidr(clientIp: string, cidr: string): boolean {
@@ -83,7 +88,7 @@ async function isHqAddressMatch(locationAddress: string | undefined): Promise<bo
   return keywords.some((kw) => kw && normalizedAddress.includes(kw.replace(/\s+/g, '')));
 }
 
-export const attendanceRouter = Router();
+export const attendanceRouter = createRouter();
 attendanceRouter.use(requireAuth);
 
 // 이 상태로 바뀌면 "실제 업무 시작"으로 보고 출근시각을 자동 인식한다(주52시간제 대응).
@@ -134,6 +139,10 @@ async function cancelPendingAutoDepartureSuggestion(attendanceRecordId: string, 
 // 문자열이 섞인 객체)이 오면 NaN 기반으로 조용히 "위치불일치"가 되고, 그 값이 그대로 mismatch
 // 좌표(Float 컬럼)에 저장 시도되면서 이 엔드포인트에서만 DB 에러로 죽을 수 있었다. 같은 검증을 맞춘다.
 const clockInLocationSchema = z.object({ lat: z.number(), lng: z.number() }).optional();
+// 2026-09-30 수정: locationAddress는 프론트가 카카오맵 역지오코딩 결과(문자열)를 보내는 값인데
+// 타입 검증 없이 `as string`으로 받아 .replace()를 호출하고 있었다 — 객체가 오면 TypeError가 나고
+// (async 핸들러 + Express 4 조합에서 프로세스 종료로 이어짐) 검증을 추가한다.
+const clockInAddressSchema = z.string().max(300).optional();
 
 /** 출근 처리(수동) — 위 자동인식 대상이 아닌 경우를 위한 수동 버튼 */
 attendanceRouter.post('/clock-in', async (req, res) => {
@@ -154,7 +163,11 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   // 좌표는 저장하지 않고, 본사와의 거리 비교에만 즉시 사용하고 폐기한다.
   const location = locationParsed.data;
   // 카카오맵 역지오코딩 주소(frontend에서 이미 변환해서 보내줌) — 좌표와 마찬가지로 대조 후 폐기.
-  const locationAddress = req.body?.locationAddress as string | undefined;
+  const locationAddressParsed = clockInAddressSchema.safeParse(req.body?.locationAddress);
+  if (!locationAddressParsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '주소 값을 확인하세요.' } });
+  }
+  const locationAddress = locationAddressParsed.data;
   // 2026-09-16: 그 순간 GPS가 스스로 보고한 오차범위(미터) — /status와 동일하게 반경 판정에 반영한다.
   const rawAccuracyMeters = req.body?.accuracyMeters;
   const accuracyMeters = typeof rawAccuracyMeters === 'number' && Number.isFinite(rawAccuracyMeters) && rawAccuracyMeters >= 0
@@ -322,6 +335,22 @@ attendanceRouter.post('/clock-out', async (req, res) => {
     ? req.body.earlyLeaveReason.trim().slice(0, 300)
     : undefined;
 
+  // 2026-09-30 수정(Critical): 일일업무일지 1단계(퇴근 시 강제 마감, 대표이사 요청).
+  // 근태기록을 건드리기 "전에" 먼저 검증한다 — 검증 실패로 400을 돌려줄 때 근태기록이 이미
+  // 퇴근 처리된 상태로 남는 부분 반영을 막기 위함이다. 이슈/특이사항·내일 예정 업무는 필수다.
+  const dailyWorkLogParsed = dailyWorkLogInputSchema.safeParse(req.body?.dailyWorkLog);
+  if (!dailyWorkLogParsed.success) {
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'WORK_LOG_REQUIRED',
+        message:
+          '오늘 업무일지(이슈/특이사항·내일 예정 업무)를 입력해야 퇴근이 확정됩니다. 화면을 새로고침한 뒤 다시 시도해주세요.',
+      },
+    });
+  }
+  const dailyWorkLog = dailyWorkLogParsed.data;
+
   const existing = await prisma.attendanceRecord.findUnique({
     where: { userId_workDate: { userId, workDate } },
     include: { breakSessions: true },
@@ -410,6 +439,23 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   const lunchBreakMinutes = await getLunchBreakMinutes();
   const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes - lunchBreakMinutes);
 
+  // 2026-09-30 수정: "미등록 공백시간"(대표이사 요청)의 최종 검증 — 프론트가 퇴근 모달을 열 때
+  // 받은 draft는 몇 분 전 기준일 수 있으므로, 실제 퇴근 시각 기준으로 서버가 독립적으로 다시
+  // 계산한다(daily-work-log.routes.ts의 computeUnloggedGapMinutes 주석에 적힌 원래 설계).
+  // 이것도 근태기록을 건드리기 전에 확인해서, 거절되면 아무것도 반영되지 않게 한다.
+  const serverUnloggedGap = await computeUnloggedGapMinutes(userId, workDate, clockOutAt);
+  if (serverUnloggedGap && !dailyWorkLog.unloggedGapReason?.trim()) {
+    const gapH = Math.floor(serverUnloggedGap.minutes / 60);
+    const gapM = serverUnloggedGap.minutes % 60;
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'UNLOGGED_GAP_REASON_REQUIRED',
+        message: `마지막 작업 종료 이후 ${gapH}시간 ${gapM}분 동안 등록된 활동이 없습니다. 그 사이 무엇을 하셨는지 사유를 입력한 뒤 다시 퇴근해주세요.`,
+      },
+    });
+  }
+
   const record = await prisma.attendanceRecord.update({
     where: { id: existing.id },
     data: {
@@ -421,11 +467,21 @@ attendanceRouter.post('/clock-out', async (req, res) => {
     },
   });
 
+  // 2026-09-30 수정(Critical): 일일업무일지 저장 — (userId, workDate) 기준 하루 1건 upsert라
+  // 퇴근 취소 후 재마감 등으로 여러 번 확정돼도 중복되지 않는다. 총 근무시간은 방금 계산한 값을
+  // 스냅샷으로 함께 남기고, 공백시간은 서버가 재계산한 값을 쓴다(프론트가 보낸 값은 신뢰하지 않는다).
+  await upsertDailyWorkLog(userId, workDate, {
+    ...dailyWorkLog,
+    totalWorkedMinutes,
+    unloggedGapMinutes: serverUnloggedGap?.minutes,
+    unloggedGapReason: dailyWorkLog.unloggedGapReason?.trim() || undefined,
+  });
+
   // "퇴근" 버튼으로 정상 처리됐으니, 혹시 위치이탈 자동감지가 미리 만들어둔 대기중 제안(있다면)은
   // 더 이상 의미가 없다 — 승인함에 오탐(false positive)으로 남지 않도록 같이 정리한다.
   await cancelPendingAutoDepartureSuggestion(existing.id, userId, '본인이 정상적으로 "퇴근" 버튼을 눌러 처리됨');
 
-  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes, lateClockOutOverMinutes } });
+  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes, lateClockOutOverMinutes, dailyWorkLogSaved: true, unloggedGapMinutes: serverUnloggedGap?.minutes ?? null } });
 
   const lateClockOutSuggestion = lateClockOutOverMinutes > 0
     ? {
@@ -446,8 +502,15 @@ const effortSchema = z.object({
   // 특정할 수 없어 findFirst가 아무 지점이나 골라버릴 수 있었다 — id가 오면 그걸로 정확히 그
   // 지점만 조회한다(2026-09-08, 관리자 문의로 발견). 목록에 없는 새 이름을 직접 입력한 경우 등
   // id가 없을 때는 기존처럼 이름 부분일치로 대체 조회한다.
-  clientId: z.string().optional(),
+  // 2026-09-30 수정: 비UUID 문자열이 오면 prisma.client.findUnique({where:{id}})가 P2023으로
+  // 던져지고, 그 예외가 async 핸들러를 타고 프로세스를 종료시켰다 — 형식을 먼저 검증한다.
+  clientId: z.string().uuid().optional(),
   projectName: z.string().optional(),
+  // ESD 2.0 (2026-10-01 추가): 등록된 프로젝트/Task를 선택했을 때 구조화된 FK를 함께 저장한다.
+  // 실제로 참여 중인 프로젝트인지, Task가 그 프로젝트 소속인지는 아래에서 서버가 다시 검증하고
+  // 클라이언트가 보낸 값을 그대로 신뢰하지 않는다.
+  projectId: z.string().uuid().optional(),
+  taskId: z.string().uuid().optional(),
   workType: z.string().optional(),
   startTime: z.string().optional(), // "HH:MM" (KST)
   endTime: z.string().optional(), // "HH:MM" (KST), 없으면 진행중
@@ -700,7 +763,12 @@ attendanceRouter.post('/status', async (req, res) => {
             userId,
             status: 'HQ_WORKING',
             changedAt: { gte: dayStartForHq, lt: dayEndForHq },
-            locationCaptureStatus: { notIn: ['OK'] },
+            // 2026-09-30 수정(Critical): locationCaptureStatus가 NULL인 행(위치도 locationStatus도
+            // 안 보낸 요청으로 만들어진 로그)은 SQL에서 "NULL NOT IN ('OK')" = NULL(=거짓)이라
+            // 이 count에 잡히지 않았다. 즉 위치를 아예 안 보내는 방식으로 "오늘 첫 실패는
+            // 봐준다"를 무한히 반복해 위치대조를 통째로 우회할 수 있었다 — NULL도 "OK가 아닌
+            // 실패"로 함께 세도록 명시한다.
+            OR: [{ locationCaptureStatus: null }, { locationCaptureStatus: { notIn: ['OK'] } }],
           },
         });
         if (priorHqLocationFailures >= 1) {
@@ -777,7 +845,10 @@ attendanceRouter.post('/status', async (req, res) => {
           userId,
           status: { in: ['CLIENT_MEETING', 'CLIENT_WORK', 'NIGHT_WORK', 'WEEKEND_WORK'] },
           changedAt: { gte: dayStartForLocation, lt: dayEndForLocation },
-          locationCaptureStatus: { notIn: ['OK'] },
+          // 2026-09-30 수정(Critical): 위 본사근무 집계와 완전히 같은 문제 — NULL이 조건에서
+          // 빠져서, 위치를 아예 안 보내면 "오늘 첫 실패는 봐준다"가 매번 0건으로 계산되고
+          // 고객사 현장 위치대조가 무한정 무력화됐다. NULL도 실패로 함께 센다.
+          OR: [{ locationCaptureStatus: null }, { locationCaptureStatus: { notIn: ['OK'] } }],
         },
       });
       if (priorLocationFailures >= 1) {
@@ -825,21 +896,53 @@ attendanceRouter.post('/status', async (req, res) => {
   // 같은 기준으로, 상태변경 로그도 새 줄을 추가하는 대신 방금 그 상태였던 로그를 그대로 갱신한다
   // — 두 테이블이 "같은 저장"을 서로 다르게(하나는 갱신, 하나는 새로 생성) 처리해 어긋나는 일이
   // 없도록 여기서 먼저 판단해두고, 아래 공수기록/야간작업 기록에도 그대로 적용한다.
-  let effortData: { workDate: Date; clientName: string; projectName: string; workType: string; startTime: Date; endTime: Date | null; description?: string } | null = null;
+  let effortData: { workDate: Date; clientName: string; projectName: string; workType: string; startTime: Date; endTime: Date | null; description?: string; projectId?: string; taskId?: string } | null = null;
   let nightWorkTimes: { startTime: Date; endTime: Date | null; description?: string } | null = null;
   let isSessionResubmit = false;
   if (EFFORT_STATUSES.has(status) && effort) {
+    // ESD 2.0 (2026-10-01 추가): 직원이 API를 조작해 자신이 참여하지 않은 프로젝트의 projectId를
+    // 넣거나, 선택한 프로젝트에 속하지 않는 taskId를 넣을 수 없도록 서버에서 반드시 재검증한다.
+    // 클라이언트가 보낸 projectName은 신뢰하지 않고, projectId가 유효하면 DB의 정식 프로젝트명으로
+    // 덮어쓴다(아래 effortData.projectName 구성부 참고).
+    if (effort.taskId && !effort.projectId) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_PROJECT_TASK', message: 'Task를 선택하려면 프로젝트도 선택해야 합니다.' } });
+    }
+    let linkedProject: { id: string; name: string; status: string } | null = null;
+    if (effort.projectId) {
+      const projectAdmin = req.authUser!.roles.some((r) => ['TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN'].includes(r));
+      linkedProject = await prisma.project.findFirst({
+        where: {
+          id: effort.projectId,
+          // 관리자/팀장이 아니면 본인이 PM이거나 참여자로 등록된 프로젝트만 유효한 것으로 인정한다
+          // (IDOR 방지 — 클라이언트가 임의의 projectId를 넣어도 본인 소속이 아니면 거부됨).
+          ...(projectAdmin ? {} : { OR: [{ managerId: userId }, { members: { some: { userId } } }] }),
+        },
+        select: { id: true, name: true, status: true },
+      });
+      if (!linkedProject || linkedProject.status === 'CANCELLED') {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_PROJECT', message: '본인에게 배정되지 않았거나 사용할 수 없는 프로젝트입니다.' } });
+      }
+    }
+    if (effort.taskId && effort.projectId) {
+      const task = await prisma.projectTask.findUnique({ where: { id: effort.taskId }, select: { projectId: true } });
+      if (!task || task.projectId !== effort.projectId) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_PROJECT_TASK', message: '선택한 Task가 해당 프로젝트에 속하지 않습니다.' } });
+      }
+    }
     const workDate = todayDateOnly();
     const startTime = effort.startTime ? combineDateTime(workDate, effort.startTime) : new Date();
     const endTime = effort.endTime ? resolveEndTime(startTime, combineDateTime(workDate, effort.endTime)) : null;
     effortData = {
       workDate,
       clientName: effort.clientName || '',
-      projectName: effort.projectName || '',
+      // projectId가 유효하면(위에서 검증 완료) 클라이언트 문자열을 무시하고 DB 정식 명칭을 쓴다.
+      projectName: linkedProject?.name || effort.projectName || '',
       workType: effort.workType || '기타',
       startTime,
       endTime,
       description: composeEffortDescription(effort),
+      projectId: linkedProject?.id,
+      taskId: linkedProject && effort.taskId ? effort.taskId : undefined,
     };
     // 본사근무는 "완료"라는 개념이 없는 하루단위 상태라 이 판단 자체를 하지 않는다(기존과 동일).
     if (EFFORT_CONTINUATION_STATUSES.has(status)) {
@@ -884,14 +987,27 @@ attendanceRouter.post('/status', async (req, res) => {
   // 그 사이에 실제로 다른 상태를 거쳐 왔다면(예: 다른 고객사를 먼저 갔다 옴) 이건 새로운 구간이므로
   // 그대로 새 로그를 남긴다.
   let log = null;
+  // 2026-09-30 수정(L-10): 기존 로그를 갱신(재저장)한 경우엔 그 로그를 "되돌리기"로 지우면 원래 있던
+  // 이전 등록 기록까지 사라진다 — 되돌리기는 이번 요청으로 새로 만든 로그일 때만 허용한다.
+  let statusLogCreatedNow = false;
   if (isSessionResubmit) {
-    const lastLog = await prisma.statusChangeLog.findFirst({ where: { userId }, orderBy: { changedAt: 'desc' } });
+    // 2026-09-30 수정(High): 예전엔 "이 사용자의 가장 최근 로그"를 날짜 제한 없이 찾았다 —
+    // StatusChangeLog에는 updatedAt이 없어서 갱신해도 changedAt은 과거 값 그대로 남는데,
+    // 어제 남긴 진행중(CLIENT_WORK) 기록이 그대로 대상이 되면 오늘 등록이 어제 로그를 덮어써
+    // 오늘 상태가 아예 없는 것처럼 보였다(/attendance/me·상황판이 오늘 범위로만 조회하므로).
+    // 오늘(근무일 기준) 범위 안의 로그만 갱신 대상으로 삼는다.
+    const { start: resubmitDayStart, end: resubmitDayEnd } = realDayWindow(workDate);
+    const lastLog = await prisma.statusChangeLog.findFirst({
+      where: { userId, changedAt: { gte: resubmitDayStart, lt: resubmitDayEnd } },
+      orderBy: { changedAt: 'desc' },
+    });
     if (lastLog && lastLog.status === status) {
       log = await prisma.statusChangeLog.update({ where: { id: lastLog.id }, data: statusLogFields });
     }
   }
   if (!log) {
     log = await prisma.statusChangeLog.create({ data: { userId, ...statusLogFields } });
+    statusLogCreatedNow = true;
   }
 
   if (WORK_START_STATUSES.has(status)) {
@@ -926,7 +1042,7 @@ attendanceRouter.post('/status', async (req, res) => {
   }
 
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'status_change_log', targetId: log.id, afterValue: { log, effortLog, nightWork, businessTripLog } });
-  return res.json({ success: true, data: { statusLog: log, effortLog, nightWork, businessTripLog, locationMismatchException } });
+  return res.json({ success: true, data: { statusLog: log, effortLog, nightWork, businessTripLog, locationMismatchException, undoable: statusLogCreatedNow } });
 });
 
 // 9개 상태 아이콘은 확인창 없이 눌리는 즉시 등록된다(2026-08 설계, "우선 등록 후 세부내용은
@@ -1107,6 +1223,14 @@ attendanceRouter.post('/departure-suggest', async (req, res) => {
   if (estimatedClockOutAt <= record.clockInAt) {
     return res.status(400).json({ success: false, error: { code: 'OUT_OF_RANGE', message: '추정 퇴근시각이 출근시각보다 앞섭니다.' } });
   }
+  // 2026-09-30 수정(Critical): 이 경로에만 "미래 시각 금지" 상한이 빠져 있었다 — 직원이 직접
+  // 내는 지난 근무일 정정 신청(attendance-correction.routes.ts)은 proposedClockOutAt > now를
+  // 막는데, 위치이탈 자동감지 제안은 그 검사가 없어서 다음날 시각을 그대로 넣을 수 있었다.
+  // 그리고 본인이 /departure-suggest/confirm으로 확정하면 그 시각이 clockOutAt과
+  // totalWorkedMinutes로 굳어져 근무시간·주52시간 집계가 부풀려진다(자기확정 경로).
+  if (estimatedClockOutAt.getTime() > Date.now()) {
+    return res.status(400).json({ success: false, error: { code: 'OUT_OF_RANGE', message: '추정 퇴근시각은 현재 시각 이전이어야 합니다.' } });
+  }
 
   // 이미 오늘 만들어둔 대기중 자동감지 제안이 있으면 새로 만들지 않고 그대로 재사용한다.
   const existing = await prisma.attendanceCorrectionRequest.findFirst({
@@ -1161,6 +1285,13 @@ attendanceRouter.post('/departure-suggest/confirm', async (req, res) => {
   }
   if (correction.status !== 'PENDING') {
     return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: '이미 처리된 요청입니다.' } });
+  }
+
+  // 2026-09-30 수정(Critical): 제안을 만드는 시점(/departure-suggest)에 상한을 걸었더라도,
+  // 확정은 그보다 나중에 이뤄질 수 있고 제안 행 자체는 DB에서 직접 바뀔 수도 있다 —
+  // 실제로 근태기록을 굳히기 직전에 여기서 한 번 더 검증한다(방어적 이중 확인).
+  if (correction.proposedClockOutAt && correction.proposedClockOutAt.getTime() > Date.now()) {
+    return res.status(400).json({ success: false, error: { code: 'OUT_OF_RANGE', message: '추정 퇴근시각이 현재 시각보다 뒤입니다. 처음부터 다시 시도해주세요.' } });
   }
 
   // 2026-09-08: 위치이탈 자동감지로 확정되는 퇴근도 수동 "퇴근" 버튼과 동일하게 최소근무시간
@@ -1361,6 +1492,8 @@ attendanceRouter.get('/effort/in-progress', async (req, res) => {
       sourceStatus: open.sourceStatus,
       clientName: open.clientName,
       projectName: open.projectName,
+      projectId: open.projectId,
+      taskId: open.taskId,
       workType: open.workType,
       startTime: open.startTime,
       description: open.description ?? '',
@@ -1464,8 +1597,10 @@ attendanceRouter.get('/clients-recent', async (req, res) => {
 // 나온 좌표(및 역지오코딩된 주소)를 여기로 같이 보낸다.
 const createClientSchema = z.object({
   name: z.string().min(1),
-  latitude: z.number(),
-  longitude: z.number(),
+  // 2026-09-30 수정(Medium): 좌표 범위 검증이 없어 위도 999 같은 값도 저장될 수 있었다 —
+  // 위치대조의 기준점이 되는 값이라 관리자 등록(clients.routes.ts)과 같은 범위로 맞춘다.
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
   address: z.string().optional(),
 });
 

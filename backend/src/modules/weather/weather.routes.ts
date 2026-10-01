@@ -1,8 +1,8 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { requireAuth } from '../../common/guards/auth';
 import { getCurrentWeather } from '../../common/weather';
 
-export const weatherRouter = Router();
+export const weatherRouter = createRouter();
 weatherRouter.use(requireAuth);
 
 /**

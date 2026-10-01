@@ -26,6 +26,12 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    # 2026-09-30(M-15): 컨테이너 로그가 무한히 쌓여 Lightsail 디스크를 가득 채우지 않게 로테이션.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     depends_on:
       db:
         condition: service_healthy
@@ -33,6 +39,12 @@ services:
       DATABASE_URL: postgresql://app_user:${DB_PASSWORD}@db:5432/employee_status?schema=public
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 환경변수를 설정하세요}
       PORT: 4000
+      # 2026-09-30(M-15): 운영 모드 명시 — CORS_ORIGIN이 비어 있으면 다른 출처를 거부(fail-closed)한다.
+      NODE_ENV: production
+      # 2026-09-30(M-15): 기본은 데이터 손실이 생기는 스키마 변경을 거부. 정말 필요할 때만 .env.prod에서 true로.
+      ALLOW_DB_DATA_LOSS: ${ALLOW_DB_DATA_LOSS:-false}
+      # 2026-10-01(A안): 다우오피스 자동 동기화 배제 — 기본 false면 스케줄러를 아예 띄우지 않는다.
+      DAUOFFICE_SCHEDULERS_ENABLED: ${DAUOFFICE_SCHEDULERS_ENABLED:-false}
       DAUOFFICE_CLIENT_ID: ${DAUOFFICE_CLIENT_ID:-}
       DAUOFFICE_CLIENT_SECRET: ${DAUOFFICE_CLIENT_SECRET:-}
       DAUOFFICE_API_URL: ${DAUOFFICE_API_URL:-https://api.daouoffice.com}
@@ -59,15 +71,26 @@ services:
       args:
         NEXT_PUBLIC_KAKAO_MAP_KEY: ${NEXT_PUBLIC_KAKAO_MAP_KEY:-}
     restart: unless-stopped
+    # 2026-09-30(M-15): 백엔드가 실제로 요청을 받을 수 있을 때(헬스체크 통과) 기동한다.
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
+    # 2026-09-30(M-15): 프론트/백엔드가 준비되기 전에 nginx가 먼저 떠서 502를 내던 배포 직후 구간을 없앤다.
     depends_on:
-      - frontend
-      - backend
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    logging: *default-logging
     ports:
       # 주의: 이 서버의 80번 포트는 이미 다른 서비스(maintenance_system-web)가 쓰고 있어서
       # 8001로 대신 노출한다. 8001은 방화벽에 이미 열려 있는 8000-8001 규칙 범위에 포함된다.

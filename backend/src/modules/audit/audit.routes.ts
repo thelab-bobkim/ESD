@@ -1,8 +1,8 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 
-export const auditRouter = Router();
+export const auditRouter = createRouter();
 auditRouter.use(requireAuth, requireRole('SYSTEM_ADMIN'));
 
 auditRouter.get('/logs', async (req, res) => {

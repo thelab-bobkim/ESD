@@ -1,11 +1,11 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole, type AuthUser } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { applyAttendanceCorrection, checkMinWorkedMinutes } from '../../common/attendance-helpers';
 
-export const approvalRouter = Router();
+export const approvalRouter = createRouter();
 approvalRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN'));
 
 /**
@@ -90,47 +90,55 @@ approvalRouter.post('/requests/:id/approve', async (req, res) => {
   // where에 status: 'PENDING'을 넣어 DB가 원자적으로 "지금 PENDING인 것만" 갱신하게 해서, 두
   // 요청 중 하나만 count===1로 성공하고 나머지는 0으로 실패하게 만든다(ApprovalRequest에
   // 별도 버전/락 컬럼이 없어도 이 방식으로 동일한 효과를 낸다).
-  const claim = await prisma.approvalRequest.updateMany({
-    where: { id, status: 'PENDING' },
-    data: { status: 'APPROVED', approverId, decidedAt: new Date(), comment: parsed.success ? parsed.data.comment : undefined },
+  // 2026-09-30 수정(Medium): 그 "원자적 claim"과 그 뒤의 부수효과(휴가잔액 증가/근태 반영/감사로그)가
+  // 각각 따로 커밋되고 있었다 — 사이에서 프로세스가 죽으면 "승인됨"인데 잔액은 안 늘어난 상태로
+  // 남는다. 하나의 트랜잭션으로 묶어 전부 반영되거나 전부 안 되게 한다.
+  const applied = await prisma.$transaction(async (tx) => {
+    const claim = await tx.approvalRequest.updateMany({
+      where: { id, status: 'PENDING' },
+      data: { status: 'APPROVED', approverId, decidedAt: new Date(), comment: parsed.success ? parsed.data.comment : undefined },
+    });
+    if (claim.count === 0) return null; // 다른 곳에서 이미 처리됨 — 아래에서 409로 응답
+    const updated = await tx.approvalRequest.findUniqueOrThrow({ where: { id } });
+
+    // 대체휴무/보상휴가 전환 승인인 경우, 휴가 잔여시간을 갱신한다.
+    if (request.type === 'LEAVE_CONVERSION' && request.leaveConversionRequestId) {
+      const conversion = await tx.leaveConversionRequest.update({
+        where: { id: request.leaveConversionRequestId },
+        data: { status: 'APPROVED' },
+      });
+      const balance = await tx.leaveBalance.upsert({
+        where: { userId_leaveTypeId: { userId: conversion.userId, leaveTypeId: conversion.requestedLeaveTypeId } },
+        update: { balanceMinutes: { increment: conversion.convertedMinutes } },
+        create: { userId: conversion.userId, leaveTypeId: conversion.requestedLeaveTypeId, balanceMinutes: conversion.convertedMinutes },
+      });
+      await recordAuditLog({ actorUserId: approverId, actionType: 'APPROVE', targetType: 'leave_balance', targetId: balance.id, afterValue: balance }, tx);
+    }
+
+    // 지난 근무일 퇴근 정정 승인인 경우, 이때 비로소(=승인권자 확인 후) 근태 기록에 실제 반영한다.
+    // 신청만으로는 절대 반영되지 않는다(직원 자기신고 + 승인권자 확인, 2단계를 모두 거쳐야 함).
+    if (request.type === 'ATTENDANCE_CORRECTION' && request.attendanceCorrectionRequestId) {
+      const appliedCorrection = await applyAttendanceCorrection(request.attendanceCorrectionRequestId, earlyLeaveReasonForCorrection, tx);
+      if (appliedCorrection) {
+        await recordAuditLog({
+          actorUserId: approverId,
+          actionType: 'CORRECT',
+          targetType: 'attendance_record',
+          targetId: appliedCorrection.updatedRecord.id,
+          afterValue: { clockOutAt: appliedCorrection.updatedRecord.clockOutAt, totalWorkedMinutes: appliedCorrection.totalWorkedMinutes, correctionReason: appliedCorrection.correction.reason },
+        }, tx);
+      }
+    }
+
+    await recordAuditLog({ actorUserId: approverId, actionType: 'APPROVE', targetType: 'approval_request', targetId: id, afterValue: updated }, tx);
+    return updated;
   });
-  if (claim.count === 0) {
+
+  if (!applied) {
     return res.status(409).json({ success: false, error: { code: 'ALREADY_DECIDED', message: '이미 다른 곳에서 처리된 요청입니다.' } });
   }
-  const updated = await prisma.approvalRequest.findUniqueOrThrow({ where: { id } });
 
-  // 대체휴무/보상휴가 전환 승인인 경우, 휴가 잔여시간을 갱신한다.
-  if (request.type === 'LEAVE_CONVERSION' && request.leaveConversionRequestId) {
-    const conversion = await prisma.leaveConversionRequest.update({
-      where: { id: request.leaveConversionRequestId },
-      data: { status: 'APPROVED' },
-    });
-    const balance = await prisma.leaveBalance.upsert({
-      where: { userId_leaveTypeId: { userId: conversion.userId, leaveTypeId: conversion.requestedLeaveTypeId } },
-      update: { balanceMinutes: { increment: conversion.convertedMinutes } },
-      create: { userId: conversion.userId, leaveTypeId: conversion.requestedLeaveTypeId, balanceMinutes: conversion.convertedMinutes },
-    });
-    await recordAuditLog({ actorUserId: approverId, actionType: 'APPROVE', targetType: 'leave_balance', targetId: balance.id, afterValue: balance });
-  }
-
-  // 지난 근무일 퇴근 정정 승인인 경우, 이때 비로소(=승인권자 확인 후) 근태 기록에 실제 반영한다.
-  // 신청만으로는 절대 반영되지 않는다(직원 자기신고 + 승인권자 확인, 2단계를 모두 거쳐야 함).
-  if (request.type === 'ATTENDANCE_CORRECTION' && request.attendanceCorrectionRequestId) {
-    const applied = await applyAttendanceCorrection(request.attendanceCorrectionRequestId, earlyLeaveReasonForCorrection);
-    if (applied) {
-      await recordAuditLog({
-        actorUserId: approverId,
-        actionType: 'CORRECT',
-        targetType: 'attendance_record',
-        targetId: applied.updatedRecord.id,
-        afterValue: { clockOutAt: applied.updatedRecord.clockOutAt, totalWorkedMinutes: applied.totalWorkedMinutes, correctionReason: applied.correction.reason },
-      });
-    }
-  }
-
-  await recordAuditLog({ actorUserId: approverId, actionType: 'APPROVE', targetType: 'approval_request', targetId: id, afterValue: updated });
-
-  return res.json({ success: true, data: updated });
+  return res.json({ success: true, data: applied });
 });
 
 approvalRouter.post('/requests/:id/reject', async (req, res) => {
@@ -153,23 +161,29 @@ approvalRouter.post('/requests/:id/reject', async (req, res) => {
 
   // 2026-09-30: approve와 동일한 이유로 원자적 조건부 갱신을 쓴다 — 동시에 승인/반려가 겹치면
   // 하나만 성공해야 한다.
-  const claim = await prisma.approvalRequest.updateMany({
-    where: { id, status: 'PENDING' },
-    data: { status: 'REJECTED', approverId, decidedAt: new Date(), comment: parsed.data.comment },
+  // approve와 동일하게 claim + 부수효과를 한 트랜잭션으로 묶는다(2026-09-30 수정).
+  const rejected = await prisma.$transaction(async (tx) => {
+    const claim = await tx.approvalRequest.updateMany({
+      where: { id, status: 'PENDING' },
+      data: { status: 'REJECTED', approverId, decidedAt: new Date(), comment: parsed.data.comment },
+    });
+    if (claim.count === 0) return null;
+    const updated = await tx.approvalRequest.findUniqueOrThrow({ where: { id } });
+
+    if (request.type === 'LEAVE_CONVERSION' && request.leaveConversionRequestId) {
+      await tx.leaveConversionRequest.update({ where: { id: request.leaveConversionRequestId }, data: { status: 'REJECTED' } });
+    }
+    if (request.type === 'ATTENDANCE_CORRECTION' && request.attendanceCorrectionRequestId) {
+      await tx.attendanceCorrectionRequest.update({ where: { id: request.attendanceCorrectionRequestId }, data: { status: 'REJECTED' } });
+    }
+
+    await recordAuditLog({ actorUserId: approverId, actionType: 'REJECT', targetType: 'approval_request', targetId: id, afterValue: updated }, tx);
+    return updated;
   });
-  if (claim.count === 0) {
+
+  if (!rejected) {
     return res.status(409).json({ success: false, error: { code: 'ALREADY_DECIDED', message: '이미 다른 곳에서 처리된 요청입니다.' } });
   }
-  const updated = await prisma.approvalRequest.findUniqueOrThrow({ where: { id } });
 
-  if (request.type === 'LEAVE_CONVERSION' && request.leaveConversionRequestId) {
-    await prisma.leaveConversionRequest.update({ where: { id: request.leaveConversionRequestId }, data: { status: 'REJECTED' } });
-  }
-  if (request.type === 'ATTENDANCE_CORRECTION' && request.attendanceCorrectionRequestId) {
-    await prisma.attendanceCorrectionRequest.update({ where: { id: request.attendanceCorrectionRequestId }, data: { status: 'REJECTED' } });
-  }
-
-  await recordAuditLog({ actorUserId: approverId, actionType: 'REJECT', targetType: 'approval_request', targetId: id, afterValue: updated });
-
-  return res.json({ success: true, data: updated });
+  return res.json({ success: true, data: rejected });
 });

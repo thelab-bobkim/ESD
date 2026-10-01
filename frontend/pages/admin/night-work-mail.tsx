@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, apiFetchWithMeta, isAuthExpiredError, truncationNotice } from '@/lib/api';
 import AdminHeader from '@/components/AdminHeader';
 
 /**
@@ -70,16 +70,26 @@ export default function AdminNightWorkMailPage() {
     return params.toString();
   }
 
+  // 2026-09-30(M-3): 목록 잘림 안내 + 필터 전환 시 늦은 응답 무시.
+  const [truncatedLimit, setTruncatedLimit] = useState<number | null>(null);
+  const loadRequestRef = useRef(0);
+
   function load() {
     const qs = buildQuery();
-    apiFetch<ReportRow[]>(`/night-work-mail?${qs}`)
-      .then(setRows)
+    const requestId = ++loadRequestRef.current;
+    apiFetchWithMeta<ReportRow[]>(`/night-work-mail?${qs}`)
+      .then(({ data, truncated, limit }) => {
+        if (loadRequestRef.current !== requestId) return;
+        setRows(data);
+        setTruncatedLimit(truncated ? limit : null);
+      })
       .catch((err) => {
-        if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰'))) router.push('/login');
+        if (loadRequestRef.current !== requestId) return;
+        if (isAuthExpiredError(err)) router.push('/login');
         setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
       });
     apiFetch<SummaryData>(`/night-work-mail/summary?${qs}`)
-      .then(setSummary)
+      .then((s) => { if (loadRequestRef.current === requestId) setSummary(s); })
       .catch(() => {});
   }
 
@@ -100,6 +110,7 @@ export default function AdminNightWorkMailPage() {
         &quot;대조 예정&quot;으로 표시됩니다.
       </p>
       {error && <div className="error">{error}</div>}
+      {truncatedLimit != null && <div className="notice-inline-orange">⚠️ {truncationNotice(truncatedLimit)}</div>}
 
       <div className="card">
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>

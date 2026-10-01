@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, apiFetchWithMeta, isAuthExpiredError, truncationNotice } from '@/lib/api';
 import AdminHeader from '@/components/AdminHeader';
 
 interface FeedbackRow {
@@ -34,11 +34,17 @@ export default function AdminFeedbackPage() {
   const [statusFilter, setStatusFilter] = useState<'UNRESOLVED' | 'ALL'>('UNRESOLVED');
   const [resolvingId, setResolvingId] = useState<string | null>(null);
 
+  // 2026-09-30(M-3): 피드백 목록이 서버 상한으로 잘렸는지 안내.
+  const [truncatedLimit, setTruncatedLimit] = useState<number | null>(null);
+
   function load() {
-    apiFetch<FeedbackRow[]>('/pilot/feedback')
-      .then(setRows)
+    apiFetchWithMeta<FeedbackRow[]>('/pilot/feedback')
+      .then(({ data, truncated, limit }) => {
+        setRows(data);
+        setTruncatedLimit(truncated ? limit : null);
+      })
       .catch((err) => {
-        if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰'))) router.push('/login');
+        if (isAuthExpiredError(err)) router.push('/login');
         setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
       });
   }
@@ -71,6 +77,7 @@ export default function AdminFeedbackPage() {
       <AdminHeader title="피드백함" />
       <p className="admin-page-subtitle">직원들이 홈 화면에서 보낸 버그/불편사항/정책 의견을 모아서 보여줍니다.</p>
       {error && <div className="error">{error}</div>}
+      {truncatedLimit != null && <div className="notice-inline-orange">⚠️ {truncationNotice(truncatedLimit)}</div>}
 
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>

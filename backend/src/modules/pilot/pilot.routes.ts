@@ -1,10 +1,13 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
+import { takeWithTruncation, setTruncationHeaders } from '../../common/list-limit';
+
+const PILOT_FEEDBACK_LIST_LIMIT = 300;
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { sendPushToUser } from '../../common/push';
 
-export const pilotRouter = Router();
+export const pilotRouter = createRouter();
 
 const managerOnly = requireRole('PILOT_MANAGER', 'SYSTEM_ADMIN');
 
@@ -115,14 +118,17 @@ pilotRouter.post('/feedback', requireAuth, async (req, res) => {
  * 동일한 권한 범위로 열어준다.
  */
 pilotRouter.get('/feedback', requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN', 'PILOT_MANAGER'), async (_req, res) => {
-  const feedback = await prisma.pilotFeedback.findMany({
+  const fetched = await prisma.pilotFeedback.findMany({
     include: {
       user: { select: { name: true, employeeNo: true } },
       resolvedBy: { select: { name: true } },
     },
     orderBy: { createdAt: 'desc' },
-    take: 300,
+    // 2026-09-30(M-3): 1건 더 조회해 잘림 여부를 판정하고 헤더로 알린다.
+    take: PILOT_FEEDBACK_LIST_LIMIT + 1,
   });
+  const { rows: feedback, truncated } = takeWithTruncation(fetched, PILOT_FEEDBACK_LIST_LIMIT);
+  setTruncationHeaders(res, truncated, PILOT_FEEDBACK_LIST_LIMIT);
   return res.json({ success: true, data: feedback });
 });
 

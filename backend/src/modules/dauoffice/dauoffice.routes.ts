@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
@@ -6,7 +6,7 @@ import { recordAuditLog } from '../../common/audit';
 import { syncEmployeesFromDauoffice } from './sync-employees';
 import { scrapeCompanyLeaveStatus } from './leave-scraper';
 
-export const dauofficeRouter = Router();
+export const dauofficeRouter = createRouter();
 dauofficeRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN'));
 
 /** 직원(조직도) 수동 동기화 트리거 */

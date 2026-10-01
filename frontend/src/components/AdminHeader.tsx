@@ -6,6 +6,9 @@ const NAV_ITEMS = [
   { href: '/admin/dashboard', label: '전직원 상황판', icon: '📊' },
   { href: '/admin/reports', label: '출/퇴근·근로시간', icon: '📋' },
   { href: '/admin/effort', label: '고객사별 공수관리', icon: '🛠️' },
+  // 2026-10-01 추가(ESD 2.0 Phase 1)
+  { href: '/admin/projects', label: '프로젝트관리', icon: '🧩' },
+  { href: '/admin/performance', label: '직원성과', icon: '📈' },
   { href: '/admin/calendar', label: '캘린더', icon: '🗓️' },
   { href: '/admin/approvals', label: '승인함', icon: '✅' },
   { href: '/admin/clients', label: '고객사 위치관리', icon: '📍' },

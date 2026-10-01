@@ -129,6 +129,9 @@ enum AuditActionType {
   LOCATION_DETAIL_VIEW
   // 2026-09-18: 다우오피스 "전사 휴가현황" 스크래핑 수동/자동 실행 기록용.
   DAUOFFICE_LEAVE_SCRAPE
+  // 2026-10-01 추가(ESD 2.0): 프로젝트/Task 생성·수정. 기존 POLICY_CHANGE를 그대로 쓰면 "정책값
+  // 변경"과 "프로젝트 변경"이 감사로그에서 구분되지 않아 별도 값을 추가한다.
+  PROJECT_CHANGE
 }
 
 // 2026-09-26: "일일업무일지"(대표이사 요청) — 오늘 근무형태에 따라 간단히 두 줄만 쓰면 되는 날과
@@ -137,6 +140,29 @@ enum AuditActionType {
 enum DailyWorkLogFormType {
   SIMPLE
   DETAILED
+}
+
+// ===== ESD 2.0 프로젝트 관리 (2026-10-01 추가) =====
+enum ProjectStatus {
+  PLANNED
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum ProjectPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum ProjectTaskStatus {
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  DONE
 }
 
 model Department {
@@ -165,6 +191,7 @@ model Client {
 
   users            User[]
   residentCheckins ResidentCheckin[]
+  projects         Project[]
 
   @@map("clients")
 }
@@ -243,6 +270,12 @@ model User {
   // 아직 없어 굳이 관계로 만들 실익이 적다 — 필요해지면 그때 추가).
   receivedAdminMessages  AdminMessage[]
 
+  // ESD 2.0 프로젝트/Task 관리 (2026-10-01 추가)
+  managedProjects         Project[]       @relation("ProjectManager")
+  createdProjects         Project[]       @relation("ProjectCreatedBy")
+  projectMemberships      ProjectMember[]
+  assignedProjectTasks    ProjectTask[]   @relation("ProjectTaskAssignee")
+
   @@map("users")
 }
 
@@ -293,6 +326,9 @@ model AttendanceRecord {
   correctionRequests AttendanceCorrectionRequest[]
 
   @@unique([userId, workDate])
+  // 2026-09-30 추가(Medium): @@unique의 선두 컬럼이 userId라 "workDate 범위" 단독 조회
+  // (캘린더 월별 집계, 기간 리포트)에는 쓰이지 못한다 — workDate 단독 인덱스를 따로 둔다.
+  @@index([workDate])
   @@map("attendance_records")
 }
 
@@ -329,6 +365,8 @@ model AttendanceCorrectionRequest {
 
   approvalRequest ApprovalRequest?
 
+  // 2026-09-30 추가(Medium): "이 기록에 대기중 신청이 있는가"를 매번 조회한다(중복 방지·정리 로직).
+  @@index([attendanceRecordId, status])
   @@map("attendance_correction_requests")
 }
 
@@ -350,6 +388,9 @@ model BreakSession {
   startAt            DateTime         @map("start_at")
   endAt              DateTime?        @map("end_at")
 
+  // 2026-09-30 추가(Medium): Prisma는 PostgreSQL FK에 인덱스를 자동 생성하지 않는다 —
+  // 퇴근 처리마다 그 기록의 휴게를 조회하므로 인덱스를 명시한다.
+  @@index([attendanceRecordId])
   @@map("break_sessions")
 }
 
@@ -396,6 +437,11 @@ model StatusChangeLog {
   remoteAuditLatitude  Float? @map("remote_audit_latitude")
   remoteAuditLongitude Float? @map("remote_audit_longitude")
 
+  // 2026-09-30 추가(Medium): 앱 전체에서 가장 뜨거운 쿼리 패턴인 "userId + changedAt 범위"를
+  // 인덱스 없이 매번 순차 스캔하고 있었다(상황판 15초 폴링, /attendance/me, 리포트, 리마인더
+  // 스케줄러가 모두 이 패턴). 150명 규모에서도 연 50만 행 이상으로 늘어난다.
+  @@index([userId, changedAt])
+  @@index([status, changedAt])
   @@map("status_change_logs")
 }
 
@@ -424,6 +470,8 @@ model ResidentCheckin {
   mismatchLatitude  Float? @map("mismatch_latitude")
   mismatchLongitude Float? @map("mismatch_longitude")
 
+  // 2026-09-30 추가(Medium): 상황판이 사용자별 "그날의 마지막 도착체크"를 조회한다.
+  @@index([userId, checkinAt])
   @@map("resident_checkins")
 }
 
@@ -502,6 +550,8 @@ model ApprovalRequest {
   attendanceCorrectionRequestId String?                       @unique @map("attendance_correction_request_id")
   attendanceCorrectionRequest   AttendanceCorrectionRequest?  @relation(fields: [attendanceCorrectionRequestId], references: [id])
 
+  // 2026-09-30 추가(Medium): 승인함이 status로 필터해 최신순 정렬하는데 인덱스가 없었다.
+  @@index([status, requestedAt])
   @@map("approval_requests")
 }
 
@@ -595,6 +645,10 @@ model AuditLog {
   ipAddress    String?         @map("ip_address")
   createdAt    DateTime        @default(now()) @map("created_at")
 
+  // 2026-09-30 추가(Medium): append-only로 무한히 쌓이는데 조회 조건(createdAt 범위/actorUserId)에
+  // 인덱스가 없어 감사로그 화면이 매번 전체 스캔이었다.
+  @@index([createdAt])
+  @@index([actorUserId, createdAt])
   @@map("audit_logs")
 }
 
@@ -620,6 +674,80 @@ model DauofficeDepartmentOverride {
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   @@map("dauoffice_department_overrides")
+}
+
+// ===== ESD 2.0 프로젝트 관리 (2026-10-01 추가) =====
+// Project -> ProjectMember -> ProjectTask -> EffortLog(projectId/taskId) 구조.
+// 기존 EffortLog의 자유문자 clientName/projectName은 과거 데이터 호환을 위해 그대로 유지하고,
+// 신규 공수 등록만 가능한 경우 이 구조화된 FK를 함께 저장한다(아래 EffortLog 모델 참고).
+model Project {
+  id              String          @id @default(uuid())
+  code            String          @unique
+  name            String
+  clientId        String?         @map("client_id")
+  client          Client?         @relation(fields: [clientId], references: [id])
+  status          ProjectStatus   @default(PLANNED)
+  priority        ProjectPriority @default(NORMAL)
+  difficulty      Int             @default(3)
+  plannedMinutes  Int?            @map("planned_minutes")
+  startDate       DateTime?       @map("start_date") @db.Date
+  endDate         DateTime?       @map("end_date") @db.Date
+  description     String?
+  managerId       String?         @map("manager_id")
+  manager         User?           @relation("ProjectManager", fields: [managerId], references: [id])
+  createdByUserId String          @map("created_by_user_id")
+  createdBy       User            @relation("ProjectCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+
+  members    ProjectMember[]
+  tasks      ProjectTask[]
+  effortLogs EffortLog[]
+
+  @@index([status])
+  @@index([managerId])
+  @@index([clientId])
+  @@map("projects")
+}
+
+model ProjectMember {
+  id            String   @id @default(uuid())
+  projectId     String   @map("project_id")
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId        String   @map("user_id")
+  user          User     @relation(fields: [userId], references: [id])
+  role          String   @default("MEMBER")
+  allocationPct Int      @default(100) @map("allocation_pct")
+  joinedAt      DateTime @default(now()) @map("joined_at")
+
+  @@unique([projectId, userId])
+  @@index([userId])
+  @@map("project_members")
+}
+
+model ProjectTask {
+  id             String            @id @default(uuid())
+  projectId      String            @map("project_id")
+  project        Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title          String
+  description    String?
+  status         ProjectTaskStatus @default(TODO)
+  priority       ProjectPriority   @default(NORMAL)
+  difficulty     Int               @default(3)
+  assigneeId     String?           @map("assignee_id")
+  assignee       User?             @relation("ProjectTaskAssignee", fields: [assigneeId], references: [id])
+  plannedMinutes Int?              @map("planned_minutes")
+  dueDate        DateTime?         @map("due_date") @db.Date
+  completedAt    DateTime?         @map("completed_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  effortLogs EffortLog[]
+
+  @@index([projectId, status])
+  @@index([assigneeId, status])
+  @@index([dueDate])
+  @@map("project_tasks")
 }
 
 // ===== 공수(工數) 관리 =====
@@ -651,6 +779,22 @@ model EffortLog {
   // 예를 들어 고객사미팅 진행중 기록을 고객사작업 완료 등록이 잘못 이어받아버릴 수 있다.
   sourceStatus String?  @map("source_status")
 
+  // ESD 2.0 (2026-10-01 추가): 자유문자 clientName/projectName은 과거 기록 호환을 위해 그대로
+  // 둔다. 신규로 등록된 프로젝트/Task를 선택한 경우에는 이 구조화된 FK도 함께 저장한다 — projectId
+  // 가 있으면 projectName은 서버가 DB의 정식 프로젝트명으로 덮어써서 저장한다(클라이언트가 보낸
+  // 문자열을 그대로 믿지 않음, attendance.routes.ts 참고).
+  projectId    String?      @map("project_id")
+  project      Project?     @relation(fields: [projectId], references: [id])
+  taskId       String?      @map("task_id")
+  task         ProjectTask? @relation(fields: [taskId], references: [id])
+
+  // 2026-09-30 추가(Medium): (userId+workDate) 일별 조회, "진행중(endTime null) 이어받기",
+  // 오늘 마지막 완료 공수(endTime) 조회에 인덱스가 없었다.
+  @@index([userId, workDate])
+  @@index([userId, sourceStatus, startTime])
+  @@index([endTime])
+  @@index([projectId, workDate])
+  @@index([taskId, workDate])
   @@map("effort_logs")
 }
 

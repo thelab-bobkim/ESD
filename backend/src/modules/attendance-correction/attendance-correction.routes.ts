@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
@@ -6,7 +6,7 @@ import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, combineDateTime } from '../../common/attendance-helpers';
 import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 
-export const attendanceCorrectionRouter = Router();
+export const attendanceCorrectionRouter = createRouter();
 attendanceCorrectionRouter.use(requireAuth);
 
 /**
@@ -114,25 +114,43 @@ attendanceCorrectionRouter.post('/requests', async (req, res) => {
     });
   }
 
-  const correction = await prisma.attendanceCorrectionRequest.create({
-    data: { userId, attendanceRecordId, type: 'MISSING_CLOCK_OUT', proposedClockOutAt, reason },
-  });
-  const approval = await prisma.approvalRequest.create({
-    data: {
-      type: 'ATTENDANCE_CORRECTION',
-      referenceId: correction.id,
-      requesterId: userId,
-      attendanceCorrectionRequestId: correction.id,
+  // 2026-09-30 수정(Medium): 위의 "PENDING 확인"과 아래 생성 사이에 시간차가 있어, 신청 버튼을
+  // 빠르게 두 번 누르면 PENDING 신청이 2건 생기고 승인도 2번 이뤄져 근태기록이 중복 반영될 수
+  // 있었다(제출 버튼 자체는 disabled지만, 재시도·다중 탭 등으로 겹칠 수 있다). Serializable
+  // 트랜잭션으로 확인~생성을 원자화한다.
+  const created = await prisma.$transaction(
+    async (tx) => {
+      const pending = await tx.attendanceCorrectionRequest.findFirst({
+        where: { attendanceRecordId, status: 'PENDING' },
+      });
+      if (pending) return null;
+      const c = await tx.attendanceCorrectionRequest.create({
+        data: { userId, attendanceRecordId, type: 'MISSING_CLOCK_OUT', proposedClockOutAt, reason },
+      });
+      const a = await tx.approvalRequest.create({
+        data: {
+          type: 'ATTENDANCE_CORRECTION',
+          referenceId: c.id,
+          requesterId: userId,
+          attendanceCorrectionRequestId: c.id,
+        },
+      });
+      await recordAuditLog({
+        actorUserId: userId,
+        actionType: 'STATUS_CHANGE',
+        targetType: 'attendance_correction_request',
+        targetId: c.id,
+        afterValue: { correction: c, approval: a },
+      }, tx);
+      return { correction: c, approval: a };
     },
-  });
+    { isolationLevel: 'Serializable' }
+  );
 
-  await recordAuditLog({
-    actorUserId: userId,
-    actionType: 'STATUS_CHANGE',
-    targetType: 'attendance_correction_request',
-    targetId: correction.id,
-    afterValue: { correction, approval },
-  });
+  if (!created) {
+    return res.status(400).json({ success: false, error: { code: 'ALREADY_PENDING', message: '이미 승인 대기중인 정정 신청이 있습니다.' } });
+  }
+  const { correction, approval } = created;
 
   // TSB-Ver3.1: 저위험 정정요청 자동승인 — 2026-09-11 개선 제안서 Quick win 반영.
   // 제안 퇴근시각이 정규 근무종료 시각(정책값 REGULAR_WORK_END_HOUR) 근처(±30분)이고, 그렇게
@@ -145,7 +163,20 @@ attendanceCorrectionRouter.post('/requests', async (req, res) => {
   const regularCutoff = combineDateTime(record.workDate, `${String(regularWorkEndHour).padStart(2, '0')}:00`);
   const diffFromCutoffMinutes = Math.abs((proposedClockOutAt.getTime() - regularCutoff.getTime()) / 60000);
 
-  if (diffFromCutoffMinutes <= AUTO_APPROVE_WINDOW_MINUTES) {
+  // 2026-09-30 수정(L-12): 예전엔 "18시±30분 + 최소근무시간 충족"만 보면 자동승인이라, 실제로는 14시에
+  // 떠났어도 18:00으로 신청하면 사람 확인 없이 확정됐다. 그날 앱에 남은 마지막 활동(상태 등록)이 제안
+  // 퇴근시각 2시간 이내일 때만 "근거 있는 단순 누락"으로 보고 자동승인하고, 아니면 사람이 확인하게 둔다.
+  const AUTO_APPROVE_MAX_GAP_MINUTES = 120;
+  const { start: recDayStart, end: recDayEnd } = realDayWindow(record.workDate);
+  const lastActivity = await prisma.statusChangeLog.findFirst({
+    where: { userId, changedAt: { gte: recDayStart, lt: recDayEnd, lte: proposedClockOutAt } },
+    orderBy: { changedAt: 'desc' },
+    select: { changedAt: true },
+  });
+  const lastActivityAt = lastActivity?.changedAt ?? record.clockInAt;
+  const activityGapMinutes = lastActivityAt ? (proposedClockOutAt.getTime() - lastActivityAt.getTime()) / 60000 : Infinity;
+
+  if (diffFromCutoffMinutes <= AUTO_APPROVE_WINDOW_MINUTES && activityGapMinutes <= AUTO_APPROVE_MAX_GAP_MINUTES) {
     const { ok } = await checkMinWorkedMinutes(record.clockInAt, proposedClockOutAt);
     if (ok) {
       await prisma.approvalRequest.update({
@@ -226,27 +257,41 @@ attendanceCorrectionRouter.post('/cancel-clock-out', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'ALREADY_PENDING', message: '이미 승인 대기중인 정정 신청이 있습니다.' } });
   }
 
-  const correction = await prisma.attendanceCorrectionRequest.create({
-    data: { userId, attendanceRecordId: record.id, type: 'CANCEL_CLOCK_OUT', reason: parsed.data.reason },
-  });
-  const approval = await prisma.approvalRequest.create({
-    data: {
-      type: 'ATTENDANCE_CORRECTION',
-      referenceId: correction.id,
-      requesterId: userId,
-      attendanceCorrectionRequestId: correction.id,
+  // 위 MISSING_CLOCK_OUT과 동일한 이유로 Serializable 트랜잭션으로 중복 PENDING을 막는다.
+  const createdCancel = await prisma.$transaction(
+    async (tx) => {
+      const pending = await tx.attendanceCorrectionRequest.findFirst({
+        where: { attendanceRecordId: record.id, status: 'PENDING' },
+      });
+      if (pending) return null;
+      const c = await tx.attendanceCorrectionRequest.create({
+        data: { userId, attendanceRecordId: record.id, type: 'CANCEL_CLOCK_OUT', reason: parsed.data.reason },
+      });
+      const a = await tx.approvalRequest.create({
+        data: {
+          type: 'ATTENDANCE_CORRECTION',
+          referenceId: c.id,
+          requesterId: userId,
+          attendanceCorrectionRequestId: c.id,
+        },
+      });
+      await recordAuditLog({
+        actorUserId: userId,
+        actionType: 'STATUS_CHANGE',
+        targetType: 'attendance_correction_request',
+        targetId: c.id,
+        afterValue: { correction: c, approval: a },
+      }, tx);
+      return { correction: c, approval: a };
     },
-  });
+    { isolationLevel: 'Serializable' }
+  );
 
-  await recordAuditLog({
-    actorUserId: userId,
-    actionType: 'STATUS_CHANGE',
-    targetType: 'attendance_correction_request',
-    targetId: correction.id,
-    afterValue: { correction, approval },
-  });
+  if (!createdCancel) {
+    return res.status(400).json({ success: false, error: { code: 'ALREADY_PENDING', message: '이미 승인 대기중인 정정 신청이 있습니다.' } });
+  }
 
-  return res.json({ success: true, data: { request: correction, approval } });
+  return res.json({ success: true, data: { request: createdCancel.correction, approval: createdCancel.approval } });
 });
 
 /** 오늘자 "퇴근 취소" 신청의 최신 상태 — 프론트가 대기중/반려 배지를 보여주는 용도. */

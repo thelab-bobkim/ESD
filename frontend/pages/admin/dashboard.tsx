@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, isAuthExpiredError } from '@/lib/api';
 import AdminHeader from '@/components/AdminHeader';
 
 /** 6자리 hex 색상에 알파를 입혀 옅은 배경톤을 만든다(아이콘 배지 배경용). */
@@ -339,20 +339,28 @@ export default function AdminDashboard() {
     [pushStatus]
   );
 
+  // 2026-09-30 수정(Medium): 15초 자동 폴링과 수동 새로고침이 겹치면, 먼저 보낸 요청의 늦은 응답이
+  // 최신 데이터를 덮어쓰고 setRefreshing(false)를 먼저 실행해 스피너도 조기 종료됐다(다른 화면은
+  // a10b7c8에서 같은 가드를 받았는데 이 load()만 빠져 있었다).
+  const boardRequestRef = useRef(0);
   async function load() {
+    const requestId = ++boardRequestRef.current;
     setRefreshing(true);
     try {
       const b = await apiFetch<CompanyBoard>('/dashboard/company');
+      if (boardRequestRef.current !== requestId) return;
       setBoard(b);
       setLastUpdated(new Date());
       setError(null);
       setJustRefreshed(true);
       setTimeout(() => setJustRefreshed(false), 1500);
     } catch (err) {
-      if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰'))) router.push('/login');
+      // 2026-09-30 수정(Medium): 문자열 매칭('로그인'/'토큰')은 일반 403 등과 오탐될 수 있다 —
+      // 서버가 "로그인 자체가 필요하다"고 명시한 코드일 때만 로그인 화면으로 보낸다.
+      if (isAuthExpiredError(err)) router.push('/login');
       setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
     } finally {
-      setRefreshing(false);
+      if (boardRequestRef.current === requestId) setRefreshing(false);
     }
   }
 

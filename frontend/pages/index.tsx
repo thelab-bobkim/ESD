@@ -175,6 +175,12 @@ interface MeAttendance {
   regularWorkEndHour: number;
 }
 interface WeeklySummary { from: string; to: string; totalMinutes: number; days: number; }
+// ESD 2.0 (2026-10-01 추가)
+interface ProjectOption {
+  id: string; code: string; name: string; status: string;
+  client: { id: string; name: string } | null;
+  tasks: { id: string; title: string; status: string; assigneeId: string | null }[];
+}
 
 function nowHHMM(): string {
   const d = new Date();
@@ -391,10 +397,15 @@ export default function EmployeeHome() {
   const kstHourNow = (new Date(nowTick).getUTCHours() + 9) % 24;
   const regularWorkEndHour = myStatus?.regularWorkEndHour ?? 18;
   const isPastRegularWorkEnd = kstHourNow >= regularWorkEndHour || kstHourNow < 3;
-  // 주말(토/일, KST) 여부 — 서버(attendance.routes.ts isWeekendKST)와 동일한 기준. 주말엔
-  // "주말작업"만 등록 가능하므로 이 배너도, 아래 아이콘 잠금도 이 값을 함께 참고한다.
+  // 주말(토/일) 여부 — 2026-09-30 수정: 서버는 "근무일(새벽 3시 경계)" 기준으로 주말을 판정하는데
+  // (attendance.routes.ts isWeekendForWorkDate), 여기만 자정 기준 달력요일을 쓰고 있어 금요일
+  // 심야~토요일 03시 사이에 서버는 평일로, 화면은 주말로 서로 다르게 판단했다. 그 시간대엔 화면이
+  // "주말작업"만 남기고 나머지를 전부 잠그는데 서버는 "주말작업"을 거부해서(WEEKEND_WORK_ONLY_ON_WEEKEND)
+  // 어떤 상태도 등록할 수 없는 막다른 상태가 됐다 — 서버의 todayDateOnly()와 같은 오프셋(9-3=6시간)을
+  // 써서 근무일 기준 요일을 구한다.
   const isWeekendToday = (() => {
-    const kstDay = new Date(nowTick + 9 * 60 * 60 * 1000).getUTCDay();
+    const workDateShifted = new Date(nowTick + 6 * 60 * 60 * 1000);
+    const kstDay = workDateShifted.getUTCDay();
     return kstDay === 0 || kstDay === 6;
   })();
   // 주말엔 "퇴근하고 야간작업으로" 배너가 의미가 없다(주말작업은 애초에 정규 근무시간 개념이
@@ -462,6 +473,11 @@ export default function EmployeeHome() {
   // 빈 값으로 두고, 서버가 기존처럼 이름 부분일치로 대체 조회한다.
   const [clientId, setClientId] = useState('');
   const [projectName, setProjectName] = useState('');
+  // ESD 2.0 (2026-10-01 추가): 기존 자유문자 projectName은 호환용으로 그대로 유지하고, 등록된
+  // 프로젝트/Task를 선택하면 구조화된 projectId/taskId도 함께 저장한다.
+  const [projectId, setProjectId] = useState('');
+  const [taskId, setTaskId] = useState('');
+  const [projectOptions, setProjectOptions] = useState<ProjectOption[]>([]);
   const [workStart, setWorkStart] = useState(nowHHMM());
   const [workEnd, setWorkEnd] = useState('');
   // 2026-09-15: 박준영/이보용 피드백 — 고객사작업 등 완료시간 필수 상태인데 언제 끝날지 몰라 등록
@@ -500,6 +516,14 @@ export default function EmployeeHome() {
   const [leaveDestination, setLeaveDestination] = useState('');
   const [leaveContact, setLeaveContact] = useState('');
   const detailFormRef = useRef<HTMLDivElement | null>(null);
+  // 진행중 공수 이어받기 조회의 요청 번호 — 늦게 도착한 옛 응답이 지금 열려 있는 폼을 덮지 않게.
+  const detailFormRequestRef = useRef(0);
+  useEffect(() => {
+    apiFetch<ProjectOption[]>('/projects/options')
+      .then((rows) => setProjectOptions(Array.isArray(rows) ? rows : []))
+      .catch(() => setProjectOptions([]));
+  }, []);
+  const selectedProject = projectOptions.find((p) => p.id === projectId) ?? null;
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
   // 2026-09-03 추가, 2026-09-19 변경: 처음엔 "네, 알림 받을게요" 배너로 먼저 동의를 구했는데,
@@ -519,11 +543,19 @@ export default function EmployeeHome() {
   // 2026-09-16: 오늘 퇴근을 잘못 눌렀을 때의 "퇴근 취소 신청" 최신 상태(CancelClockOutCard 참고).
   const [cancelClockOutStatus, setCancelClockOutStatus] = useState<CancelClockOutStatus | null>(null);
 
+  // 2026-09-30 수정(Medium): 이 함수는 상태 변경·정정·정정신청 등 여러 경로에서 호출되는데 요청
+  // 번호 가드가 없어서, 빠르게 두 번 호출되면 먼저 보낸 요청의 늦은 응답이 최신 상태를 덮어써
+  // 화면의 "지금 상태"가 예전 값으로 되돌아갈 수 있었다(다른 화면들은 a10b7c8에서 같은 가드를 받았다).
+  const myStatusRequestRef = useRef(0);
   function refreshMyStatus() {
-    apiFetch<MeAttendance>('/attendance/me').then(setMyStatus).catch(() => {});
-    apiFetch<WeeklySummary>('/attendance/me/weekly').then(setWeekly).catch(() => {});
-    apiFetch<PendingCorrectionRow[]>('/attendance-correction/pending').then(setPendingCorrections).catch(() => {});
-    apiFetch<CancelClockOutStatus | null>('/attendance-correction/cancel-clock-out/today').then(setCancelClockOutStatus).catch(() => {});
+    const requestId = ++myStatusRequestRef.current;
+    const apply = <T,>(setter: (v: T) => void) => (v: T) => {
+      if (myStatusRequestRef.current === requestId) setter(v);
+    };
+    apiFetch<MeAttendance>('/attendance/me').then(apply(setMyStatus)).catch(() => {});
+    apiFetch<WeeklySummary>('/attendance/me/weekly').then(apply(setWeekly)).catch(() => {});
+    apiFetch<PendingCorrectionRow[]>('/attendance-correction/pending').then(apply(setPendingCorrections)).catch(() => {});
+    apiFetch<CancelClockOutStatus | null>('/attendance-correction/cancel-clock-out/today').then(apply(setCancelClockOutStatus)).catch(() => {});
   }
 
   useEffect(() => {
@@ -961,6 +993,8 @@ export default function EmployeeHome() {
     setClientQuery(initialClientName);
     setClientPickerOpen(false);
     setProjectName('');
+    setProjectId('');
+    setTaskId('');
     const initialWorkStart = nowHHMM();
     setWorkStart(initialWorkStart);
     setWorkEnd('');
@@ -993,10 +1027,15 @@ export default function EmployeeHome() {
     // 있으면 비동기로 덮어쓴다. GPS 도착감지 등으로 이미 특정 고객사명이 넘어온 경우(prefilledClientName)
     // 는 그 값이 우선이라 고객사명만은 덮어쓰지 않는다.
     if (EFFORT_CONTINUATION_STATUSES_FRONT.has(code)) {
-      apiFetch<{ sourceStatus: string; clientName: string; projectName: string; workType: string; startTime: string; description: string } | null>(
+      // 2026-09-30 수정(Medium): 필드별 "아직 손대지 않았는지" 비교는 a10b7c8에서 들어갔지만
+      // 요청 순서는 보장되지 않았다 — 폼 A를 열고 즉시 폼 B를 열면 A의 늦은 응답이 B 폼에 적용될
+      // 수 있다(두 폼의 초기값이 같으면 비교 조건이 참이 되어 통과). 요청 번호로 최신 것만 반영한다.
+      const detailRequestId = ++detailFormRequestRef.current;
+      apiFetch<{ sourceStatus: string; clientName: string; projectName: string; projectId?: string | null; taskId?: string | null; workType: string; startTime: string; description: string } | null>(
         `/attendance/effort/in-progress?status=${code}`
       )
         .then((open) => {
+          if (detailFormRequestRef.current !== detailRequestId) return;
           if (!open) return;
           const startHHMM = isoToHHMM(open.startTime);
           // 2026-09-22: 이 조회가 응답을 받기 전에 사용자가 이미 폼에 입력을 시작했다면 그
@@ -1009,6 +1048,8 @@ export default function EmployeeHome() {
             setClientQuery((prev) => (prev === initialClientName ? open.clientName : prev));
           }
           if (open.projectName) setProjectName((prev) => (prev === '' ? open.projectName : prev));
+          if (open.projectId) setProjectId((prev) => (prev === '' ? open.projectId! : prev));
+          if (open.taskId) setTaskId((prev) => (prev === '' ? open.taskId! : prev));
           if (open.workType) setWorkType((prev) => (prev === initialWorkType ? open.workType : prev));
           setWorkStart((prev) => (prev === initialWorkStart ? startHHMM : prev));
           const { workDetail: wd, workReason: wr, personnel: pn } = parseComposedDescription(open.description || '');
@@ -1119,7 +1160,12 @@ export default function EmployeeHome() {
       // 막혀 사용자가 다시 눌러야 하는 번거로움이 생긴다 — attemptWithLocationRetry가 실패 시
       // 재측정을 시도하긴 하지만, 애초에 시도조차 안 하는 것보단 미리 하는 게 매끄럽다).
       const isFirstStatusToday = !myStatus?.record?.clockInAt;
-      if (isFirstStatusToday && WORK_START_STATUSES_FRONT.has(code)) {
+      // 2026-09-30 수정: 본사근무(HQ_WORKING)는 "오늘 첫 등록"이 아니어도 서버가 위치대조를
+      // 시도하고 그 결과를 "하루 1회 봐주기" 집계에 넣는다(attendance.routes.ts). 첫 등록일 때만
+      // 위치를 보내면, 하루에 본사근무를 여러 번 등록하는 직원(예: 본사→고객사→본사)은 서버가
+      // 이 등록을 "위치 미확인"으로 세다가 결국 막히는데, 정작 앱에는 그 시점에 위치를 다시
+      // 보낼 방법이 없어 갇히게 된다. 본사근무는 첫 등록이 아니어도 항상 캡처해서 보낸다.
+      if ((isFirstStatusToday && WORK_START_STATUSES_FRONT.has(code)) || code === 'HQ_WORKING') {
         await refreshHqQuickLocation();
         // 이상치(순간이동) 감지는 본사근무처럼 대조할 고정 좌표가 있는 경우에만 의미가 있다
         // (getCurrentLocationWithStatus 내부에서 직전 위치와의 순간이동만 보므로, 재택 등
@@ -1153,8 +1199,10 @@ export default function EmployeeHome() {
             effortLog?: { id: string } | null;
             nightWork?: { session?: { id: string } } | null;
             businessTripLog?: { id: string } | null;
+            undoable?: boolean;
           } | null;
-          if (res?.statusLog?.id) {
+          // 2026-09-30(L-10): 기존 기록을 갱신한 재저장이면 되돌리기를 띄우지 않는다(원래 기록까지 지워지므로).
+          if (res?.statusLog?.id && res.undoable !== false) {
             setUndoInfo({
               statusLogId: res.statusLog.id,
               effortLogId: res.effortLog?.id,
@@ -1321,6 +1369,8 @@ export default function EmployeeHome() {
         // 곳(본점/세양센터 등)이어도 서버가 정확히 이 지점만 대조하도록(2026-09-08).
         clientId: clientId || undefined,
         projectName,
+        projectId: projectId || undefined,
+        taskId: taskId || undefined,
         workType,
         startTime: workStart,
         endTime: workEnd || undefined,
@@ -1539,6 +1589,15 @@ export default function EmployeeHome() {
               관리자 화면
             </button>
           )}
+          {/* ESD 2.0 (2026-10-01 추가, 사용자 요청사항 5): 직원 본인이 자신의 프로젝트 성과 근거를
+              직접 확인할 수 있는 화면으로 연결한다 — 관리자 전용이 아니라 모든 직원에게 보인다. */}
+          <button
+            className="secondary"
+            style={{ width: 'auto', margin: 0, whiteSpace: 'nowrap' }}
+            onClick={() => router.push('/my-performance')}
+          >
+            내 성과
+          </button>
           <button
             className="secondary"
             style={{ width: 'auto', margin: 0, whiteSpace: 'nowrap' }}
@@ -1955,9 +2014,14 @@ export default function EmployeeHome() {
                 clockInAt={myStatus.record.clockInAt}
                 locationConsentGiven={Boolean(me?.locationConsentGiven)}
                 onCancel={() => { setShowClockOutConfirm(false); setClockOutThenNightWork(false); }}
-                onConfirm={async ({ locationAddress, locationStatus, earlyLeaveReason }) => {
+                onConfirm={async ({ locationAddress, locationStatus, earlyLeaveReason, dailyWorkLog }) => {
                   // 18시 이후 정규근무분 초과(야간작업 등록 제안) 여부를 응답에서 바로 확인해야 해서
                   // run()을 안 거치고 직접 호출한다(NIGHT_WORK 등록과 같은 이유).
+                  // 2026-09-30 수정(Critical): 일일업무일지(1단계 강제 마감) — 예전엔 이 함수가
+                  // dailyWorkLog를 구조분해하지 않아, 모달이 필수 입력까지 받아 만든 값이 여기서
+                  // 통째로 버려졌다(서버도 그 값을 안 받아서 업무일지가 한 건도 저장되지 않았다).
+                  // 그리고 실패 시에는 모달을 닫지 않고 그 안에 사유를 보여준다 — 작성한 일지와
+                  // 조기퇴근 사유가 날아가지 않도록 하기 위함이라, 여기서 에러를 삼키지 않고 다시 던진다.
                   setMessage(null);
                   setMessageIsError(false);
                   const viaNightWorkBanner = clockOutThenNightWork;
@@ -1970,6 +2034,7 @@ export default function EmployeeHome() {
                           ...(locationAddress ? { locationAddress } : {}),
                           locationStatus,
                           ...(earlyLeaveReason ? { earlyLeaveReason } : {}),
+                          dailyWorkLog,
                         }),
                       }
                     );
@@ -1985,12 +2050,15 @@ export default function EmployeeHome() {
                     } else if (res.lateClockOutSuggestion) {
                       setLateClockOutSuggestion(res.lateClockOutSuggestion);
                     }
+                    setShowClockOutConfirm(false);
+                    setClockOutThenNightWork(false);
                   } catch (err) {
                     setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
                     setMessageIsError(true);
+                    // 모달이 사유를 표시하고 열린 상태로 남도록 그대로 다시 던진다(SlideToConfirm은
+                    // false/예외를 받으면 손잡이를 원위치로 되돌린다).
+                    throw err;
                   }
-                  setShowClockOutConfirm(false);
-                  setClockOutThenNightWork(false);
                 }}
               />
             )}
@@ -2405,8 +2473,37 @@ export default function EmployeeHome() {
 
               {EFFORT_STATUSES.has(detailStatus) && detailStatus !== 'HQ_WORKING' && showMoreFields && (
                 <>
-                  <label className="field-label">프로젝트명</label>
-                  <input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="예: 백업시스템 구축 2차" />
+                  <label className="field-label">프로젝트</label>
+                  <select
+                    className="field-select"
+                    value={projectId}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setProjectId(nextId);
+                      setTaskId('');
+                      const p = projectOptions.find((x) => x.id === nextId);
+                      if (p) {
+                        // 서버가 어차피 projectId 기준으로 정식 명칭을 다시 채워 저장하지만(신뢰 안 함),
+                        // 화면에도 바로 보이도록 미리 채워둔다.
+                        setProjectName(p.name);
+                      }
+                    }}
+                  >
+                    <option value="">미등록 프로젝트 / 자유입력</option>
+                    {projectOptions.map((p) => <option key={p.id} value={p.id}>{p.code} · {p.name}</option>)}
+                  </select>
+                  {!projectId && (
+                    <input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="예: 백업시스템 구축 2차 (기존 기록 호환용 자유입력)" />
+                  )}
+                  {selectedProject && selectedProject.tasks.length > 0 && (
+                    <>
+                      <label className="field-label">Task (선택)</label>
+                      <select className="field-select" value={taskId} onChange={(e) => setTaskId(e.target.value)}>
+                        <option value="">Task 미지정</option>
+                        {selectedProject.tasks.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
+                      </select>
+                    </>
+                  )}
                 </>
               )}
 

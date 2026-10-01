@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
@@ -12,7 +12,7 @@ import { sendPushToUser } from '../../common/push';
  * 않고(관리자 전용 푸시 타겟팅이 아직 없음), 상황판이 15초마다 자동 갱신되는 걸 활용해
  * "새 답장" 카운트로 보여준다(admin/unread-summary).
  */
-export const messagesRouter = Router();
+export const messagesRouter = createRouter();
 messagesRouter.use(requireAuth);
 
 const sendMessageSchema = z.object({
@@ -138,10 +138,24 @@ messagesRouter.get('/admin/unread-summary', requireRole('HR_ADMIN', 'SYSTEM_ADMI
  * 직원 답장 개수(0일 수 있음).
  */
 messagesRouter.get('/admin/conversations', requireRole('HR_ADMIN', 'SYSTEM_ADMIN'), async (_req, res) => {
-  const rows = await prisma.adminMessage.findMany({
-    include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
-    orderBy: { createdAt: 'desc' },
-  });
+  // 2026-09-30 수정(M-3): 예전엔 전체 메시지를 상한 없이 전부 불러와 메모리에서 대화별로 묶었다 —
+  // 메시지는 계속 쌓이기만 하므로(20초 폴링 화면) 시간이 갈수록 무한히 무거워졌다. 이제
+  // (1) 사용자별 최신 메시지 1건(DISTINCT ON), (2) 사용자별 안 읽은 답장 수(groupBy) 두 쿼리로 끝낸다.
+  // 응답 형태와 정렬(최근 대화순)은 기존과 동일하다.
+  const [latestPerUser, unreadGroups] = await Promise.all([
+    prisma.adminMessage.findMany({
+      distinct: ['userId'],
+      orderBy: [{ userId: 'asc' }, { createdAt: 'desc' }],
+      include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
+    }),
+    prisma.adminMessage.groupBy({
+      by: ['userId'],
+      where: { senderIsAdmin: false, readAt: null },
+      _count: { _all: true },
+    }),
+  ]);
+  const unreadByUser = new Map(unreadGroups.map((g) => [g.userId, g._count._all] as const));
+  const rows = [...latestPerUser].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   const byUser = new Map<
     string,
     {
@@ -156,22 +170,16 @@ messagesRouter.get('/admin/conversations', requireRole('HR_ADMIN', 'SYSTEM_ADMIN
     }
   >();
   for (const r of rows) {
-    const isUnreadReply = !r.senderIsAdmin && !r.readAt;
-    const existing = byUser.get(r.userId);
-    if (existing) {
-      if (isUnreadReply) existing.unreadCount += 1;
-    } else {
-      byUser.set(r.userId, {
-        userId: r.userId,
-        name: r.user.name,
-        employeeNo: r.user.employeeNo,
-        department: r.user.department.name,
-        lastMessage: r.message,
-        lastMessageAt: r.createdAt,
-        lastMessageFromAdmin: r.senderIsAdmin,
-        unreadCount: isUnreadReply ? 1 : 0,
-      });
-    }
+    byUser.set(r.userId, {
+      userId: r.userId,
+      name: r.user.name,
+      employeeNo: r.user.employeeNo,
+      department: r.user.department.name,
+      lastMessage: r.message,
+      lastMessageAt: r.createdAt,
+      lastMessageFromAdmin: r.senderIsAdmin,
+      unreadCount: unreadByUser.get(r.userId) ?? 0,
+    });
   }
   return res.json({ success: true, data: Array.from(byUser.values()) });
 });

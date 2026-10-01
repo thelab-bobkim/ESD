@@ -139,7 +139,9 @@ export default function AdminAuditorsPage() {
                           type="checkbox"
                           style={{ width: 'auto', margin: 0 }}
                           checked={u.isAuditor}
-                          disabled={saving}
+                          // 2026-09-30 수정(L-11): 서버가 "감사인은 1명"을 강제하므로 한 명을 저장하는 동안 다른 사람을
+                          // 동시에 켜면 결과가 요청 도착 순서에 따라 뒤집힐 수 있었다 — 저장 중엔 모든 체크박스를 잠근다.
+                          disabled={saving || savingIds.size > 0}
                           onChange={(e) => toggleAuditor(u.id, e.target.checked)}
                         />
                       </td>

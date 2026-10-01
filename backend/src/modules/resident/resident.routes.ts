@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
@@ -6,7 +6,7 @@ import { recordAuditLog } from '../../common/audit';
 import { ensureClockIn } from '../../common/attendance-helpers';
 import { checkLocationMatch, buildMismatchCoords } from '../../common/location';
 
-export const residentRouter = Router();
+export const residentRouter = createRouter();
 residentRouter.use(requireAuth);
 
 const checkinSchema = z.object({

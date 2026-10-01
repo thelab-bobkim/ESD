@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
@@ -8,7 +8,7 @@ import { invalidatePolicyCache } from '../../common/policy-engine/policy-engine'
 // 주의(MVP 한계): scopeDepartmentId가 NULL인 "전사 기본값" 행은 PostgreSQL의 NULL 유일성 특성상
 // upsert 경합 시 중복 생성될 수 있다. 전사 확산 단계에서는 scopeDepartmentId를
 // NOT NULL + 'GLOBAL' sentinel 값으로 마이그레이션하는 것을 권장한다.
-export const policyRouter = Router();
+export const policyRouter = createRouter();
 policyRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN'));
 
 policyRouter.get('/settings', async (_req, res) => {

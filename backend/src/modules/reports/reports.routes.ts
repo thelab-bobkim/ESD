@@ -1,14 +1,51 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import ExcelJS from 'exceljs';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
-import { realDayWindow, computeTimelineSegments, computeClockInMismatch } from '../../common/attendance-helpers';
+import { realDayWindow, computeTimelineSegments, computeClockInMismatch, getLunchBreakMinutes } from '../../common/attendance-helpers';
+// 2026-09-30 수정(Medium): 승인 계열과 동일한 부서 스코핑을 리포트에도 적용한다(아래 userDeptScope 참고).
+import { getApprovableDepartmentIds } from '../approval/approval.routes';
 import { recordAuditLog } from '../../common/audit';
 import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 
-export const reportsRouter = Router();
+export const reportsRouter = createRouter();
 reportsRouter.use(requireAuth, requireRole('HR_ADMIN', 'SYSTEM_ADMIN', 'TEAM_LEAD'));
+
+/**
+ * 2026-09-30 수정(Medium): 리포트 라우터 전체에 부서 스코핑이 빠져 있었다 — approval.routes.ts와
+ * dashboard.routes.ts(/correct-status)는 "TEAM_LEAD는 본인 소속/담당 부서까지만"을 구현했는데
+ * 여기만 없어서, TEAM_LEAD 한 명이 전사 인원의 출퇴근 시각·퇴근 위치(주소)·공수·타임라인을
+ * 조회·다운로드할 수 있었다. HR_ADMIN/SYSTEM_ADMIN은 null(=전사)로 기존과 동일하다.
+ */
+async function scopeDepartmentIds(req: import('express').Request): Promise<string[] | null> {
+  return getApprovableDepartmentIds(req.authUser!);
+}
+
+/** user 관계에 걸 부서 스코프 조건 — null(전사)이면 빈 객체라 기존 동작과 완전히 같다. */
+function userDeptScope(departmentIds: string[] | null) {
+  return departmentIds ? { departmentId: { in: departmentIds } } : {};
+}
+
+/**
+ * 2026-09-30 수정(Medium): 내보내기/집계 쿼리에 상한이 아예 없었다(a10b7c8에서 "조용히 잘리는"
+ * take를 제거한 결과). 잘림은 없어졌지만, 150명 × 수년치를 한 번에 메모리에 올리게 되어 소형
+ * 인스턴스에서 OOM 위험이 생겼다. 임의로 자르는 대신 "이 이상이면 명시적으로 거절"해서,
+ * 호출부가 잘린 데이터를 정상 결과로 오해하지 않게 한다(카테고리 5의 정의 그대로).
+ */
+const EXPORT_ROW_LIMIT = 100_000;
+function isOverExportLimit(rows: unknown[]): boolean {
+  return rows.length > EXPORT_ROW_LIMIT;
+}
+function exportLimitError(res: import('express').Response) {
+  return res.status(400).json({
+    success: false,
+    error: {
+      code: 'EXPORT_TOO_LARGE',
+      message: `내보낼 데이터가 너무 많습니다(최대 ${EXPORT_ROW_LIMIT.toLocaleString()}건). 기간을 좁혀서 다시 시도해주세요.`,
+    },
+  });
+}
 
 // 2026-09-18: CSV로 다운받은 엑셀 파일에서 한글(이름 등)이 "源?蟲?" 식으로 깨져 보인다는 문의로
 // 원인 확인 — 내용 자체는 UTF-8로 정상 생성되고 있었지만, 파일 맨 앞에 BOM(Byte Order Mark)이
@@ -150,9 +187,10 @@ reportsRouter.get('/worktime-summary', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'from, to가 필요합니다(YYYY-MM-DD).' } });
   }
   const { from, to } = parsed.data;
+  const departmentIds = await scopeDepartmentIds(req);
   const records = await prisma.attendanceRecord.findMany({
     // 2026-09-04: attendance-detail과 동일하게 표시대상(includedInBoard)만 집계한다.
-    where: { workDate: { gte: new Date(from), lte: new Date(to) }, user: { includedInBoard: true } },
+    where: { workDate: { gte: new Date(from), lte: new Date(to) }, user: { includedInBoard: true, ...userDeptScope(departmentIds) } },
     include: { user: { include: { department: true } } },
   });
 
@@ -188,9 +226,10 @@ reportsRouter.get('/effort-summary', async (req, res) => {
   const { from, to } = parsed.data;
   const workType = typeof req.query.workType === 'string' && req.query.workType !== 'ALL' ? req.query.workType : undefined;
 
+  const departmentIds = await scopeDepartmentIds(req);
   const fetchLogs = (fromD: Date, toD: Date) =>
     prisma.effortLog.findMany({
-      where: { workDate: { gte: fromD, lte: toD }, minutes: { not: null }, ...(workType ? { workType } : {}) },
+      where: { workDate: { gte: fromD, lte: toD }, minutes: { not: null }, ...(workType ? { workType } : {}), user: userDeptScope(departmentIds) },
       // 2026-09-14: "엔지니어별" 관점 드롭다운을 실제 기술부 소속만으로 좁히려면(프론트의
       // classifyDeptGroup) 부서명이 필요해서 department도 같이 내려준다.
       include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
@@ -300,9 +339,10 @@ reportsRouter.get('/effort-summary', async (req, res) => {
  * 동일한 재직중 표시대상(includedInBoard) 전체 명단에서 이름/부서만 내려주고, 기술부 여부 판별
  * (classifyDeptGroup)과 기간별 투입시간 합산은 프론트에서 처리한다.
  */
-reportsRouter.get('/employee-roster', async (_req, res) => {
+reportsRouter.get('/employee-roster', async (req, res) => {
+  const departmentIds = await scopeDepartmentIds(req);
   const users = await prisma.user.findMany({
-    where: { includedInBoard: true, employmentStatus: 'ACTIVE', name: { not: { startsWith: 'SAMPLE_' } } },
+    where: { includedInBoard: true, employmentStatus: 'ACTIVE', name: { not: { startsWith: 'SAMPLE_' } }, ...userDeptScope(departmentIds) },
     select: { id: true, name: true, department: { select: { name: true } } },
     orderBy: { name: 'asc' },
   });
@@ -341,12 +381,14 @@ reportsRouter.get('/effort-timeline', async (req, res) => {
   const { from, to, scope, value } = parsed.data;
   const workType = typeof req.query.workType === 'string' && req.query.workType !== 'ALL' ? req.query.workType : undefined;
 
+  const departmentIds = await scopeDepartmentIds(req);
   const logs = await prisma.effortLog.findMany({
     where: {
       workDate: { gte: new Date(from), lte: new Date(to) },
       minutes: { not: null },
       ...(workType ? { workType } : {}),
       ...(scope === 'client' ? { clientName: value } : { userId: value }),
+      user: userDeptScope(departmentIds),
     },
     include: { user: { select: { name: true } } },
     orderBy: [{ workDate: 'asc' }, { startTime: 'asc' }],
@@ -377,14 +419,19 @@ reportsRouter.get('/effort-timeline', async (req, res) => {
 });
 
 reportsRouter.get('/effort-export', async (req, res) => {
+  const departmentIds = await scopeDepartmentIds(req);
   const logs = await prisma.effortLog.findMany({
+    where: { user: userDeptScope(departmentIds) },
     include: { user: { select: { name: true, employeeNo: true } } },
     orderBy: { workDate: 'desc' },
+    // 2026-09-30 수정: 무제한 로드 대신 명시적 상한 — 초과 시 조용히 자르지 않고 400으로 알린다.
+    take: EXPORT_ROW_LIMIT + 1,
     // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
     // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
     // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
     // 낮게 나와도 에러 없이 그대로 내려가던 문제).
   });
+  if (isOverExportLimit(logs)) return exportLimitError(res);
   const rows = logs.map((l) => ({
     employeeNo: l.user.employeeNo,
     name: l.user.name,
@@ -409,11 +456,14 @@ reportsRouter.get('/effort-export', async (req, res) => {
  * 와 달리, (근무일자, 사용자, 고객사) 단위로 미리 합산해서 한 줄로 보여준다. 완료된(작업시간이
  * 계산된) 기록만, 고객사명이 있는 기록만 대상으로 한다(effort-summary와 동일한 기준).
  */
-reportsRouter.get('/client-work-daily-export', async (_req, res) => {
+reportsRouter.get('/client-work-daily-export', async (req, res) => {
+  const departmentIds = await scopeDepartmentIds(req);
   const logs = await prisma.effortLog.findMany({
-    where: { minutes: { not: null } },
+    where: { minutes: { not: null }, user: userDeptScope(departmentIds) },
     include: { user: { select: { name: true, employeeNo: true } } },
     orderBy: { workDate: 'desc' },
+    // 2026-09-30 수정: 명시적 상한(초과 시 400).
+    take: EXPORT_ROW_LIMIT + 1,
     // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
     // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
     // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
@@ -454,15 +504,19 @@ reportsRouter.get('/client-work-daily-export', async (_req, res) => {
 });
 
 reportsRouter.get('/attendance-export', async (req, res) => {
+  const departmentIds = await scopeDepartmentIds(req);
   const records = await prisma.attendanceRecord.findMany({
-    where: { user: { includedInBoard: true } },
+    where: { user: { includedInBoard: true, ...userDeptScope(departmentIds) } },
     include: { user: { select: { name: true, employeeNo: true } } },
     orderBy: { workDate: 'desc' },
+    // 2026-09-30 수정: 명시적 상한(초과 시 400).
+    take: EXPORT_ROW_LIMIT + 1,
     // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
     // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
     // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
     // 낮게 나와도 에러 없이 그대로 내려가던 문제).
   });
+  if (isOverExportLimit(records)) return exportLimitError(res);
   const rows = records.map((r) => ({
     employeeNo: r.user.employeeNo,
     name: r.user.name,
@@ -513,21 +567,26 @@ function classifyDeptGroup(department: string): DeptGroup {
 const DEPT_GROUP_LABELS: Record<DeptGroup, string> = { sales: '영업부', tech: '기술부', other: '기타' };
 const DEPT_GROUP_ORDER: Record<DeptGroup, number> = { sales: 0, tech: 1, other: 2 };
 
-reportsRouter.get('/attendance-work-export', async (_req, res) => {
+reportsRouter.get('/attendance-work-export', async (req, res) => {
+  const departmentIds = await scopeDepartmentIds(req);
   const [records, logs] = await Promise.all([
     prisma.attendanceRecord.findMany({
-      where: { user: { includedInBoard: true } },
+      where: { user: { includedInBoard: true, ...userDeptScope(departmentIds) } },
       include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
       orderBy: { workDate: 'desc' },
+      // 2026-09-30 수정: 명시적 상한(초과 시 400) — ExcelJS 워크북까지 메모리에 만들어지므로
+      // 무제한이면 소형 인스턴스에서 OOM으로 죽는다.
+      take: EXPORT_ROW_LIMIT + 1,
       // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
     // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
     // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
     // 낮게 나와도 에러 없이 그대로 내려가던 문제).
     }),
     prisma.effortLog.findMany({
-      where: { minutes: { not: null } },
+      where: { minutes: { not: null }, user: userDeptScope(departmentIds) },
       include: { user: { select: { name: true, employeeNo: true, department: { select: { name: true } } } } },
       orderBy: { workDate: 'desc' },
+      take: EXPORT_ROW_LIMIT + 1,
       // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
     // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
     // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
@@ -535,6 +594,7 @@ reportsRouter.get('/attendance-work-export', async (_req, res) => {
     }),
   ]);
 
+  if (isOverExportLimit(records) || isOverExportLimit(logs)) return exportLimitError(res);
   const userInfo = new Map<string, { employeeNo: string; name: string; department: string }>();
   for (const r of records) userInfo.set(r.userId, { employeeNo: r.user.employeeNo, name: r.user.name, department: r.user.department.name });
   for (const l of logs) userInfo.set(l.userId, { employeeNo: l.user.employeeNo, name: l.user.name, department: l.user.department.name });
@@ -680,15 +740,19 @@ reportsRouter.get('/attendance-work-export', async (_req, res) => {
 });
 
 reportsRouter.get('/night-work-export', async (req, res) => {
+  const departmentIds = await scopeDepartmentIds(req);
   const sessions = await prisma.nightWorkSession.findMany({
-    where: { user: { includedInBoard: true } },
+    where: { user: { includedInBoard: true, ...userDeptScope(departmentIds) } },
     include: { user: { select: { name: true, employeeNo: true } }, leaveConversionRequest: true },
     orderBy: { startedAt: 'desc' },
+    // 2026-09-30 수정: 명시적 상한(초과 시 400).
+    take: EXPORT_ROW_LIMIT + 1,
     // 2026-09-30 수정: take 상한이 있으면 회사 전체 근태/공수기록이 최근 며칠치만 남고 조용히
     // 잘려나간다(150명 규모면 하루 100건 넘게 쌓여 1000~5000건 상한을 금방 넘김) — 이 엔드포인트는
     // 페이지네이션 없는 전체기간 다운로드용 리포트라 상한을 두지 않는다(주간/월간 누계가 실제보다
     // 낮게 나와도 에러 없이 그대로 내려가던 문제).
   });
+  if (isOverExportLimit(sessions)) return exportLimitError(res);
   const rows = sessions.map((s) => ({
     employeeNo: s.user.employeeNo,
     name: s.user.name,
@@ -721,8 +785,9 @@ reportsRouter.get('/attendance-detail', async (req, res) => {
   // 확인할 방법이 없었다. 지금은 표시대상(includedInBoard) 전원을 기준으로 조회하고, 그날
   // 기록이 없으면 출근/퇴근을 전부 null로 둔 채 "미출근" 상태로 보여준다(회사 요청 — 모든
   // 대상자가 항상 보이고, 앱을 안 쓰는 사람도 바로 드러나야 함).
+  const departmentIds = await scopeDepartmentIds(req);
   const scopedUsers = await prisma.user.findMany({
-    where: { includedInBoard: true, employmentStatus: 'ACTIVE', name: { not: { startsWith: 'SAMPLE_' } } },
+    where: { includedInBoard: true, employmentStatus: 'ACTIVE', name: { not: { startsWith: 'SAMPLE_' } }, ...userDeptScope(departmentIds) },
     include: { department: true },
     orderBy: [{ department: { name: 'asc' } }, { name: 'asc' }],
   });
@@ -814,6 +879,12 @@ reportsRouter.get('/daily-timeline', async (req, res) => {
   if (!user) {
     return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '직원을 찾을 수 없습니다.' } });
   }
+  // 2026-09-30 수정: 특정 직원의 하루 타임라인은 userId를 직접 받는 엔드포인트라 부서 스코프를
+  // 반드시 확인해야 한다(예전엔 TEAM_LEAD가 아무 userId나 넣어 전사 직원의 동선을 볼 수 있었다).
+  const timelineScope = await scopeDepartmentIds(req);
+  if (timelineScope && !timelineScope.includes(user.departmentId)) {
+    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '다른 부서 직원의 기록은 조회할 권한이 없습니다.' } });
+  }
 
   const record = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate: workDateLabel } } });
   const logs = await prisma.statusChangeLog.findMany({
@@ -860,23 +931,35 @@ reportsRouter.post('/unresolved-clockouts/:recordId/force-clock-out', async (req
   if (!parsed.success) {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '퇴근시각과 사유를 모두 입력해주세요.' } });
   }
-  const { recordId } = req.params;
+  // 2026-09-30 수정: 비UUID 값이 오면 findUnique가 P2023으로 던지고, async 핸들러에서 그 예외가
+  // 백엔드 프로세스를 종료시켰다(Express 4는 async rejection을 처리하지 않음) — 먼저 400으로 거른다.
+  const recordId = req.params.recordId;
+  if (!z.string().uuid().safeParse(recordId).success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '근태 기록 id가 올바르지 않습니다.' } });
+  }
   const { clockOutAt: clockOutAtRaw, reason } = parsed.data;
 
   const existing = await prisma.attendanceRecord.findUnique({
     where: { id: recordId },
-    include: { breakSessions: true },
+    include: { breakSessions: true, user: { select: { departmentId: true } } },
   });
   if (!existing || !existing.clockInAt) {
     return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '근태 기록을 찾을 수 없습니다.' } });
+  }
+  // 2026-09-30 수정: 부서 스코프 확인(TEAM_LEAD가 다른 부서 직원의 퇴근을 강제확정하지 못하게).
+  const forceScope = await scopeDepartmentIds(req);
+  if (forceScope && !forceScope.includes(existing.user.departmentId)) {
+    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '다른 부서 직원의 기록은 처리할 권한이 없습니다.' } });
   }
   if (existing.clockOutAt) {
     return res.status(400).json({ success: false, error: { code: 'ALREADY_CLOCKED_OUT', message: '이미 퇴근 처리된 기록입니다.' } });
   }
 
   const clockOutAt = new Date(clockOutAtRaw);
-  if (Number.isNaN(clockOutAt.getTime()) || clockOutAt <= existing.clockInAt) {
-    return res.status(400).json({ success: false, error: { code: 'OUT_OF_RANGE', message: '퇴근 시각은 출근 이후여야 합니다.' } });
+  // 2026-09-30 수정(Medium): 미래 시각 금지 — 예전엔 "출근 이후"만 확인해서 다음날 시각도 통과했고,
+  // 그대로 totalWorkedMinutes가 굳어져 근로시간 집계가 부풀려질 수 있었다.
+  if (Number.isNaN(clockOutAt.getTime()) || clockOutAt <= existing.clockInAt || clockOutAt.getTime() > Date.now()) {
+    return res.status(400).json({ success: false, error: { code: 'OUT_OF_RANGE', message: '퇴근 시각은 출근 이후, 현재 시각 이전이어야 합니다.' } });
   }
 
   const totalBreakMinutes = existing.breakSessions.reduce((sum, b) => {
@@ -884,7 +967,11 @@ reportsRouter.post('/unresolved-clockouts/:recordId/force-clock-out', async (req
     return sum + Math.round((b.endAt.getTime() - b.startAt.getTime()) / 60000);
   }, 0);
   const grossMinutes = Math.round((clockOutAt.getTime() - existing.clockInAt.getTime()) / 60000);
-  const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes);
+  // 2026-09-30 수정(Medium): 점심시간 공제가 빠져 있었다 — /clock-out과 applyAttendanceCorrection은
+  // 모두 -lunchBreakMinutes를 적용하는데 이 경로만 안 해서, 같은 시각으로 확정해도 관리자
+  // 강제확정이 60분 더 높게(급여/주52시간 왜곡) 계산됐다. 세 경로의 계산식을 일치시킨다.
+  const lunchBreakMinutes = await getLunchBreakMinutes();
+  const totalWorkedMinutes = Math.max(0, grossMinutes - totalBreakMinutes - lunchBreakMinutes);
 
   const record = await prisma.attendanceRecord.update({
     where: { id: existing.id },
@@ -895,6 +982,22 @@ reportsRouter.post('/unresolved-clockouts/:recordId/force-clock-out', async (req
       correctionReason: `[관리자 직접 확정] ${reason}`,
     },
   });
+
+  // 2026-09-30 수정(Medium): 퇴근이 확정됐으니 위치이탈 자동감지가 만들어둔 대기중 제안은
+  // 더 이상 의미가 없다 — 정리하지 않으면 승인함에 오탐이 유령으로 남는다(/clock-out과 동일 처리).
+  const pendingSuggestion = await prisma.attendanceCorrectionRequest.findFirst({
+    where: { attendanceRecordId: existing.id, status: 'PENDING', reason: { startsWith: '[위치 자동감지]' } },
+  });
+  if (pendingSuggestion) {
+    await prisma.attendanceCorrectionRequest.update({ where: { id: pendingSuggestion.id }, data: { status: 'REJECTED' } });
+    const linkedApproval = await prisma.approvalRequest.findUnique({ where: { attendanceCorrectionRequestId: pendingSuggestion.id } });
+    if (linkedApproval && linkedApproval.status === 'PENDING') {
+      await prisma.approvalRequest.update({
+        where: { id: linkedApproval.id },
+        data: { status: 'REJECTED', approverId: req.authUser!.userId, decidedAt: new Date(), comment: '관리자가 퇴근 시각을 직접 확정하여 자동감지 제안을 정리함' },
+      });
+    }
+  }
 
   await recordAuditLog({
     actorUserId: req.authUser!.userId,

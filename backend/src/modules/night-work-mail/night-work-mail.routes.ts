@@ -1,6 +1,10 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
+import { takeWithTruncation, setTruncationHeaders } from '../../common/list-limit';
+
+const NIGHT_WORK_MAIL_LIST_LIMIT = 1000;
 import { z } from 'zod';
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 
@@ -17,7 +21,7 @@ import { requireAuth, requireRole } from '../../common/guards/auth';
  * 호출하는 용도라 requireAuth 대신 고정 키(NIGHT_WORK_MAIL_SYNC_KEY) 인증을 쓴다 — 그래서 이 라우터
  * 안에서 requireAuth를 등록하기 전에 /sync를 먼저 선언한다(Express는 등록 순서대로 미들웨어가 붙는다).
  */
-export const nightWorkMailRouter = Router();
+export const nightWorkMailRouter = createRouter();
 
 function requireSyncKey(req: Request, res: Response, next: NextFunction) {
   const expected = process.env.NIGHT_WORK_MAIL_SYNC_KEY;
@@ -28,17 +32,27 @@ function requireSyncKey(req: Request, res: Response, next: NextFunction) {
     });
   }
   const provided = req.headers['x-sync-key'];
-  if (provided !== expected) {
+  // 2026-09-30 수정(L-6): 일반 문자열 비교(!==)는 앞에서부터 다른 글자가 나오는 순간 끝나서, 응답
+  // 시간 차이로 키를 한 글자씩 추측할 여지가 있다 — 상수시간 비교로 바꾼다(길이가 달라도 해시로 맞춰 비교).
+  const digest = (v: string) => crypto.createHash('sha256').update(v).digest();
+  if (typeof provided !== 'string' || !crypto.timingSafeEqual(digest(provided), digest(expected))) {
     return res.status(401).json({ success: false, error: { code: 'INVALID_SYNC_KEY', message: '동기화 키가 올바르지 않습니다.' } });
   }
   next();
 }
 
+// 2026-09-30 수정: 형식 검증 없이 new Date()에 넘겨 Invalid Date가 되면, 항목 루프 중 예외로
+// 동기화 배치 전체가 500으로 실패했다(그 예외가 async 핸들러를 타고 프로세스를 종료시킬 수도 있었다).
+const isoDateTimeString = z
+  .string()
+  .min(1)
+  .refine((v) => !Number.isNaN(new Date(v).getTime()), '날짜 형식이 올바르지 않습니다.');
+
 const syncItemSchema = z.object({
   mailInternetMessageId: z.string().min(1),
   itemIndex: z.number().int().min(0).default(0),
   kind: z.enum(['NIGHT', 'WEEKEND']),
-  workDate: z.string().min(1), // ISO date string ("2026-09-22")
+  workDate: isoDateTimeString, // ISO date string ("2026-09-22")
   reporterName: z.string().min(1),
   reporterEmail: z.string().min(1),
   clientNameRaw: z.string().min(1),
@@ -47,7 +61,7 @@ const syncItemSchema = z.object({
   workContent: z.string().nullable().optional(),
   workers: z.string().nullable().optional(),
   note: z.string().nullable().optional(),
-  mailReceivedAt: z.string().min(1), // ISO datetime string
+  mailReceivedAt: isoDateTimeString, // ISO datetime string
   mailWebLink: z.string().nullable().optional(),
 });
 
@@ -162,11 +176,14 @@ nightWorkMailRouter.get('/', async (req, res) => {
     ];
   }
 
-  const rows = await prisma.nightWorkMailReport.findMany({
+  const fetched = await prisma.nightWorkMailReport.findMany({
     where,
     orderBy: [{ workDate: 'desc' }, { mailReceivedAt: 'desc' }],
-    take: 1000,
+    // 2026-09-30(M-3): 1건 더 조회해 잘림 여부를 판정하고 헤더로 알린다.
+    take: NIGHT_WORK_MAIL_LIST_LIMIT + 1,
   });
+  const { rows, truncated } = takeWithTruncation(fetched, NIGHT_WORK_MAIL_LIST_LIMIT);
+  setTruncationHeaders(res, truncated, NIGHT_WORK_MAIL_LIST_LIMIT);
   return res.json({ success: true, data: rows });
 });
 

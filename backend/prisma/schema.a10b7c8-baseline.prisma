@@ -1,0 +1,833 @@
+// Prisma schema — 전직원 상황판 및 근로시간 통합관리 시스템 (MVP)
+// 상세 설명은 /docs/DB_SCHEMA.md 참조
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DepartmentType {
+  HQ_SALES
+  HQ_ENGINEER
+  HQ_ETC
+  RESIDENT
+}
+
+// 데이터 출처 — 수동입력 vs 다우오피스 자동동기화 (User, AttendanceRecord 공용)
+enum DataSource {
+  MANUAL
+  DAUOFFICE
+}
+
+enum WorkType {
+  HQ_FLEX
+  HQ_FIXED
+  RESIDENT
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  ON_LEAVE
+  TERMINATED
+}
+
+enum RoleCode {
+  EMPLOYEE
+  TEAM_LEAD
+  HR_ADMIN
+  SYSTEM_ADMIN
+  PILOT_MANAGER
+  // 2026-09-20: "감사인" 권한(대표이사 요청) — 재택(REMOTE) 근무 등록 시 캡처된 원본 GPS 좌표를
+  // 열람할 수 있는 유일한 권한. HR_ADMIN/SYSTEM_ADMIN을 포함한 일반 관리자도 이 권한이 따로
+  // 없으면 볼 수 없다("특정 감사인만" — 관리자 전체가 아니라 지정된 소수만). SYSTEM_ADMIN이
+  // /admin/auditors 화면에서 특정 계정에 개별 부여/회수한다(common/ensure-roles.ts가 이 코드값의
+  // Role 행 존재를 서버 시작 시 보장함).
+  AUDITOR
+}
+
+enum AttendanceStatus {
+  HQ_WORKING
+  RESIDENT_ONSITE
+  OFFSITE
+  MEETING
+  MOVING
+  REMOTE
+  NIGHT_WORK
+  // 2026-09-06: 주말(토/일) 근무 전용 상태 — 주말에는 이 상태만 등록 가능하고 나머지는 막는다
+  // (attendance.routes.ts의 요일 기준 게이트 참고). DB에 이 값을 먼저 추가해야 하므로 배포 시
+  // "ALTER TYPE "AttendanceStatus" ADD VALUE IF NOT EXISTS 'WEEKEND_WORK';"를 먼저 실행할 것.
+  WEEKEND_WORK
+  ALT_DAY_OFF
+  ON_LEAVE
+  CLIENT_MEETING
+  CLIENT_WORK
+  BUSINESS_TRIP
+}
+
+enum StatusSource {
+  WEB
+  MOBILE
+  SYSTEM
+}
+
+enum NightWorkStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum LeaveConversionStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ApprovalType {
+  OVERTIME
+  NIGHT_WORK
+  LEAVE_CONVERSION
+  ATTENDANCE_CORRECTION
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PolicyValueType {
+  BOOLEAN
+  NUMBER
+  STRING
+  JSON
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum FeedbackCategory {
+  BUG
+  UX
+  POLICY
+  OTHER
+}
+
+enum AuditActionType {
+  VIEW
+  STATUS_CHANGE
+  APPROVE
+  REJECT
+  CORRECT
+  POLICY_CHANGE
+  LOCATION_DETAIL_VIEW
+  // 2026-09-18: 다우오피스 "전사 휴가현황" 스크래핑 수동/자동 실행 기록용.
+  DAUOFFICE_LEAVE_SCRAPE
+}
+
+// 2026-09-26: "일일업무일지"(대표이사 요청) — 오늘 근무형태에 따라 간단히 두 줄만 쓰면 되는 날과
+// 방문 고객사/작업내용 등을 자세히 적어야 하는 날을 구분한다. 판단 로직은
+// daily-work-log.routes.ts의 DETAILED_STATUSES 참고.
+enum DailyWorkLogFormType {
+  SIMPLE
+  DETAILED
+}
+
+model Department {
+  id        String          @id @default(uuid())
+  name      String          @unique
+  // 실제 회사 조직은 90여개 팀명을 그대로 쓰므로, type은 고정 필수값이 아니라
+  // "본사/상주" 같은 정책 판단용 참고 태그로만 사용한다(선택값).
+  type      DepartmentType?
+  parentId  String?
+  parent    Department?    @relation("DeptHierarchy", fields: [parentId], references: [id])
+  children  Department[]   @relation("DeptHierarchy")
+  users     User[]
+  policyOverrides PolicySetting[]
+
+  @@map("departments")
+}
+
+model Client {
+  id      String @id @default(uuid())
+  name    String
+  address String
+  // 고객사 방문(도착체크/미팅/작업) 시 GPS 위치 대조용 — 관리자가 직접 입력(지도에서 좌표 조회 후 입력).
+  // 미입력 상태면 위치 대조를 안 하고 그냥 통과시킨다.
+  latitude  Float?
+  longitude Float?
+
+  users            User[]
+  residentCheckins ResidentCheckin[]
+
+  @@map("clients")
+}
+
+model User {
+  id                String           @id @default(uuid())
+  employeeNo        String           @unique @map("employee_no")
+  name              String
+  // 다우오피스 동기화 계정은 이메일 정보가 없으므로 선택값으로 변경.
+  // 로그인은 email 또는 employeeNo(=다우오피스 loginId) 중 하나로 가능하다.
+  email             String?          @unique
+  passwordHash      String           @map("password_hash")
+  departmentId      String           @map("department_id")
+  department        Department       @relation(fields: [departmentId], references: [id])
+  assignedClientId  String?          @map("assigned_client_id")
+  assignedClient    Client?          @relation(fields: [assignedClientId], references: [id])
+  workType          WorkType         @map("work_type")
+  employmentStatus  EmploymentStatus @default(ACTIVE) @map("employment_status")
+  // 다우오피스 연동 관련 필드
+  dauofficeUserId   String?          @unique @map("dauoffice_user_id")
+  dataSource        DataSource       @default(MANUAL) @map("data_source")
+  // 다우오피스 동기화로 새로 생성된 계정은 true로 시작 — 최초 로그인 시 비밀번호 변경을 강제한다.
+  mustChangePassword Boolean         @default(false) @map("must_change_password")
+  // 고객사 방문 위치대조 기능에 대한 동의 시각(최초 1회 명시적 동의) — null이면 아직 미동의.
+  locationConsentAt  DateTime?       @map("location_consent_at")
+  // 개인정보 수집·이용 동의 시각(최초 1회 명시적 동의) — null이면 아직 미동의.
+  // 2026-08-30부터 앱 사용의 필수 전제조건(위치정보 동의와 함께)으로 운영 — index.tsx MandatoryConsentGate 참고.
+  privacyConsentAt   DateTime?       @map("privacy_consent_at")
+  // 2026-08-30 보안점검: 비밀번호 변경 시 이 값을 올려서, 그 전에 발급된 JWT를 전부 무효화한다
+  // (JWT는 상태를 안 갖는 토큰이라, 이 값이 없으면 비번을 바꿔도 예전 토큰이 만료 전까지 계속 유효했음).
+  // requireAuth가 매 요청마다 토큰 속 tokenVersion과 이 값을 비교한다 — common/guards/auth.ts 참고.
+  tokenVersion       Int             @default(0) @map("token_version")
+  // 2026-08-30 보안점검: 계정 단위 로그인 잠금(무차별 대입 방지, IP 기준 rate-limit과는 별개).
+  // 연속 실패 시 잠기고, 로그인 성공하면 둘 다 초기화된다 — auth.routes.ts /login 참고.
+  failedLoginAttempts Int            @default(0) @map("failed_login_attempts")
+  lockedUntil        DateTime?       @map("locked_until")
+  // 2026-09-20: "감사인 전용 로그인"(대표이사 요청) — 일반 로그인(/auth/login)과 완전히 분리된
+  // 별도 화면(/audit-login)에서, 아이디+비번 확인 후 추가로 요구하는 OTP 인증앱(TOTP) 비밀키.
+  // AUDITOR 권한이 없는 계정은 항상 null이고, 권한이 회수/이관되면(users.routes.ts의
+  // clearAuditorAccess) 즉시 지운다 — 감사인이 바뀔 때마다 새 사람이 자기 인증앱으로 다시
+  // 등록해야 한다(이전 감사인의 인증앱이 계속 유효해지는 일이 없도록).
+  auditorTotpSecret    String?   @map("auditor_totp_secret")
+  auditorTotpEnabledAt DateTime? @map("auditor_totp_enabled_at")
+  // 2026-09-04: 로그인 성공 시각 기록 — "이 직원이 앱을 실제로 쓰고 있는지"를 관리자가 확인할
+  // 방법이 없어서 추가(한 번도 로그인 안 한 사람/오래 안 켠 사람을 admin/board-scope 화면에서
+  // 보여주기 위함). null이면 아직 한 번도 로그인한 적이 없다는 뜻.
+  lastLoginAt        DateTime?       @map("last_login_at")
+  // 2026-09-04: 회사가 다우오피스 전체 조직도가 아니라 특정 부서/인원만 시범적으로 상황판·출퇴근
+  // 현황에 표시하길 원해서 추가 — true인 사람만 전사 상황판(dashboard.routes.ts)과 출퇴근 현황
+  // (reports.routes.ts)에 나타난다. 다우오피스 동기화로 새로 생기는 계정은 기본 false로 시작해서,
+  // 관리자가 admin/board-scope 화면에서 부서 단위 또는 개별로 명시적으로 켜야 노출된다.
+  includedInBoard    Boolean         @default(false) @map("included_in_board")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  userRoles              UserRole[]
+  attendanceRecords      AttendanceRecord[]
+  statusChangeLogs       StatusChangeLog[]
+  residentCheckins       ResidentCheckin[]
+  nightWorkSessions      NightWorkSession[]
+  leaveBalances          LeaveBalance[]
+  leaveConversionRequests LeaveConversionRequest[]
+  pilotGroupMembers      PilotGroupMember[]
+  pilotFeedback          PilotFeedback[] @relation("PilotFeedbackAuthor")
+  pilotFeedbackResolved  PilotFeedback[] @relation("PilotFeedbackResolvedBy")
+  effortLogs             EffortLog[]
+  businessTripLogs       BusinessTripLog[]
+  dailyWorkLogs          DailyWorkLog[]
+  pushSubscriptions      PushSubscription[]
+  approvalRequestsMade   ApprovalRequest[] @relation("Requester")
+  approvalRequestsDecided ApprovalRequest[] @relation("Approver")
+  attendanceCorrectionRequests AttendanceCorrectionRequest[]
+  // 2026-09-15: 관리자→직원 간단 메시지(위치/근태 이슈 등 확인 요청용) — 받는 사람 쪽만 관계로 둔다.
+  // 보낸 관리자는 이름만 스냅샷으로 남기고(AdminMessage.sentByName) 별도 관계를 두지 않는다
+  // (같은 User 모델을 두 번 참조하려면 @relation 이름 구분이 필요해지는데, 발신 이력 조회 화면이
+  // 아직 없어 굳이 관계로 만들 실익이 적다 — 필요해지면 그때 추가).
+  receivedAdminMessages  AdminMessage[]
+
+  @@map("users")
+}
+
+model Role {
+  id    String     @id @default(uuid())
+  code  RoleCode   @unique
+  name  String
+  userRoles UserRole[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  id                  String   @id @default(uuid())
+  userId              String   @map("user_id")
+  user                User     @relation(fields: [userId], references: [id])
+  roleId              String   @map("role_id")
+  role                Role     @relation(fields: [roleId], references: [id])
+  scopeDepartmentId   String?  @map("scope_department_id")
+
+  @@unique([userId, roleId, scopeDepartmentId])
+  @@map("user_roles")
+}
+
+model AttendanceRecord {
+  id                  String    @id @default(uuid())
+  userId              String    @map("user_id")
+  user                User      @relation(fields: [userId], references: [id])
+  workDate            DateTime  @map("work_date") @db.Date
+  clockInAt           DateTime? @map("clock_in_at")
+  clockOutAt          DateTime? @map("clock_out_at")
+  totalWorkedMinutes  Int?      @map("total_worked_minutes")
+  isCorrected         Boolean   @default(false) @map("is_corrected")
+  correctionReason    String?   @map("correction_reason")
+  // 다우오피스 동기화로 채워진 값인지 여부. 수동 정정본(MANUAL)은 동기화가 덮어쓰지 않는다.
+  dataSource          DataSource @default(MANUAL) @map("data_source")
+  // 퇴근 시점 위치 — 좌표는 저장하지 않고, 역지오코딩된 "주소 텍스트"만 저장한다(직원 동의 필요, core_principles 원칙 유지).
+  clockOutLocation    String?    @map("clock_out_location")
+  // 퇴근 위치가 왜 비어있는지(권한거부/타임아웃/미동의 등)를 구분해서 저장한다 —
+  // 상황판에서 "빈 값"과 "확인했지만 못 구했음"을 구분해서 보여주기 위함.
+  clockOutLocationStatus LocationCaptureStatus? @map("clock_out_location_status")
+  // 최소근무시간(기본 8시간) 미충족 상태에서 조기퇴근한 경우 본인이 입력한 사유.
+  // 하드블록 대신 "사유 입력 + 즉시 확정" 방식으로 바꾸면서 추가 — 부족분은 주간 집계에서
+  // 자연스럽게(다른 날 초과분과 합산되어) 반영되므로 별도 상쇄 로직은 두지 않는다.
+  earlyLeaveReason String? @map("early_leave_reason")
+
+  breakSessions BreakSession[]
+  correctionRequests AttendanceCorrectionRequest[]
+
+  @@unique([userId, workDate])
+  @@map("attendance_records")
+}
+
+// 퇴근 시 위치정보를 못 가져온 이유. OK 이외의 값은 clockOutLocation이 비어있는 이유를 설명한다.
+enum LocationCaptureStatus {
+  OK
+  NO_CONSENT
+  PERMISSION_DENIED
+  TIMEOUT
+  UNSUPPORTED
+  GEOCODE_FAILED
+}
+
+// 퇴근을 못 누르고 날짜가 넘어간 근태를, 직원이 스스로 시각/사유를 입력해 정정 신청하는 건.
+// 시스템이 임의로 퇴근시각을 확정하지 않는다는 원칙(대체휴무 자동전환과 동일한 원칙)에 따라,
+// 반드시 직원 본인의 신청 + 승인권자의 승인(ApprovalRequest, type=ATTENDANCE_CORRECTION)을 거쳐야
+// attendance_records에 반영된다 (approval.routes.ts 참고).
+model AttendanceCorrectionRequest {
+  id                 String                     @id @default(uuid())
+  userId             String                     @map("user_id")
+  user               User                       @relation(fields: [userId], references: [id])
+  attendanceRecordId String                     @map("attendance_record_id")
+  attendanceRecord   AttendanceRecord           @relation(fields: [attendanceRecordId], references: [id])
+  // 2026-09-16: "오늘 퇴근을 잘못 눌렀는데 되돌릴 방법이 없다"(채수권·윤유상 피드백) 반영 —
+  // 기존엔 "지난 근무일 퇴근 누락"(MISSING_CLOCK_OUT, proposedClockOutAt 필수)만 있었는데,
+  // 여기에 "오늘 퇴근 취소"(CANCEL_CLOCK_OUT, clockOutAt을 다시 비움)를 추가한다. 기존 행은
+  // 전부 MISSING_CLOCK_OUT이므로 기본값으로 하위호환 유지.
+  type               AttendanceCorrectionType   @default(MISSING_CLOCK_OUT)
+  // CANCEL_CLOCK_OUT은 새 퇴근시각을 제안하는 게 아니라 기존 퇴근을 취소하는 것이라 값이 없다.
+  proposedClockOutAt DateTime?                  @map("proposed_clock_out_at")
+  reason             String
+  status             AttendanceCorrectionStatus @default(PENDING)
+  createdAt          DateTime                   @default(now()) @map("created_at")
+
+  approvalRequest ApprovalRequest?
+
+  @@map("attendance_correction_requests")
+}
+
+enum AttendanceCorrectionType {
+  MISSING_CLOCK_OUT
+  CANCEL_CLOCK_OUT
+}
+
+enum AttendanceCorrectionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model BreakSession {
+  id                 String           @id @default(uuid())
+  attendanceRecordId String           @map("attendance_record_id")
+  attendanceRecord   AttendanceRecord @relation(fields: [attendanceRecordId], references: [id])
+  startAt            DateTime         @map("start_at")
+  endAt              DateTime?        @map("end_at")
+
+  @@map("break_sessions")
+}
+
+model StatusChangeLog {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")
+  user      User             @relation(fields: [userId], references: [id])
+  status    AttendanceStatus
+  changedAt DateTime         @default(now()) @map("changed_at")
+  note      String?
+  source    StatusSource     @default(WEB)
+  // 고객사미팅/고객사작업 등록 시 GPS 위치대조 결과. 원본 좌표는 저장하지 않고 결과만 남긴다.
+  locationMatch          Boolean? @map("location_match")
+  locationDistanceMeters Int?     @map("location_distance_meters")
+  // 2026-09-16: 그 순간 GPS가 스스로 보고한 오차범위(미터) — 프론트(geolocation.ts)는 이미 계산해
+  // 갖고 있었는데 서버로 전송되지 않고 있었다(위치 미확인/불일치 개선 1순위). locationMatch 판정 시
+  // "거리 - 오차범위 <= 반경"으로 반영하고(common/location.ts), 상황판에서도 "위치 불일치인데
+  // 오차범위 자체가 컸는지"를 구분해 보여주는 데 쓴다. 좌표와 마찬가지로 판정에만 쓰는 값이라 그대로
+  // 남겨도 원본 위치를 역추적할 수 없어 위치정보 최소수집 원칙에 어긋나지 않는다.
+  locationAccuracyMeters Int?     @map("location_accuracy_meters")
+  // 2026-09-18: 근무 태만(위치 확인 회피) 방지를 위한 정책 변경 — "불일치 건만 좌표 저장".
+  // 기존 원칙(원본 좌표 미저장)은 유지하되, locationMatch가 명백히 false인 경우에 한해서만
+  // 관리자가 실제 위치를 확인할 수 있도록 원본 좌표를 예외적으로 남긴다. 일치/미확인(null)
+  // 케이스에는 절대 채우지 않는다(common/location.ts의 buildMismatchCoords 참고).
+  // 관리자 화면에서만 노출하고, 보관기간이 지나면 자동 삭제한다(mismatch-coord-purge-scheduler.ts,
+  // MISMATCH_COORD_RETENTION_DAYS). 위치정보보호법상 목적 달성 시 즉시파기 원칙에 대응하기 위함.
+  mismatchLatitude  Float? @map("mismatch_latitude")
+  mismatchLongitude Float? @map("mismatch_longitude")
+  // 원격/현장 여부 — 고객사미팅/고객사작업/야간작업 등록 시 필수 입력.
+  // 상태 종류와 무관하게 이 테이블 하나로 조회하므로(EffortLog/NightWorkSession은 상태별로 나뉘어 있음),
+  // "직출/직퇴 시 최종 퇴근 위치 필수" 판단(퇴근 처리 로직)이 여기 값을 기준으로 한다.
+  siteType  SiteType? @map("site_type")
+  // 고객사미팅/고객사작업 등록 시 위치 확보가 왜 안 됐는지(권한거부/타임아웃/미동의 등).
+  // "GPS 확보 실패는 하루 1회만 봐주고, 그 다음부터는 위치가 실제로 일치해야 등록을 허용"하는
+  // 정책 판단에 쓴다(attendance.routes.ts 참고) — clock_out_location_status와 같은 목적.
+  locationCaptureStatus LocationCaptureStatus? @map("location_capture_status")
+  // 2026-09-20: "GPS 캡처만 필수화" 정책(대표이사 승인)의 후속 — 재택(REMOTE) 등록은 대조할 등록된
+  // 좌표가 없어(집 주소를 서버에 저장하지 않기로 함) locationMatch/mismatchLatitude 방식이 적용되지
+  // 않는다. 그 대신 "감사인" 권한자만 열람 가능한 별도 컬럼에 원본 좌표를 남긴다 — 근무태만 의심
+  // 등으로 사후 확인이 필요할 때만 감사팀이 확인하고, 일반 관리자(HR_ADMIN/SYSTEM_ADMIN 포함)에게는
+  // 노출하지 않는다(audit-location.routes.ts, requireRole('AUDITOR')). mismatchLatitude/Longitude와
+  // 동일하게 보관기간이 지나면 자동삭제한다(REMOTE_AUDIT_COORD_RETENTION_DAYS,
+  // mismatch-coord-purge-scheduler.ts).
+  remoteAuditLatitude  Float? @map("remote_audit_latitude")
+  remoteAuditLongitude Float? @map("remote_audit_longitude")
+
+  @@map("status_change_logs")
+}
+
+// 원격근무 vs 고객사 현장 — 직출/직퇴(본사 미경유) 시 이동시간이 근로시간에 섞이지 않도록
+// 최종 퇴근 위치를 필수로 받아야 하는지 판단하는 데 쓰인다(ONSITE인 경우만 해당).
+enum SiteType {
+  REMOTE
+  ONSITE
+}
+
+model ResidentCheckin {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  user            User      @relation(fields: [userId], references: [id])
+  clientId        String    @map("client_id")
+  client          Client    @relation(fields: [clientId], references: [id])
+  checkinAt       DateTime  @default(now()) @map("checkin_at")
+  lastConfirmedAt DateTime  @default(now()) @map("last_confirmed_at")
+  // 도착체크 시 GPS 위치대조 결과. 원본 좌표는 저장하지 않고 결과만 남긴다.
+  locationMatch          Boolean? @map("location_match")
+  locationDistanceMeters Int?     @map("location_distance_meters")
+  // 2026-09-16: StatusChangeLog와 동일한 목적 — GPS 오차범위를 판정에 반영하기 위해 추가.
+  locationAccuracyMeters Int?     @map("location_accuracy_meters")
+  // 2026-09-18: StatusChangeLog와 동일한 목적/원칙 — 불일치 건만 예외적으로 원본 좌표 보관(관리자 전용,
+  // 보관기간 경과 시 자동삭제). 상세 설명은 StatusChangeLog의 동일 필드 주석 참고.
+  mismatchLatitude  Float? @map("mismatch_latitude")
+  mismatchLongitude Float? @map("mismatch_longitude")
+
+  @@map("resident_checkins")
+}
+
+model NightWorkSession {
+  id            String          @id @default(uuid())
+  userId        String          @map("user_id")
+  user          User            @relation(fields: [userId], references: [id])
+  startedAt     DateTime        @map("started_at")
+  endedAt       DateTime?       @map("ended_at")
+  workedMinutes Int?            @map("worked_minutes")
+  status        NightWorkStatus @default(IN_PROGRESS)
+  note          String?
+
+  leaveConversionRequest LeaveConversionRequest?
+
+  @@map("night_work_sessions")
+}
+
+model LeaveType {
+  id   String @id @default(uuid())
+  code String @unique // ALT_DAY_OFF, COMP_LEAVE, ANNUAL ...
+  name String
+
+  leaveBalances LeaveBalance[]
+  leaveConversionRequests LeaveConversionRequest[]
+
+  @@map("leave_types")
+}
+
+model LeaveBalance {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  user           User      @relation(fields: [userId], references: [id])
+  leaveTypeId    String    @map("leave_type_id")
+  leaveType      LeaveType @relation(fields: [leaveTypeId], references: [id])
+  balanceMinutes Int       @default(0) @map("balance_minutes")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@unique([userId, leaveTypeId])
+  @@map("leave_balances")
+}
+
+model LeaveConversionRequest {
+  id                     String                @id @default(uuid())
+  userId                 String                @map("user_id")
+  user                   User                  @relation(fields: [userId], references: [id])
+  sourceNightWorkSessionId String?             @unique @map("source_night_work_session_id")
+  sourceNightWorkSession NightWorkSession?     @relation(fields: [sourceNightWorkSessionId], references: [id])
+  requestedLeaveTypeId   String                @map("requested_leave_type_id")
+  requestedLeaveType     LeaveType             @relation(fields: [requestedLeaveTypeId], references: [id])
+  convertedMinutes       Int                   @map("converted_minutes")
+  status                 LeaveConversionStatus @default(DRAFT)
+  createdAt              DateTime              @default(now()) @map("created_at")
+
+  approvalRequest ApprovalRequest?
+
+  @@map("leave_conversion_requests")
+}
+
+model ApprovalRequest {
+  id          String         @id @default(uuid())
+  type        ApprovalType
+  referenceId String         @map("reference_id")
+  requesterId String         @map("requester_id")
+  requester   User           @relation("Requester", fields: [requesterId], references: [id])
+  approverId  String?        @map("approver_id")
+  approver    User?          @relation("Approver", fields: [approverId], references: [id])
+  status      ApprovalStatus @default(PENDING)
+  requestedAt DateTime       @default(now()) @map("requested_at")
+  decidedAt   DateTime?      @map("decided_at")
+  comment     String?
+
+  leaveConversionRequestId String?                 @unique @map("leave_conversion_request_id")
+  leaveConversionRequest   LeaveConversionRequest?  @relation(fields: [leaveConversionRequestId], references: [id])
+
+  attendanceCorrectionRequestId String?                       @unique @map("attendance_correction_request_id")
+  attendanceCorrectionRequest   AttendanceCorrectionRequest?  @relation(fields: [attendanceCorrectionRequestId], references: [id])
+
+  @@map("approval_requests")
+}
+
+model PolicySetting {
+  id                 String          @id @default(uuid())
+  key                String
+  value              String
+  valueType          PolicyValueType @map("value_type")
+  scopeDepartmentId  String?         @map("scope_department_id")
+  scopeDepartment    Department?     @relation(fields: [scopeDepartmentId], references: [id])
+  description        String?
+  updatedBy          String?         @map("updated_by")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+
+  @@unique([key, scopeDepartmentId])
+  @@map("policy_settings")
+}
+
+model AlertRule {
+  id      String  @id @default(uuid())
+  code    String  @unique // NO_CLOCK_IN / LONG_WORKING / NIGHT_WORK_NOT_CONVERTED / STATUS_NOT_CONFIRMED
+  enabled Boolean @default(true)
+
+  @@map("alert_rules")
+}
+
+model Alert {
+  id         String        @id @default(uuid())
+  ruleCode   String        @map("rule_code")
+  userId     String        @map("user_id")
+  relatedId  String?       @map("related_id")
+  severity   AlertSeverity @default(WARNING)
+  createdAt  DateTime      @default(now()) @map("created_at")
+  resolvedAt DateTime?     @map("resolved_at")
+
+  @@map("alerts")
+}
+
+model PilotGroup {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  startDate   DateTime @map("start_date") @db.Date
+  endDate     DateTime @map("end_date") @db.Date
+
+  members  PilotGroupMember[]
+  feedback PilotFeedback[]
+
+  @@map("pilot_groups")
+}
+
+model PilotGroupMember {
+  id           String     @id @default(uuid())
+  pilotGroupId String     @map("pilot_group_id")
+  pilotGroup   PilotGroup @relation(fields: [pilotGroupId], references: [id])
+  userId       String     @map("user_id")
+  user         User       @relation(fields: [userId], references: [id])
+
+  @@unique([pilotGroupId, userId])
+  @@map("pilot_group_members")
+}
+
+model PilotFeedback {
+  id           String           @id @default(uuid())
+  pilotGroupId String           @map("pilot_group_id")
+  pilotGroup   PilotGroup       @relation(fields: [pilotGroupId], references: [id])
+  userId       String           @map("user_id")
+  user         User             @relation("PilotFeedbackAuthor", fields: [userId], references: [id])
+  category     FeedbackCategory
+  content      String
+  createdAt    DateTime         @default(now()) @map("created_at")
+  // 2026-09-14: 관리자 피드백함에서 조치 완료된 항목을 따로 표시해달라는 요청 — alerts 테이블의
+  // resolvedAt과 동일한 패턴(별도 상태 컬럼 대신 "처리된 시각"만 남김, null이면 미처리).
+  // 누가 처리했는지도 같이 남겨서 관리자 화면에 표시한다.
+  resolvedAt       DateTime? @map("resolved_at")
+  resolvedByUserId String?   @map("resolved_by_user_id")
+  resolvedBy       User?     @relation("PilotFeedbackResolvedBy", fields: [resolvedByUserId], references: [id])
+
+  @@map("pilot_feedback")
+}
+
+// 감사로그: 논리적으로 분리된 관심사 — append-only, 애플리케이션에서 UPDATE/DELETE 미제공
+model AuditLog {
+  id           String          @id @default(uuid())
+  actorUserId  String?         @map("actor_user_id")
+  actionType   AuditActionType @map("action_type")
+  targetType   String          @map("target_type")
+  targetId     String?         @map("target_id")
+  beforeValue  Json?           @map("before_value")
+  afterValue   Json?           @map("after_value")
+  ipAddress    String?         @map("ip_address")
+  createdAt    DateTime        @default(now()) @map("created_at")
+
+  @@map("audit_logs")
+}
+
+// ===== 다우오피스(Daou Office) 연동 =====
+
+// OAuth2 client_credentials 액세스 토큰 캐시 (AMS의 DauofficeToken과 동일한 목적)
+model DauofficeToken {
+  id          String   @id @default(uuid())
+  accessToken String   @map("access_token")
+  expiresAt   DateTime @map("expires_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("dauoffice_tokens")
+}
+
+// 다우오피스 조직도 API가 부서를 정확히 안 내려주는 계정에 대한 수동 보정값.
+// (AMS의 하드코딩된 DEPT_MAP을 정책값 분리 원칙에 따라 DB 테이블로 이전한 것 — 관리자가
+// 화면에서 수정 가능하도록 하기 위함이며, 코드에 하드코딩하지 않는다.)
+model DauofficeDepartmentOverride {
+  id             String   @id @default(uuid())
+  dauofficeLoginId String @unique @map("dauoffice_login_id")
+  departmentName String   @map("department_name")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("dauoffice_department_overrides")
+}
+
+// ===== 공수(工數) 관리 =====
+// 고객사 미팅/작업 상태를 등록할 때, "무슨 프로젝트에 얼마나 시간을 썼는지"를 구조화된 데이터로
+// 남긴다. status_change_logs.note는 사람이 읽기 좋은 요약 문자열일 뿐이고, 실제 집계(주/월별,
+// 프로젝트별 공수)는 이 테이블을 기준으로 한다.
+model EffortLog {
+  id          String    @id @default(uuid())
+  userId      String    @map("user_id")
+  user        User      @relation(fields: [userId], references: [id])
+  workDate    DateTime  @map("work_date") @db.Date
+  clientName  String    @map("client_name")
+  projectName String    @map("project_name")
+  workType    String    @map("work_type") // 정기점검/신규설치/장애대응/미팅/기타
+  startTime   DateTime  @map("start_time")
+  endTime     DateTime? @map("end_time")
+  minutes     Int?      // endTime이 없으면(진행중) null — 직원이 등록한 원본 시간, 점심/이동시간 미차감
+  // 2026-09-18: "실 공수시간 자동 산정"(경영관리부 요청) — minutes(원본)에서 정책에 정한 점심시간대와
+  // 실제로 겹치는 시간만큼 뺀 값(effort-helpers.ts recordEffort, attendance-helpers.ts
+  // lunchOverlapMinutes 참고). 원본은 감사·검증용으로 그대로 두고, 공수비용 산정 등 실제 업무에는
+  // 이 값을 우선 쓴다(reports.routes.ts). 이 필드 추가 이전 기록은 null이며, 그 경우 화면/집계에서
+  // minutes(원본)로 자동 대체한다.
+  actualMinutes Int?    @map("actual_minutes")
+  description String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  // 2026-09-15: 이 기록이 어떤 상태(고객사작업/고객사미팅/재택/주말작업)에서 등록됐는지 남긴다.
+  // "진행중(endTime null)"으로 남겨둔 기록을 나중에 이어받아 완료 처리할 때, 같은 상태에서 만든
+  // 기록만 찾아 이어받기 위해 필요하다(effort-helpers.ts recordEffort 참고) — 이 컬럼이 없으면
+  // 예를 들어 고객사미팅 진행중 기록을 고객사작업 완료 등록이 잘못 이어받아버릴 수 있다.
+  sourceStatus String?  @map("source_status")
+
+  @@map("effort_logs")
+}
+
+// ===== 다우오피스 "전사 휴가현황" 스크래핑 =====
+// 2026-09-18: 다우오피스 공식 API(attnd-v2/attnd)로는 휴가 여부를 구분할 수 없다는 게 이미
+// 확인돼서(dauoffice.routes.ts 2026-09-04 기록 — dayWorkStatusCode 등이 이 계정에서 전부 null로만
+// 내려옴) headless 브라우저로 "전사 휴가현황" 화면을 직접 읽어와 채운다(leave-scraper.ts).
+// 관리자 요청으로, 직원의 실시간 상태값(StatusChangeLog)은 건드리지 않고 상황판에 "오늘의
+// 휴가자"를 별도로 얹어 보여주는 용도로만 쓴다 — 그래서 User와 정식 관계(@relation)는 두지
+// 않고, 매칭에 성공하면 User.id를 스냅샷으로만 저장한다(표시 전용 데이터라 User 삭제·변경
+// 이력과 얽히지 않게 하기 위함).
+model DauofficeLeaveEntry {
+  id            String    @id @default(uuid())
+  workDate      DateTime  @db.Date @map("work_date") // 휴가 사용일(하루 단위 — 여러 날짜에 걸친 휴가는 날짜별로 나눠 저장)
+  userId        String?   @map("user_id")
+  employeeNoRaw String?   @map("employee_no_raw")
+  nameRaw       String    @map("name_raw")
+  // 멱등성 키(@@unique)에 쓰이는 값이라 항상 문자열로 정규화한다("" = 부서 미기재) — null을 쓰면
+  // Postgres UNIQUE 제약에서 NULL끼리 서로 다른 값으로 취급돼 중복 행이 생길 수 있다.
+  departmentRaw String    @default("") @map("department_raw")
+  leaveType     String    @map("leave_type") // 원본 표기(연차/기타휴가 등)
+  durationLabel String    @map("duration_label") // 종일/오전반차/오후반차/반반차/기타
+  startTime     DateTime? @map("start_time")
+  endTime       DateTime? @map("end_time")
+  matched       Boolean   @default(false)
+  scrapedAt     DateTime  @default(now()) @map("scraped_at")
+
+  // 같은 사람의 같은 날짜·같은 휴가유형은 하루 두 번(오전10시/오후1시) 스크래핑해도 한 줄로
+  // 유지되게(덮어쓰기) 하는 멱등성 키.
+  @@unique([workDate, nameRaw, departmentRaw, leaveType])
+  @@map("dauoffice_leave_entries")
+}
+
+// ===== 브라우저 푸시 알림 =====
+// "오전 9시까지 출근/재택 등록 안 하면 알림" 기능을 위한 구독 정보.
+// 웹 표준 Push API(VAPID) 방식이라 안드로이드는 브라우저에서 바로, iOS는 PWA로 홈화면에
+// 추가한 뒤에만 동작한다(애플 정책).
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id])
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("push_subscriptions")
+}
+
+// 관리자 ↔ 직원 간 짧은 메시지(양방향). 2026-09-15: 상황판에서 "위치 불일치/미확인" 등으로
+// 표시된 직원을 관리자가 눈으로 확인만 하고 따로 연락할 방법이 없었다(직원→관리자 피드백함의
+// 반대 방향으로 시작). 상황판의 직원 아바타(동그라미)를 눌러 짧은 메시지를 보내면, 등록된 푸시
+// 구독으로 즉시 알림이 가고(common/push.ts sendPushToUser 재사용), 상황판 앱(index.tsx)에도
+// 안 읽은 메시지가 배너로 표시된다. 이후 직원도 그 배너에서 바로 답장할 수 있게 확장했다
+// (senderIsAdmin으로 방향 구분) — 근태 기록과는 무관한 단순 알림이라 별도 승인 흐름 없이
+// 바로 전달된다. userId는 항상 "이 대화의 직원 쪽"을 가리킨다(관리자가 보냈든 직원이 보냈든).
+model AdminMessage {
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  user          User      @relation(fields: [userId], references: [id])
+  message       String
+  // true=관리자가 보냄, false=직원이 보낸 답장.
+  senderIsAdmin Boolean   @default(true) @map("sender_is_admin")
+  // 보낸 사람 이름 스냅샷(관계 없이 문자열로만 남김 — 위 User.receivedAdminMessages 주석 참고).
+  // 관리자가 보냈으면 그 관리자 이름, 직원이 보냈으면 본인 이름.
+  sentByName    String    @map("sent_by_name")
+  // 받는 쪽이 확인한 시각 — senderIsAdmin=true면 직원이, false면 관리자가 확인한 시각.
+  readAt        DateTime? @map("read_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, readAt])
+  @@map("admin_messages")
+}
+
+// ===== 출장 =====
+// 다른 상태와 달리 여러 날에 걸칠 수 있고 사전에 계획된 정보(목적지/기간/목적)라 별도 모델로 관리한다.
+model BusinessTripLog {
+  id          String    @id @default(uuid())
+  userId      String    @map("user_id")
+  user        User      @relation(fields: [userId], references: [id])
+  destination String
+  purpose     String
+  startAt     DateTime  @map("start_at")
+  endAt       DateTime? @map("end_at") // 복귀 예정(또는 실제 복귀) 일시. 아직 모르면 비워둠.
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@map("business_trip_logs")
+}
+
+// ===== 야간·주말작업 보고서(메일) =====
+// 2026-09-25: 김형태 대표이사 요청 — 엔지니어들이 아웃룩 '받은편지함 > 야간작업및 주말작업' 폴더로 보내는
+// 자기보고 메일을 매번 직접 열어보지 않고도 TSB 관리자 화면에서 한눈에 볼 수 있게 하기 위한 표.
+// 주의: 위의 NightWorkSession(직원이 앱에서 직접 "야간근무 시작/종료"를 눌러 대체휴무로 전환하는 사내
+// 근무기록)과는 완전히 별개의 데이터다 — 이쪽은 아웃룩 메일 원문을 그대로 옮겨 적은 것일 뿐, 앱에서
+// 상태변경을 트리거하거나 근태/공수에 반영되지 않는다(참고용 열람 전용).
+// 데이터는 관리자가 직접 입력하지 않고, Claude(외부 자동화, Microsoft 365 연동)가 아웃룩을 읽어
+// POST /api/v1/night-work-mail/sync 로 주기적으로(매주 월요일/매월 1일 예정) 밀어넣는다 — 그래서 일반
+// 로그인 토큰이 아니라 NIGHT_WORK_MAIL_SYNC_KEY(.env.prod) 고정 키로 그 엔드포인트만 별도 인증한다.
+// 필드는 메일 형식이 사람마다 제각각이라(자유서식) 최대한 원문 그대로 저장하고 구조화/정제는 하지 않는다.
+// tsbLocationVerified는 향후 TSB의 GPS 위치대조 실데이터와 교차검증할 때 채울 자리로, 지금은 항상 null이다.
+model NightWorkMailReport {
+  id                     String    @id @default(uuid())
+  // 메일 한 통에 고객사 작업이 여러 건 적혀있으면 건별로 행을 나눠 저장한다(0부터 시작). 같은 메일을
+  // 다시 동기화해도 (mailInternetMessageId, itemIndex) 조합이 같으면 upsert로 덮어쓸 뿐 중복 생성되지 않는다.
+  mailInternetMessageId String    @map("mail_internet_message_id")
+  itemIndex              Int       @default(0) @map("item_index")
+  kind                   String    @map("kind") // "NIGHT"(야간작업) | "WEEKEND"(주말작업)
+  workDate               DateTime  @map("work_date") @db.Date // 메일 제목 기준 작업일
+  reporterName           String    @map("reporter_name")
+  reporterEmail          String    @map("reporter_email")
+  clientNameRaw          String    @map("client_name_raw") // 메일 원문의 "고객사" 표기 그대로(정제하지 않음)
+  location               String?   @map("location")
+  workTimeRaw            String?   @map("work_time_raw") // 메일 원문의 시간 표기 그대로(형식이 제각각이라 구조화하지 않음)
+  workContent            String?   @map("work_content")
+  workers                String?   @map("workers") // 쉼표로 구분한 작업인원 이름 원문
+  note                   String?   @map("note") // 자동추출 중 발견한 이상(날짜 불일치, 고객사명 표기 혼재 등) 메모
+  tsbLocationVerified    Boolean?  @map("tsb_location_verified") // GPS 위치대조 연동 전이라 현재는 항상 null
+  mailReceivedAt         DateTime  @map("mail_received_at")
+  mailWebLink            String?   @map("mail_web_link")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  @@unique([mailInternetMessageId, itemIndex])
+  @@index([workDate])
+  @@map("night_work_mail_reports")
+}
+
+// ===== 일일업무일지 =====
+// 2026-09-26: 김형태 대표이사 요청 — "매일 업무 마감을 일일업무일지로" 진행하기 위한 표.
+// 1단계(강제 마감): 자동초안 없이, 퇴근 시 "이슈/특이사항"과 "내일 예정 업무" 두 줄만 필수로
+// 받는다(attendance.routes.ts /clock-out에서 함께 upsert). 2단계(자동초안): StatusChangeLog/
+// EffortLog/NightWorkMailReport에서 오늘치 데이터를 모아 9개 표준 필드를 미리 채워준다
+// (daily-work-log.routes.ts GET /draft). 3단계(관리자 열람): night-work-mail 관리자 화면과 같은
+// 패턴으로 목록·주간/월간 집계를 제공한다(daily-work-log.routes.ts GET /admin/*).
+// 하루 1건 — 같은 날 다시 제출하면(퇴근 정정 등) upsert로 덮어쓴다(AttendanceRecord와 동일한
+// @@unique 패턴).
+model DailyWorkLog {
+  id       String   @id @default(uuid())
+  userId   String   @map("user_id")
+  user     User     @relation(fields: [userId], references: [id])
+  workDate DateTime @map("work_date") @db.Date
+
+  // 오늘 근무형태에 따라 간단형/상세형 중 어느 쪽으로 작성됐는지(2단계 자동판단 결과) — 관리자
+  // 화면에서 필터링·구분 표시하는 데 쓴다.
+  formType DailyWorkLogFormType @default(SIMPLE) @map("form_type")
+  // 오늘의 대표 근무형태 스냅샷(마지막 상태, 한글 라벨) — 근태 판정과는 무관한 표시·집계 전용.
+  workTypeSnapshot String? @map("work_type_snapshot")
+  // 방문 고객사/현장 — 여러 곳이면 쉼표로 구분(2단계 자동초안이 EffortLog/NightWorkMailReport에서 수집).
+  visitedClients String? @map("visited_clients")
+  // 주요 작업내용 — 자동초안을 기반으로 본인이 자유롭게 수정 가능.
+  workContent String? @map("work_content")
+  // 이슈 및 특이사항 — 1단계부터 필수(퇴근 시 반드시 입력해야 그날이 마감됨).
+  issues String @map("issues")
+  // 후속조치/미해결 건 — 선택 입력(상세형에서 주로 사용).
+  followUp String? @map("follow_up")
+  // 내일 예정 업무 — 1단계부터 필수(퇴근 시 반드시 입력해야 그날이 마감됨).
+  tomorrowPlan String @map("tomorrow_plan")
+  // 지원요청/공유사항 — 선택 입력.
+  supportRequest String? @map("support_request")
+  // 오늘 총 근무시간(분) — 퇴근 처리 시 AttendanceRecord.totalWorkedMinutes 스냅샷.
+  totalWorkedMinutes Int? @map("total_worked_minutes")
+  // 오늘 실공수(고객사 작업 등) 시간(분) — EffortLog.actualMinutes 합계 스냅샷.
+  actualEffortMinutes Int? @map("actual_effort_minutes")
+  // 2단계가 처음 만들어준 자동초안 원문(사용자가 실제로 고쳐 쓴 내용과 별개로 보관) — 감사·품질
+  // 개선용이며 화면에 상시 노출하지 않는다.
+  autoDraftSnapshot String? @map("auto_draft_snapshot")
+  // 2026-09-29: "미등록 공백시간" 관리(대표이사 요청) — 마지막으로 종료시간이 찍힌 고객사작업 등
+  // 이후 다음 상태 등록 없이 퇴근을 누르면, 그 사이 시간이 근무시간엔 그대로 인정되지만(근로시간
+  // 계산은 건드리지 않기로 결정) 무엇을 했는지 사유를 반드시 남기게 한다. 공백이 없으면 둘 다 null.
+  // 판정 로직은 daily-work-log.routes.ts의 computeUnloggedGapMinutes 참고.
+  unloggedGapMinutes Int?    @map("unlogged_gap_minutes")
+  unloggedGapReason  String? @map("unlogged_gap_reason")
+  submittedAt DateTime @default(now()) @map("submitted_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, workDate])
+  @@index([workDate])
+  @@map("daily_work_logs")
+}

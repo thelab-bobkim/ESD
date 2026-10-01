@@ -1,10 +1,10 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 
-export const leaveConversionRouter = Router();
+export const leaveConversionRouter = createRouter();
 leaveConversionRouter.use(requireAuth);
 
 const requestSchema = z.object({ requestId: z.string().uuid() });
@@ -24,19 +24,34 @@ leaveConversionRouter.post('/requests', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: 'DRAFT 상태만 신청할 수 있습니다.' } });
   }
 
-  const updated = await prisma.leaveConversionRequest.update({ where: { id: draft.id }, data: { status: 'PENDING' } });
-  const approval = await prisma.approvalRequest.create({
-    data: {
-      type: 'LEAVE_CONVERSION',
-      referenceId: updated.id,
-      requesterId: userId,
-      leaveConversionRequestId: updated.id,
-    },
+  // 2026-09-30 수정(Medium): 위의 "DRAFT 확인"과 아래 update 사이에 시간차가 있어, 같은 후보를
+  // 두 번 빠르게 신청하면(DRAFT를 둘 다 통과) ApprovalRequest가 2건 생기고 승인도 2번 이뤄져
+  // 휴가 잔액이 2배로 늘어날 수 있었다 — updateMany의 where에 status:'DRAFT'를 넣어 DB가
+  // 원자적으로 "지금 DRAFT인 것만" 전환하게 하고, 하나의 트랜잭션으로 승인요청 생성까지 묶는다.
+  const result = await prisma.$transaction(async (tx) => {
+    const claim = await tx.leaveConversionRequest.updateMany({
+      where: { id: draft.id, status: 'DRAFT' },
+      data: { status: 'PENDING' },
+    });
+    if (claim.count === 0) return null;
+    const updated = await tx.leaveConversionRequest.findUniqueOrThrow({ where: { id: draft.id } });
+    const approval = await tx.approvalRequest.create({
+      data: {
+        type: 'LEAVE_CONVERSION',
+        referenceId: updated.id,
+        requesterId: userId,
+        leaveConversionRequestId: updated.id,
+      },
+    });
+    await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'leave_conversion_request', targetId: updated.id, afterValue: { status: 'PENDING' } }, tx);
+    return { request: updated, approval };
   });
 
-  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'leave_conversion_request', targetId: updated.id, afterValue: { status: 'PENDING' } });
+  if (!result) {
+    return res.status(409).json({ success: false, error: { code: 'ALREADY_REQUESTED', message: '이미 신청된 전환 후보입니다.' } });
+  }
 
-  return res.json({ success: true, data: { request: updated, approval } });
+  return res.json({ success: true, data: result });
 });
 
 leaveConversionRouter.get('/requests/me', async (req, res) => {

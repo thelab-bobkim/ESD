@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch, apiDownload } from '@/lib/api';
+import { apiFetch, apiDownload, isAuthExpiredError } from '@/lib/api';
 import { sortByLabelKo } from '@/lib/sortKo';
 import { classifyDeptGroup } from '@/lib/deptGroup';
 import AdminHeader from '@/components/AdminHeader';
@@ -212,7 +212,8 @@ export default function AdminEffortPage() {
       .then((data) => { if (summaryRequestRef.current === requestId) setEffort(data); })
       .catch((err) => {
         if (summaryRequestRef.current !== requestId) return;
-        if (err instanceof Error && (err.message.includes('로그인') || err.message.includes('토큰'))) router.push('/login');
+        // 2026-09-30 수정(Medium): 문자열 매칭 대신 서버 에러코드로 판정(오탐 방지).
+        if (isAuthExpiredError(err)) router.push('/login');
         setError(err instanceof Error ? err.message : '오류가 발생했습니다.');
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps

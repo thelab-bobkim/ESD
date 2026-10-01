@@ -1,8 +1,13 @@
-import { Router } from 'express';
+import { createRouter } from '../../common/async-router';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { REMOTE_AUDIT_COORD_RETENTION_DAYS } from '../../common/location';
+import { takeWithTruncation, setTruncationHeaders } from '../../common/list-limit';
+
+// 2026-09-30(M-3): 상한을 넘으면 잘렸다는 사실을 응답에 함께 알린다(감사 목적 화면이라 특히 중요).
+const REMOTE_AUDIT_LIST_LIMIT = 500;
+import { REMOTE_AUDIT_COORD_RETENTION_DAYS, clampRemoteAuditRetentionDays } from '../../common/location';
+import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 
 /**
  * 2026-09-20: "감사인 전용 재택 위치 열람"(대표이사 승인) — 재택(REMOTE) 근무 등록 시 캡처된
@@ -13,15 +18,17 @@ import { REMOTE_AUDIT_COORD_RETENTION_DAYS } from '../../common/location';
  * 조회할 때마다 "누가 언제 열람했는지" 감사로그(LOCATION_DETAIL_VIEW)를 남긴다 — 감사인 자신에
  * 대한 감사이기도 하다.
  */
-export const auditLocationRouter = Router();
+export const auditLocationRouter = createRouter();
 auditLocationRouter.use(requireAuth, requireRole('AUDITOR'));
 
 auditLocationRouter.get('/remote', async (req, res) => {
   const authUser = req.authUser!;
-  const days = Math.min(Math.max(Number(req.query.days) || REMOTE_AUDIT_COORD_RETENTION_DAYS, 1), REMOTE_AUDIT_COORD_RETENTION_DAYS);
+  // 2026-09-30(M-16): 보관기간 정책값(줄이는 방향만 허용)을 화면 안내와 조회 범위에 똑같이 적용한다.
+  const retentionDays = clampRemoteAuditRetentionDays(await getPolicyNumber('REMOTE_AUDIT_COORD_RETENTION_DAYS', REMOTE_AUDIT_COORD_RETENTION_DAYS));
+  const days = Math.min(Math.max(Number(req.query.days) || retentionDays, 1), retentionDays);
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-  const logs = await prisma.statusChangeLog.findMany({
+  const fetchedLogs = await prisma.statusChangeLog.findMany({
     where: {
       status: 'REMOTE',
       changedAt: { gte: since },
@@ -38,14 +45,16 @@ auditLocationRouter.get('/remote', async (req, res) => {
       },
     },
     orderBy: { changedAt: 'desc' },
-    take: 500,
+    take: REMOTE_AUDIT_LIST_LIMIT + 1,
   });
+  const { rows: logs, truncated } = takeWithTruncation(fetchedLogs, REMOTE_AUDIT_LIST_LIMIT);
+  setTruncationHeaders(res, truncated, REMOTE_AUDIT_LIST_LIMIT);
 
   await recordAuditLog({
     actorUserId: authUser.userId,
     actionType: 'LOCATION_DETAIL_VIEW',
     targetType: 'status_change_log.remote_audit_location',
-    afterValue: { resultCount: logs.length, days },
+    afterValue: { resultCount: logs.length, days, truncated },
   });
 
   interface RemoteAuditLogRow {
@@ -59,7 +68,10 @@ auditLocationRouter.get('/remote', async (req, res) => {
   return res.json({
     success: true,
     data: {
-      retentionDays: REMOTE_AUDIT_COORD_RETENTION_DAYS,
+      retentionDays,
+      // 2026-09-30(M-3): 이 응답은 이미 객체 형태라 본문에도 함께 싣는다.
+      truncated,
+      limit: REMOTE_AUDIT_LIST_LIMIT,
       entries: logs.map((l: RemoteAuditLogRow) => ({
         id: l.id,
         changedAt: l.changedAt,
