@@ -24,3 +24,6 @@ frontend/.env.local
 .DS_Store
 Thumbs.db
 *.log
+
+# DB 백업 덤프 파일 — 저장소에 올리지 않음(용량 문제)
+backup_*.sql
