@@ -375,6 +375,11 @@ export default function EmployeeHome() {
     body: Record<string, unknown>;
     lat: number;
     lng: number;
+    // 2026-10-02 추가(하드블록 재도입): true면 "최초 등록 자체가 막혀서" 뜬 모달 — 확정하면
+    // retryBlockedStatusWithSelfConfirm으로 selfConfirmMismatch를 붙여 재시도한다. 없으면(기존
+    // 2026-10-01 흐름) "일단 예외로 등록된 뒤" 뜬 모달이라 resubmitWithCorrectedLocation으로
+    // 기존 기록을 갱신한다 — 같은 모달 UI를 두 시점에서 재사용하기 위한 구분.
+    blocked?: boolean;
   } | null>(null);
   const [locationCorrectionBusy, setLocationCorrectionBusy] = useState(false);
   // 서버가 "정정 범위 초과"(LOCATION_CORRECTION_TOO_FAR) 등으로 거부한 사유 — 지도 모달이
@@ -852,8 +857,35 @@ export default function EmployeeHome() {
       refreshMyStatus();
       onSuccess?.(data);
     } catch (err) {
+      // 2026-10-02: 위치불일치 하드블록(LOCATION_MISMATCH_BLOCKED)은 withMismatchConfirm이 이미
+      // "카카오맵으로 실제 위치 확인" 모달을 띄우는 등 처리를 끝냈다는 뜻으로 이 표식(silent)을
+      // 남기고 다시 던진다 — 여기서 또 오류 문구로 화면을 덮어쓰지 않는다.
+      if ((err as Error & { silent?: boolean } | undefined)?.silent) return;
       setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
       setMessageIsError(true);
+    }
+  }
+
+  /**
+   * 2026-10-02 추가(위치 불일치 하드블록 재도입과 함께): 서버가 LOCATION_MISMATCH_BLOCKED로
+   * 최초 등록 자체를 막으면, 오류로 표시하는 대신 기존 "카카오맵 위치 확인/정정" 모달
+   * (locationCorrection, 2026-10-01에 이미 있던 컴포넌트)을 그 자리에서 띄운다 — blocked:true로
+   * 표시해서 확정 시 retryBlockedStatusWithSelfConfirm(선택/보정한 좌표 + selfConfirmMismatch)을
+   * 타도록 한다. body는 그대로 들고 있다가 재시도에 재사용한다(이번 요청에서 이미 측정된
+   * body.location은 손대지 않는다 — 그게 "원본 GPS 지점"으로서 서버의 스푸핑 방지 검증 기준이
+   * 된다).
+   */
+  async function withMismatchConfirm<T>(code: string, body: Record<string, unknown>, submit: () => Promise<T>): Promise<T> {
+    try {
+      return await submit();
+    } catch (err) {
+      const errCode = err instanceof Error ? (err as Error & { code?: string }).code : undefined;
+      if (errCode !== 'LOCATION_MISMATCH_BLOCKED') throw err;
+      const loc = body.location as { lat: number; lng: number } | undefined;
+      if (loc) setLocationCorrection({ code, body, lat: loc.lat, lng: loc.lng, blocked: true });
+      const silentErr = new Error(err instanceof Error ? err.message : '위치 확인이 필요합니다.');
+      (silentErr as Error & { silent?: boolean }).silent = true;
+      throw silentErr;
     }
   }
 
@@ -1204,9 +1236,11 @@ export default function EmployeeHome() {
       const accuracyWarningSuffix = isLowAccuracy(hqQuickLocationMeta.accuracy) ? ` (${accuracyWarningLabel(hqQuickLocationMeta.accuracy)})` : '';
       run(
         () =>
-          attemptWithLocationRetry(
-            () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-            isFirstStatusToday && WORK_START_STATUSES_FRONT.has(code) ? refreshHqQuickLocation : undefined
+          withMismatchConfirm(code, body, () =>
+            attemptWithLocationRetry(
+              () => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+              isFirstStatusToday && WORK_START_STATUSES_FRONT.has(code) ? refreshHqQuickLocation : undefined
+            )
           ),
         pendingPrev
           ? `⚠️ 상태가 '${STATUS_META[code].label}'(으)로 변경됐지만, 직전 '${STATUS_META[pendingPrev.status]?.label ?? pendingPrev.status}' 내용을 아직 안 채우셨어요! 잊지 말고 채워주세요.`
@@ -1457,15 +1491,21 @@ export default function EmployeeHome() {
       setMessage(null);
       setMessageIsError(false);
       try {
-        const res = await apiFetch<{ statusLog: unknown; nightWork: { altDayOffRecommended?: boolean } | null }>(
-          '/attendance/status', { method: 'POST', body: JSON.stringify(body) }
+        const res = await withMismatchConfirm(code, body, () =>
+          apiFetch<{ statusLog: unknown; nightWork: { altDayOffRecommended?: boolean } | null }>(
+            '/attendance/status', { method: 'POST', body: JSON.stringify(body) }
+          )
         );
         setMessage(`상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊`);
         refreshMyStatus();
         if (res.nightWork?.altDayOffRecommended) setShowAltDayOffPrompt(true);
       } catch (err) {
-        setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
-        setMessageIsError(true);
+        // 위치확인 모달을 띄운 경우(silent)는 조용히 넘어간다 — run()을 안 거치는 이 경로에도
+        // withMismatchConfirm과 동일한 규칙을 적용한다.
+        if (!(err as Error & { silent?: boolean } | undefined)?.silent) {
+          setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+          setMessageIsError(true);
+        }
       }
       setDetailStatus(null);
       return;
@@ -1473,9 +1513,11 @@ export default function EmployeeHome() {
 
     run(
       () =>
-        attemptWithLocationRetry(
-          () => apiFetch<{ locationMismatchException?: boolean }>('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
-          needsLocationCheck ? refreshDetailFormLocation : undefined
+        withMismatchConfirm(code, body, () =>
+          attemptWithLocationRetry(
+            () => apiFetch<{ locationMismatchException?: boolean }>('/attendance/status', { method: 'POST', body: JSON.stringify(body) }),
+            needsLocationCheck ? refreshDetailFormLocation : undefined
+          )
         ),
       `상태가 '${STATUS_META[code].label}'(으)로 변경되었습니다. 😊${
         isLowAccuracy(detailFormLocationMeta.accuracy) ? ` (${accuracyWarningLabel(detailFormLocationMeta.accuracy)})` : ''
@@ -1552,6 +1594,46 @@ export default function EmployeeHome() {
       // 지점에서 너무 멀리 떨어진 곳을 지도에서 찍은 경우, attendance.routes.ts 참고)로 거부하면,
       // 이 지도 모달은 전체화면이라 바깥 메시지 배너가 안 보이므로 모달을 닫지 않고 그 안에
       // 사유를 보여줘서 실제 위치 근처에서 다시 찍어보도록 유도한다.
+      const errMessage = err instanceof Error ? err.message : '위치 재등록에 실패했습니다.';
+      setLocationCorrectionError(errMessage);
+      setMessage(errMessage);
+      setMessageIsError(true);
+    } finally {
+      setLocationCorrectionBusy(false);
+    }
+  }
+
+  /**
+   * 2026-10-02 추가(위치 불일치 하드블록 재도입과 함께): 최초 등록이 LOCATION_MISMATCH_BLOCKED로
+   * 막혀서 뜬 모달(locationCorrection.blocked===true)에서 "여기가 맞습니다"를 누르면, 막혔던 그
+   * 요청을 selfConfirmMismatch:true + confirmedLocation(지금 확정/보정한 좌표)을 더해 그대로
+   * 재시도한다 — body.location(이번에 실제로 측정된 원본 GPS)은 그대로 둔다(서버가 그 원본과
+   * confirmedLocation의 거리를 재서 스푸핑을 막으므로, resubmitWithCorrectedLocation처럼
+   * location 자체를 덮어쓰면 안 된다).
+   */
+  async function retryBlockedStatusWithSelfConfirm(lat: number, lng: number) {
+    if (!locationCorrection || locationCorrectionBusy) return;
+    const { code, body } = locationCorrection;
+    setLocationCorrectionError(null);
+    setLocationCorrectionBusy(true);
+    setMessage(null);
+    setMessageIsError(false);
+    try {
+      const retryBody: Record<string, unknown> = { ...body, selfConfirmMismatch: true, confirmedLocation: { lat, lng } };
+      await apiFetch<{ locationMismatchException?: boolean }>('/attendance/status', {
+        method: 'POST',
+        body: JSON.stringify(retryBody),
+      });
+      setLocationCorrection(null);
+      setMessage(
+        `✅ 실제 위치를 확인해서 '${STATUS_META[code]?.label ?? code}'(으)로 등록했어요. 등록된 위치와는 달라 관리자 화면에 "위치 불일치"로 표시돼요.`
+      );
+      setMessageIsError(false);
+      refreshMyStatus();
+    } catch (err) {
+      // 서버가 "정정 허용범위 초과"(LOCATION_CORRECTION_TOO_FAR — 확정/클릭한 좌표가 이번에 실제로
+      // 측정된 GPS 지점에서 너무 멀 때)로 거부하면, 모달을 닫지 않고 그 안에 사유를 보여줘서 실제
+      // 위치 근처에서 다시 찍어보도록 유도한다(resubmitWithCorrectedLocation과 동일한 UX).
       const errMessage = err instanceof Error ? err.message : '위치 재등록에 실패했습니다.';
       setLocationCorrectionError(errMessage);
       setMessage(errMessage);
@@ -2169,20 +2251,29 @@ export default function EmployeeHome() {
                 helpText={
                   locationCorrectionBusy
                     ? '다시 등록하는 중...'
-                    // 2026-10-01: "다른 곳을 찍어도 통과된다"는 오해를 막기 위해, 이건 GPS로 잡힌
-                    // 내 위치를 보정하는 용도이지 임의의 장소(예: 고객사 주소)를 찍는 용도가
-                    // 아니라는 점을 명시한다 — 실제로 서버도 처음 측정된 GPS 지점에서 너무 먼
-                    // 곳은 거부한다(attendance.routes.ts의 LOCATION_CORRECTION_TOO_FAR).
-                    : '지금 계신 곳의 GPS 위치가 지도에 표시돼요. 위치가 맞으면 그대로 "이 위치로 다시 등록"을 눌러주세요. 실내 등 GPS 오차로 핀이 살짝 어긋났다면, 실제로 지금 계신 곳 근처를 다시 찍어 보정해주세요. (고객사 주소 등 실제로 계시지 않은 곳을 찍으면 정정으로 인정되지 않아요.)'
+                    : locationCorrection?.blocked
+                      // 2026-10-02 추가: 하드블록으로 애초에 등록이 안 된 상태에서 뜨는 안내 —
+                      // 2026-10-01 보정 안내와 동일한 원칙(GPS 지점 근처만 인정)을 쓰되, "등록은
+                      // 이미 됐다"가 아니라 "아직 등록이 안 됐다"는 점을 명확히 한다.
+                      ? '등록된 위치와 거리가 멀어 등록이 막혔어요. 지금 계신 곳의 GPS 위치가 지도에 표시돼요. 위치가 맞으면 그대로 "여기가 맞습니다 · 등록 계속"을 눌러주세요. 실내 등 GPS 오차로 핀이 살짝 어긋났다면, 실제로 지금 계신 곳 근처를 다시 찍어 보정해주세요. (고객사 주소 등 실제로 계시지 않은 곳을 찍으면 정정으로 인정되지 않아요.)'
+                      // 2026-10-01: "다른 곳을 찍어도 통과된다"는 오해를 막기 위해, 이건 GPS로 잡힌
+                      // 내 위치를 보정하는 용도이지 임의의 장소(예: 고객사 주소)를 찍는 용도가
+                      // 아니라는 점을 명시한다 — 실제로 서버도 처음 측정된 GPS 지점에서 너무 먼
+                      // 곳은 거부한다(attendance.routes.ts의 LOCATION_CORRECTION_TOO_FAR).
+                      : '지금 계신 곳의 GPS 위치가 지도에 표시돼요. 위치가 맞으면 그대로 "이 위치로 다시 등록"을 눌러주세요. 실내 등 GPS 오차로 핀이 살짝 어긋났다면, 실제로 지금 계신 곳 근처를 다시 찍어 보정해주세요. (고객사 주소 등 실제로 계시지 않은 곳을 찍으면 정정으로 인정되지 않아요.)'
                 }
-                confirmLabel="이 위치로 다시 등록"
+                confirmLabel={locationCorrection?.blocked ? '여기가 맞습니다 · 등록 계속' : '이 위치로 다시 등록'}
                 errorOverride={locationCorrectionError}
                 onClose={() => {
                   if (locationCorrectionBusy) return;
                   setLocationCorrection(null);
                   setLocationCorrectionError(null);
                 }}
-                onSelect={(lat, lng) => resubmitWithCorrectedLocation(lat, lng)}
+                onSelect={(lat, lng) =>
+                  locationCorrection?.blocked
+                    ? retryBlockedStatusWithSelfConfirm(lat, lng)
+                    : resubmitWithCorrectedLocation(lat, lng)
+                }
               />
             )}
             <div className="notice-inline-orange">

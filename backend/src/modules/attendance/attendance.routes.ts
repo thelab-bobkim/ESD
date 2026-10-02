@@ -564,7 +564,46 @@ const statusSchema = z.object({
   // status_change_logs에 저장되며(EffortLog/NightWorkSession은 상태별로 나뉘어 있어 조회가 불편함),
   // 퇴근 처리 시 "직출/직퇴라 위치 필수" 판단에 이 값을 사용한다.
   siteType: z.enum(['REMOTE', 'ONSITE']).optional(),
+  // 2026-10-02 추가(위치 불일치 하드블록 재도입 — 대표이사 결정: "집이나 다른 곳에서는 등록
+  // 자체를 못 하게 막는다"): 등록된 위치와 실제 거리가 멀면 기본적으로 등록 자체를 막는다. 다만
+  // 국민대학교처럼 GPS가 실내에서 잘 안 맞는 현장에 진짜로 있는 직원은, 프론트가 카카오맵으로
+  // 본인 위치를 보여주면 그 자리에서 "그래도 등록"을 선택할 수 있다 — 그때 이 값을 true로,
+  // confirmedLocation에 그때 확정(또는 클릭 보정)한 좌표를 함께 보낸다.
+  selfConfirmMismatch: z.boolean().optional(),
+  // 2026-10-01에 이미 도입된 "카카오맵 위치 정정"(재제출 시 적용) 기능과 동일한 원칙을 최초
+  // 등록 시점에도 쓴다 — confirmedLocation은 location(이번 요청의 원본 GPS 측정값)과 별도로
+  // 받아서, 서버가 "원본 GPS에서 너무 먼 곳을 찍어 위치대조를 우회"하는 걸 막는다(아래
+  // validateSelfConfirmedLocation 참고).
+  confirmedLocation: z.object({ lat: z.number(), lng: z.number() }).optional(),
 });
+
+// 2026-10-02: GPS 자체가 스스로 "오차범위가 이 값보다 크다"고 보고한 경우(고층건물 실내 등,
+// 신한이노플렉스 최대 2.8km 오차 실측 사례)는 위치 불일치만으로 하드블록하지 않는다 — 이게 없으면
+// 실제로 그 자리에 있는 직원도 GPS 탓에 계속 막힌다. location.ts의 MAX_ACCURACY_ALLOWANCE_METERS
+// (1km, "봐주는 오차 허용치의 상한")를 그대로 재사용한다.
+function isMismatchAccuracyExempt(accuracyMeters: number | null | undefined): boolean {
+  return typeof accuracyMeters === 'number' && Number.isFinite(accuracyMeters) && accuracyMeters > MAX_ACCURACY_ALLOWANCE_METERS;
+}
+
+/**
+ * 2026-10-02: "카카오맵에서 실제 위치를 확인하고 그래도 등록"(selfConfirmMismatch)을 허용하기 전에,
+ * 직원이 확정(또는 클릭으로 보정)한 좌표(confirmedLocation)가 이번 요청에서 실제로 측정된 원본
+ * GPS 좌표(rawLocation)에서 너무 멀지 않은지 검증한다 — 이 검증이 없으면 "지도에서 아무 곳이나
+ * (예: 등록된 고객사 주소를 그냥) 찍어서 위치대조를 우회"하는 통로가 생긴다. 2026-10-01에 이미
+ * 도입된 "카카오맵 위치 정정"(재제출 시 적용되는 기능, 아래 LOCATION_CORRECTION_TOO_FAR 처리부
+ * 참고)과 똑같은 반경(MAX_ACCURACY_ALLOWANCE_METERS)·원칙을 최초 등록 시점에도 그대로 쓴다 —
+ * 대표이사 피드백("GPS로 잡힌 본인 위치를 보정하라는 것이지 다른 위치를 찍어도 넘어가라는 게
+ * 아니다")과 동일한 기준이라, 두 기능이 서로 다른 사용자 경험을 주지 않는다.
+ */
+function validateSelfConfirmedLocation(
+  rawLocation: { lat: number; lng: number } | undefined,
+  confirmedLocation: { lat: number; lng: number } | undefined
+): { ok: true } | { ok: false; distanceMeters: number } {
+  if (!rawLocation || !confirmedLocation) return { ok: false, distanceMeters: 0 };
+  const check = checkLocationMatch(confirmedLocation, { latitude: rawLocation.lat, longitude: rawLocation.lng }, MAX_ACCURACY_ALLOWANCE_METERS);
+  if (!check || !check.locationMatch) return { ok: false, distanceMeters: check?.locationDistanceMeters ?? 0 };
+  return { ok: true };
+}
 
 // 이 상태들은 고객사를 반드시 알아야 한다(CLIENT_NAME_REQUIRED 판정에만 쓴다) — 위치대조
 // "여부" 판단에는 아래 LOCATION_CHECK_ELIGIBLE_STATUSES를 대신 쓴다(둘을 분리한 이유는 바로
@@ -599,7 +638,7 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '상태값을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
-  const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus, locationAddress, accuracyMeters } = parsed.data;
+  const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus, locationAddress, accuracyMeters, selfConfirmMismatch, confirmedLocation } = parsed.data;
 
   // 주말(토/일, KST) 게이트(2026-09-06 요청): 주말엔 "주말작업"만 등록할 수 있고 나머지 상태는
   // 막는다 — 반대로 평일엔 "주말작업"을 등록할 수 없다. 관리자 계정도 예외 없이 적용한다(프론트
@@ -750,12 +789,40 @@ attendanceRouter.post('/status', async (req, res) => {
     const hqLng = await getPolicyString('HQ_LONGITUDE', '');
     if (hqLat && hqLng) {
       hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS, accuracyMeters);
-      // 2026-09-14: 김유범 피드백 — 신한이노플렉스 등 고층건물 실내에서는 GPS가 최대 2.8km까지도
-      // 빗나가는 사례가 실제로 있어(반경을 1km까지 넓혀도 여전히 벗어남), 거리 불일치만으로
-      // 본사근무 등록 자체를 막지 않는다. 2026-09-08에 고객사미팅/고객사작업에는 이미 적용한
-      // "막지 않고 locationMatch=false·거리값만 기록" 완화를 본사근무에도 동일하게 적용한다
-      // (locationMismatchException 패턴 참고). 사내망 IP·주소 매칭이라는 다른 안전장치는 여전히
-      // 남아있고, 위치 자체가 순간이동급으로 튄 경우는 프론트에서 별도로 차단한다(jumpDetected).
+      // 2026-10-02 재도입(대표이사 결정 — "집이나 다른 곳에서는 등록 자체를 못 하게 막는다"):
+      // 2026-09-14~2026-10-01 사이엔 "막지 않고 locationMatch=false·거리값만 기록"으로 완화돼
+      // 있었는데(신한이노플렉스 등 고층건물 실내 GPS 최대 2.8km 오차 사례가 그 계기였다), 다시
+      // 원래 방침(등록 자체 차단)으로 되돌린다. 단 GPS 오차범위 자체가 큰 경우(그 2.8km 사례,
+      // isMismatchAccuracyExempt)나, 직원이 카카오맵으로 본인 위치를 직접 확인하고 "그래도 등록"을
+      // 선택한 경우(selfConfirmMismatch — validateSelfConfirmedLocation으로 스푸핑 방지)만
+      // 예외로 통과시킨다. 사내망 IP·주소 매칭이라는 다른 안전장치는 이 블록 위에서 이미 별도로
+      // 처리되며(hqVerifiedByAlternateMeans), 위치 자체가 순간이동급으로 튄 경우는 프론트에서
+      // 별도로 차단한다(jumpDetected).
+      if (hqLocationResult && !hqLocationResult.locationMatch && !isMismatchAccuracyExempt(accuracyMeters)) {
+        if (!selfConfirmMismatch) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'LOCATION_MISMATCH_BLOCKED',
+              message: `등록된 본사 위치에서 약 ${hqLocationResult.locationDistanceMeters}m 떨어져 있어 본사근무로 등록할 수 없습니다. 실제로 계신 곳에 맞는 근무형태(고객사작업 등)를 선택하거나, 지도에서 실제 위치를 확인하고 등록해주세요.`,
+              distanceMeters: hqLocationResult.locationDistanceMeters,
+            },
+          });
+        }
+        const hqConfirmCheck = validateSelfConfirmedLocation(location, confirmedLocation);
+        if (!hqConfirmCheck.ok) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'LOCATION_CORRECTION_TOO_FAR',
+              message: `처음 측정된 내 위치에서 ${hqConfirmCheck.distanceMeters}m 떨어져 있어 정정으로 인정되지 않습니다. 실제 계신 곳 근처에서 다시 시도해주세요.`,
+            },
+          });
+        }
+        // selfConfirmMismatch 검증을 통과했으니 등록은 계속 진행한다 — hqLocationResult는 그대로
+        // 두어(locationMatch=false 유지) 관리자 화면에 "위치 불일치"로 계속 보이게 한다(아래
+        // finalNote에서 "직원이 직접 확인하고 등록함" 표식도 추가로 남긴다).
+      }
       if (!hqLocationResult) {
         const { start: dayStartForHq, end: dayEndForHq } = realDayWindow(todayDateOnly());
         const priorHqLocationFailures = await prisma.statusChangeLog.count({
@@ -822,13 +889,38 @@ attendanceRouter.post('/status', async (req, res) => {
   // 등록된 고객사 좌표가 있는 경우에만 강제한다(현장 사칭 방지).
   // - 위치 확보 자체가 실패(권한거부/타임아웃 등)했으면: 오늘 첫 실패는 봐주고 통과시키되,
   //   이미 한 번 봐준 뒤부터는 실제로 위치가 일치해야만 통과시킨다.
-  // - 위치는 잡혔는데 실제 거리가 멀면: 2026-09-08 이전에는 몇 번을 시도해도 항상 차단했는데,
-  //   등록된 고객사 좌표는 맞는데도 실내 GPS 오차·근사위치 설정 등으로 정상적으로 그 자리에
-  //   있으면서도 계속 막히는 사례가 실제로 발생해(관리자 확인 요청) 막지는 않되, locationMatch=false·
-  //   거리값을 그대로 기록해 상황판에 "위치 불일치"로 표시되게 한다 — 관리자가 필요시 사후 확인.
+  // - 위치는 잡혔는데 실제 거리가 멀면: 2026-10-02 재도입(대표이사 결정) — "집이나 다른 곳에서
+  //   등록 자체를 못 하게 막는다"로 되돌린다. 2026-09-08~2026-10-01 사이엔 "막지 않고
+  //   locationMatch=false·거리값만 기록"으로 완화돼 있었는데(실내 GPS 오차 등으로 정상적으로
+  //   그 자리에 있으면서도 계속 막히는 사례가 있어서), 다시 차단한다. 단 GPS 오차범위 자체가
+  //   큰 경우(isMismatchAccuracyExempt)나, 직원이 카카오맵으로 본인 위치를 직접 확인하고 "그래도
+  //   등록"을 선택한 경우(selfConfirmMismatch — validateSelfConfirmedLocation으로 스푸핑 방지)만
+  //   예외로 통과시키고 locationMismatchException으로 표시해 상황판에서 확인 가능하게 한다.
   let locationMismatchException = false;
   if (LOCATION_CHECK_ELIGIBLE_STATUSES.has(status) && matchedClientForLocation?.latitude != null && matchedClientForLocation?.longitude != null) {
     if (locationResult && !locationResult.locationMatch) {
+      if (!isMismatchAccuracyExempt(accuracyMeters)) {
+        if (!selfConfirmMismatch) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'LOCATION_MISMATCH_BLOCKED',
+              message: `등록된 고객사 위치에서 약 ${locationResult.locationDistanceMeters}m 떨어져 있어 등록할 수 없습니다. 실제 그 자리에 계신 게 맞다면, 지도에서 지금 위치를 직접 확인하고 등록해주세요.`,
+              distanceMeters: locationResult.locationDistanceMeters,
+            },
+          });
+        }
+        const clientConfirmCheck = validateSelfConfirmedLocation(location, confirmedLocation);
+        if (!clientConfirmCheck.ok) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'LOCATION_CORRECTION_TOO_FAR',
+              message: `처음 측정된 내 위치에서 ${clientConfirmCheck.distanceMeters}m 떨어져 있어 정정으로 인정되지 않습니다. 실제 계신 곳 근처에서 다시 시도해주세요.`,
+            },
+          });
+        }
+      }
       locationMismatchException = true;
     }
     if (!locationResult) {
@@ -958,9 +1050,20 @@ attendanceRouter.post('/status', async (req, res) => {
   }
 
   const statusMismatchCoords = buildMismatchCoords(location, locationResult ?? hqLocationResult);
+  // 2026-10-02 (하드블록 재도입과 함께): 위치 불일치인데도 직원이 "그래도 등록"을 선택한 경우,
+  // 관리자가 노트만 보고도 바로 구분할 수 있도록 표시를 남긴다(GPS 오차범위가 커서 자동으로
+  // 통과된 경우와는 다른 케이스 — 이건 직원이 직접 확인·확정한 것). 본사근무/고객사작업류
+  // 양쪽 다 포괄하도록 hqLocationResult/locationResult를 직접 확인한다(locationMismatchException은
+  // 고객사작업류 전용 플래그라 본사근무 쪽은 놓친다).
+  const anyLocationMismatch = Boolean(
+    (locationResult && !locationResult.locationMatch) || (hqLocationResult && !hqLocationResult.locationMatch)
+  );
+  const finalNote = (anyLocationMismatch && selfConfirmMismatch)
+    ? `[위치 불일치 — 직원이 실제 위치를 직접 확인하고 등록함]${note ? ` ${note}` : ''}`
+    : note;
   const statusLogFields = {
     status,
-    note,
+    note: finalNote,
     source: 'WEB' as const,
     locationMatch: (locationResult ?? hqLocationResult)?.locationMatch ?? null,
     locationDistanceMeters: (locationResult ?? hqLocationResult)?.locationDistanceMeters ?? null,
