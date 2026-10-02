@@ -53,6 +53,19 @@ const LOCATION_CHECK_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT
 // 둘 다 null이면 "위치대조를 시도조차 안 한 것"(내부업무)과 "확인 결과가 아직 없는 것"을 구분할 수
 // 없다 — 원격(REMOTE)과 동일하게 집계·배지 표시에서 제외한다.
 const NO_CLIENT_OPTIONAL_LOCATION_STATUSES = new Set(['NIGHT_WORK', 'WEEKEND_WORK']);
+// 2026-10-02: "출근" 버튼만 누르고 실제 근무형태를 직접 고르지 않은 잠정(확인 대기중) 상태는,
+// 등록 직후부터 바로 "지금 확인이 필요한 직원" 목록에 뜨면 관리자 입장에서 매번 눌러봐도
+// 해소되지 않는 항목이 계속 쌓인다(손지원·임규동 사례). 백엔드 푸시 알림(reminder-scheduler.ts의
+// PROVISIONAL_STATUS_REMINDER_MINUTES, 기본 20분)이 먼저 본인에게 확정을 재촉할 시간을 준 뒤에만
+// 관리자 화면에도 노출되도록 같은 길이의 유예시간을 둔다. 정책 설정 화면에서 바꾸는 값이 아니라
+// 프론트 상수라 서버 정책값과 분리되어 있으니, 운영 중 조정 필요시 둘 다 같이 바꿔야 한다.
+const PROVISIONAL_FLAG_GRACE_MINUTES = 20;
+function isProvisionalWithinGrace(e: EmployeeRow): boolean {
+  if (!e.isProvisional) return false;
+  if (!e.statusChangedAt) return false;
+  const elapsedMs = Date.now() - new Date(e.statusChangedAt).getTime();
+  return elapsedMs < PROVISIONAL_FLAG_GRACE_MINUTES * 60 * 1000;
+}
 function isLocationCheckSkippedForRow(e: EmployeeRow): boolean {
   return (
     e.siteType === 'REMOTE' ||
@@ -452,6 +465,9 @@ export default function AdminDashboard() {
       // 자체를 안 해서 locationMatch가 항상 null인 게 정상이다 — 이 경우까지 "확인 필요"로 띄우면
       // 관리자가 매번 확인해도 해소되지 않는 항목이 계속 남는다.
       if (isLocationCheckSkippedForRow(e)) return false;
+      // 2026-10-02: 잠정(확인 대기중) 상태는 유예시간 내에는 "확인이 필요한 직원" 목록에서 뺀다 —
+      // 본인이 상태를 확정할 시간을 먼저 준다(위 PROVISIONAL_FLAG_GRACE_MINUTES 참고).
+      if (isProvisionalWithinGrace(e)) return false;
       if (!e.locationConsentGiven || !e.privacyConsentGiven) return true;
       return e.locationMatch !== true;
     });

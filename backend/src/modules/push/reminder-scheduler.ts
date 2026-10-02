@@ -1,6 +1,6 @@
 import { prisma } from '../../common/prisma';
 import { sendPushToUser, isPushConfigured } from '../../common/push';
-import { todayDateOnly, realDayWindow, isWeekendKST, isPublicHolidayKST } from '../../common/attendance-helpers';
+import { todayDateOnly, realDayWindow, isWeekendKST, isPublicHolidayKST, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 
 // 2026-09-14: "주말/공휴일에도 출근 알림이 계속 온다"는 신고(김진호·김진영·권성주) 반영 — 주말은
@@ -44,6 +44,11 @@ const PENDING_DETAIL_LABELS: Record<string, string> = {
   CLIENT_WORK: '고객사작업',
 };
 let lastPendingDetailSentAt = new Map<string, number>();
+// 2026-10-02: "출근" 버튼만 누르고 실제 근무형태(본사근무/고객사작업 등)를 직접 고르지 않아
+// 잠정(PROVISIONAL_HQ_NOTE) 본사근무로 남아있는 채 방치되는 경우(손지원·임규동 사례) — 관리자
+// 상황판의 "지금 확인이 필요한 직원" 목록에 계속 떠서 관리자 문의로 발견했다. 세부내용 미입력
+// 알림(PENDING_DETAIL)과 같은 패턴으로, 본인에게 먼저 확정을 재촉하는 게 근본 해결책이다.
+let lastProvisionalSentAt = new Map<string, number>();
 let trackedDateKey: string | null = null;
 
 function kstHourOf(now: Date): number {
@@ -73,6 +78,12 @@ async function clockOutReminderStartHourKST(): Promise<number> {
  * "우선 등록, 세부내용은 나중에" 원칙상 아이콘을 누르는 즉시 등록되고, 위치대조는 그 아래 열리는
  * 입력폼을 실제로 제출하는 순간에야 이뤄진다. 그래서 폼을 안 채우고 방치하면 상황판 관리자
  * 화면에 고객사/업무내용 없이 "위치 미확인"만 계속 남게 되는데, 이 알림이 그 상태를 인지시켜준다.
+ *
+ * 다섯 번째로, "출근" 버튼만 누르고 실제 근무형태(본사근무/고객사작업 등)를 직접 고르지 않아
+ * 잠정 본사근무(PROVISIONAL_HQ_NOTE)로 남은 채 정책값(기본 20분) 이상 지난 직원에게도 같은
+ * 방식으로 재알림한다 — 이 상태는 관리자 상황판의 "지금 확인이 필요한 직원" 목록에 "확인
+ * 대기중"으로 계속 남는데(손지원·임규동 사례), 이 알림이 본인에게 먼저 확정을 재촉해 근본
+ * 원인을 해소한다(2026-10-02, 관리자 상황판 그레이스타임 적용과 함께 도입).
  */
 export function startClockInReminderScheduler() {
   setInterval(async () => {
@@ -90,6 +101,7 @@ export function startClockInReminderScheduler() {
         lastClockOutSentAt = new Map();
         lastStaleTransitSentAt = new Map();
         lastPendingDetailSentAt = new Map();
+        lastProvisionalSentAt = new Map();
       }
       if (kstHour >= QUIET_HOUR_KST || kstHour < 9) return; // 조용한 시간대엔 아무것도 안 보낸다.
       // 2026-09-14: 주말/공휴일엔 출근을 강요할 이유가 없으므로 이 틱 자체를 조용히 건너뛴다
@@ -223,6 +235,32 @@ export function startClockInReminderScheduler() {
       if (pendingDetailSentCount > 0) {
         // eslint-disable-next-line no-console
         console.log(`[PendingDetailReminder] 세부내용 미입력 재알림 ${pendingDetailSentCount}명 발송`);
+      }
+
+      // 2026-10-02: "출근" 버튼만 누르고 실제 근무형태(본사근무/고객사작업 등)를 직접 고르지
+      // 않아 잠정 본사근무(PROVISIONAL_HQ_NOTE)로 남은 채 정책값(기본 20분) 이상 지나면
+      // 재알림한다 — 위에서 이미 계산해둔 latestStatusByUser를 재사용한다(고객사 세부내용
+      // 미입력 알림과 동일한 패턴). 관리자 상황판의 "확인 대기중" 카드가 계속 남는 문제의
+      // 근본 원인을 본인에게 먼저 알려 해소를 유도한다.
+      const provisionalMinutes = await getPolicyNumber('PROVISIONAL_STATUS_REMINDER_MINUTES', 20);
+      let provisionalSentCount = 0;
+      for (const u of activeUsers) {
+        const latest = latestStatusByUser.get(u.id);
+        if (!latest || latest.status !== 'HQ_WORKING' || latest.note !== PROVISIONAL_HQ_NOTE) continue;
+        if (now.getTime() - latest.changedAt.getTime() < provisionalMinutes * 60 * 1000) continue;
+        const last = lastProvisionalSentAt.get(u.id);
+        if (last && now.getTime() - last < ESCALATION_INTERVAL_MS) continue;
+        lastProvisionalSentAt.set(u.id, now.getTime());
+        provisionalSentCount++;
+        await sendPushToUser(u.id, {
+          title: 'DSTI-TSB',
+          body: '출근 버튼만 누르고 오늘 실제 근무형태(본사근무/고객사작업 등)를 아직 고르지 않으셨어요. 앱에서 상태를 확정해주세요! (등록 전까지 계속 알려드려요)',
+          url: '/',
+        });
+      }
+      if (provisionalSentCount > 0) {
+        // eslint-disable-next-line no-console
+        console.log(`[ProvisionalStatusReminder] 확인 대기중 재알림 ${provisionalSentCount}명 발송`);
       }
     } catch (err) {
       // eslint-disable-next-line no-console
