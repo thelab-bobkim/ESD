@@ -380,6 +380,10 @@ export default function EmployeeHome() {
     // 2026-10-01 흐름) "일단 예외로 등록된 뒤" 뜬 모달이라 resubmitWithCorrectedLocation으로
     // 기존 기록을 갱신한다 — 같은 모달 UI를 두 시점에서 재사용하기 위한 구분.
     blocked?: boolean;
+    // 2026-10-08 추가: true면 "출근" 버튼이 서버에서 위치 불일치로 막혀서 뜬 모달 — 확정하면
+    // /attendance/clock-in을 selfConfirmMismatch+confirmedLocation으로 재시도한다(code/body는
+    // 그 요청 본문 그대로).
+    clockIn?: boolean;
   } | null>(null);
   const [locationCorrectionBusy, setLocationCorrectionBusy] = useState(false);
   // 서버가 "정정 범위 초과"(LOCATION_CORRECTION_TOO_FAR) 등으로 거부한 사유 — 지도 모달이
@@ -1620,6 +1624,15 @@ export default function EmployeeHome() {
     setMessageIsError(false);
     try {
       const retryBody: Record<string, unknown> = { ...body, selfConfirmMismatch: true, confirmedLocation: { lat, lng } };
+      if (locationCorrection.clockIn) {
+        // 2026-10-08: "출근" 버튼 경로 — 서버가 원본 GPS 1km 이내 + 본사 반경 안일 때만 출근을 확정한다.
+        await apiFetch('/attendance/clock-in', { method: 'POST', body: JSON.stringify(retryBody) });
+        setLocationCorrection(null);
+        setMessage('✅ 지도에서 위치를 확인해서 출근 처리되었습니다.');
+        setMessageIsError(false);
+        refreshMyStatus();
+        return;
+      }
       await apiFetch<{ locationMismatchException?: boolean }>('/attendance/status', {
         method: 'POST',
         body: JSON.stringify(retryBody),
@@ -2157,13 +2170,45 @@ export default function EmployeeHome() {
                     setMessageIsError(true);
                     return;
                   }
-                  const result = await attemptWithLocationRetry(
+                  const submitClockIn = () => attemptWithLocationRetry(
                     () => apiFetch<{ locationConfirmed?: boolean }>('/attendance/clock-in', {
                       method: 'POST',
                       body: JSON.stringify(clockInBody),
                     }),
                     refreshClockInLocation
                   );
+                  let result: { locationConfirmed?: boolean };
+                  try {
+                    result = await submitClockIn();
+                  } catch (firstErr) {
+                    // 2026-10-08: 위치 불일치로 서버가 출근을 막은 경우 — 실내에선 첫 측정이 부정확할 수
+                    // 있어 위치를 다시 측정해 딱 한 번만 재시도하고(attemptWithLocationRetry와 같은 취지),
+                    // 그래도 막히면 LOCATION_MISMATCH_BLOCKED는 지도 확인 모달로, 그 외(TOO_FAR 등)는 안내
+                    // 문구로 보여준다. 이 안내 문구/모달 없이 그냥 오류만 보이면 "왜 안 되는지"를 알 수 없다.
+                    const firstCode = firstErr instanceof Error ? (firstErr as Error & { code?: string }).code : undefined;
+                    if (firstCode !== 'LOCATION_MISMATCH_BLOCKED' && firstCode !== 'LOCATION_MISMATCH_TOO_FAR') throw firstErr;
+                    setMessage('📡 위치 정확도를 높여 다시 확인하고 있어요. 잠시만 기다려주세요...');
+                    setMessageIsError(false);
+                    await refreshClockInLocation();
+                    if (clockInLocationMeta.jumpDetected) {
+                      setMessage(LOCATION_JUMP_WARNING);
+                      setMessageIsError(true);
+                      return;
+                    }
+                    try {
+                      result = await submitClockIn();
+                    } catch (secondErr) {
+                      const secondCode = secondErr instanceof Error ? (secondErr as Error & { code?: string }).code : undefined;
+                      const loc = clockInBody.location as { lat: number; lng: number } | undefined;
+                      if (secondCode === 'LOCATION_MISMATCH_BLOCKED' && loc) {
+                        setLocationCorrection({ code: 'CLOCK_IN', body: clockInBody, lat: loc.lat, lng: loc.lng, blocked: true, clockIn: true });
+                        setMessage(`⚠️ ${secondErr instanceof Error ? secondErr.message : '위치 확인이 필요합니다.'}`);
+                        setMessageIsError(false);
+                        return;
+                      }
+                      throw secondErr;
+                    }
+                  }
                   const accuracySuffix = isLowAccuracy(clockInLocationMeta.accuracy) ? ` (${accuracyWarningLabel(clockInLocationMeta.accuracy)})` : '';
                   setMessage((result.locationConfirmed ? '✅ 위치 확인 완료 — 정상출근 처리되었습니다.' : '출근 처리되었습니다.') + accuracySuffix);
                   refreshMyStatus();
@@ -2251,6 +2296,10 @@ export default function EmployeeHome() {
                 helpText={
                   locationCorrectionBusy
                     ? '다시 등록하는 중...'
+                    : locationCorrection?.clockIn
+                      // 2026-10-08 추가: "출근" 버튼이 위치 불일치로 막혀서 뜬 모달 — 본사 근처로 확인될 때만
+                      // 출근이 인정된다는 점과, 다른 곳을 찍어도 인정되지 않는다는 점을 분명히 한다.
+                      ? '본사 위치와 거리가 있어 아직 출근이 처리되지 않았어요. 지금 계신 곳의 GPS 위치가 지도에 표시돼요. 실내 등 GPS 오차로 핀이 어긋났다면, 실제로 지금 계신 곳(본사)을 다시 찍어 보정해주세요. 보정한 위치가 본사 근처로 확인될 때만 출근이 처리돼요. (실제로 계시지 않은 곳을 찍으면 인정되지 않아요. 고객사로 가는 날은 "출근" 대신 도착 후 상태를 눌러주세요.)'
                     : locationCorrection?.blocked
                       // 2026-10-02 추가: 하드블록으로 애초에 등록이 안 된 상태에서 뜨는 안내 —
                       // 2026-10-01 보정 안내와 동일한 원칙(GPS 지점 근처만 인정)을 쓰되, "등록은
@@ -2262,7 +2311,7 @@ export default function EmployeeHome() {
                       // 곳은 거부한다(attendance.routes.ts의 LOCATION_CORRECTION_TOO_FAR).
                       : '지금 계신 곳의 GPS 위치가 지도에 표시돼요. 위치가 맞으면 그대로 "이 위치로 다시 등록"을 눌러주세요. 실내 등 GPS 오차로 핀이 살짝 어긋났다면, 실제로 지금 계신 곳 근처를 다시 찍어 보정해주세요. (고객사 주소 등 실제로 계시지 않은 곳을 찍으면 정정으로 인정되지 않아요.)'
                 }
-                confirmLabel={locationCorrection?.blocked ? '여기가 맞습니다 · 등록 계속' : '이 위치로 다시 등록'}
+                confirmLabel={locationCorrection?.clockIn ? '이 위치로 출근' : locationCorrection?.blocked ? '여기가 맞습니다 · 등록 계속' : '이 위치로 다시 등록'}
                 errorOverride={locationCorrectionError}
                 onClose={() => {
                   if (locationCorrectionBusy) return;

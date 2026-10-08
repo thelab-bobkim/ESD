@@ -229,6 +229,9 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   const hqLng = isWeekendToday ? '' : await getPolicyString('HQ_LONGITUDE', '');
   const hqConfigured = Boolean(hqLat && hqLng);
   let hqLocationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
+  // 2026-10-08: GPS 오차로 처음엔 불일치였지만 직원이 카카오맵으로 본인 위치를 보정해 본사 반경 안으로
+  // 확인된 경우 true — 기록에 "지도 보정" 표식을 남겨 관리자가 구분할 수 있게 한다(아래 statusChangeLog 생성부).
+  let clockInMapCorrected = false;
   // 2026-09-09: 아래 GPS 좌표대조 블록은 hqVerifiedByAlternateMeans가 false일 때만 실행되는데,
   // true인 경우(사내망/주소로 이미 확인됨) hqLocationResult를 아무도 채워주지 않아서 계속 null로
   // 남아 있었다 — locationConfirmed(213번째 줄)는 맞게 true로 계산되는데 실제 기록되는
@@ -251,11 +254,75 @@ attendanceRouter.post('/clock-in', async (req, res) => {
         },
       });
     }
-    hqLocationResult = checkLocationMatch(location, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS, accuracyMeters);
+    const hqPoint = { latitude: Number(hqLat), longitude: Number(hqLng) };
+    const hqCheck = checkLocationMatch(location, hqPoint, HQ_LOCATION_MATCH_RADIUS_METERS, accuracyMeters);
+    hqLocationResult = hqCheck;
     // 2026-09-14: 김유범 피드백 — 고층건물 실내 GPS 오차(최대 2.8km 실측)로 본사에 실제로 있는데도
     // "출근" 버튼이 막히는 문제. /status의 본사근무 등록과 동일하게, 거리 불일치만으로는 막지 않고
     // locationMatch=false·거리값만 기록해서 상황판에서 확인 가능하게 한다(사내망/주소 매칭이라는
     // 다른 안전장치는 그대로 남아있음).
+    // 2026-10-08 재도입(관리자 지적 — 본사에서 약 9.4km 떨어진 월드컵경기장 부근에서 "출근"을
+    // 눌렀는데 그대로 출근이 확정됐다): 2026-10-02에 /status의 본사근무 등록에는 "위치 불일치 하드블록"
+    // (LOCATION_MISMATCH_BLOCKED + 카카오맵 확인/1km 보정)이 다시 들어갔지만 이 "출근" 버튼 핸들러는
+    // 빠져 있었다. 화면 안내("출근 버튼은 본사 위치가 확인될 때만 처리돼요")대로 같은 원칙을 적용한다.
+    //  - GPS 오차범위 자체가 큰 경우(isMismatchAccuracyExempt, 고층건물 실내 최대 2.8km 사례)는 예전처럼
+    //    막지 않고 불일치로만 기록한다.
+    //  - 지도로 보정해도 본사 반경에 닿을 수 없는 거리(원본 GPS와의 보정 허용 1km + 본사 허용반경)면
+    //    지도를 띄워봐야 소용이 없으므로 LOCATION_MISMATCH_TOO_FAR로 바로 안내한다(출근 불가).
+    //  - 보정으로 구제 가능한 거리면 LOCATION_MISMATCH_BLOCKED를 돌려주고, 프론트가 카카오맵을 띄운다.
+    //    직원이 지도에서 확정한 좌표(confirmedLocation + selfConfirmMismatch)로 재시도하면, 그 좌표가
+    //    ① 이번 요청의 원본 GPS에서 1km 이내이고(validateSelfConfirmedLocation — 아무 데나 찍어
+    //    통과하는 스푸핑 방지) ② 실제로 본사 반경 안일 때만 출근을 확정한다. /status의 본사근무
+    //    "그래도 등록"과 달리 여기서는 본사 반경 안이어야만 통과한다 — 출근 버튼은 "본사 위치가
+    //    확인될 때만" 처리한다는 원래 정책이기 때문이다(다른 곳이면 실제 근무형태 버튼을 누른다).
+    if (hqCheck && !hqCheck.locationMatch && !isMismatchAccuracyExempt(accuracyMeters)) {
+      const unrecoverableDistanceMeters = MAX_ACCURACY_ALLOWANCE_METERS + hqCheck.effectiveRadiusMeters;
+      if (hqCheck.locationDistanceMeters > unrecoverableDistanceMeters) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'LOCATION_MISMATCH_TOO_FAR',
+            message: `등록된 본사 위치에서 약 ${hqCheck.locationDistanceMeters}m 떨어져 있어 "출근" 버튼으로는 출근할 수 없어요. 본사에 도착한 뒤 다시 눌러주세요. 고객사로 바로 가는 날이나 출장·상주근무인 날은 "출근" 대신 도착 후 해당 상태(고객사작업/고객사미팅 등)를 눌러주세요.`,
+            distanceMeters: hqCheck.locationDistanceMeters,
+          },
+        });
+      }
+      if (req.body?.selfConfirmMismatch !== true) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'LOCATION_MISMATCH_BLOCKED',
+            message: `등록된 본사 위치에서 약 ${hqCheck.locationDistanceMeters}m 떨어져 있어 아직 출근 처리되지 않았어요. 지도에서 지금 계신 위치를 확인해주세요.`,
+            distanceMeters: hqCheck.locationDistanceMeters,
+          },
+        });
+      }
+      const confirmedParsed = clockInLocationSchema.safeParse(req.body?.confirmedLocation);
+      const confirmedLocation = confirmedParsed.success ? confirmedParsed.data : undefined;
+      const confirmCheck = validateSelfConfirmedLocation(location, confirmedLocation);
+      if (!confirmCheck.ok || !confirmedLocation) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'LOCATION_CORRECTION_TOO_FAR',
+            message: `처음 측정된 내 위치에서 ${confirmCheck.ok ? 0 : confirmCheck.distanceMeters}m 떨어져 있어 정정으로 인정되지 않습니다. 실제 계신 곳 근처에서 다시 시도해주세요.`,
+          },
+        });
+      }
+      // 보정한 좌표는 "내가 있는 곳"을 정확히 찍은 값이라 GPS 오차 허용치는 더하지 않고 본사 기본 반경만 적용한다.
+      const correctedCheck = checkLocationMatch(confirmedLocation, hqPoint, HQ_LOCATION_MATCH_RADIUS_METERS);
+      if (!correctedCheck || !correctedCheck.locationMatch) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'LOCATION_CORRECTION_NOT_AT_HQ',
+            message: `지도에서 확인한 위치도 본사에서 약 ${correctedCheck?.locationDistanceMeters ?? 0}m 떨어져 있어 "출근" 버튼으로는 출근할 수 없어요. 본사 근처에서 다시 시도하거나, 실제 근무형태에 맞는 상태(고객사작업 등)를 눌러주세요.`,
+          },
+        });
+      }
+      hqLocationResult = { locationMatch: true, locationDistanceMeters: correctedCheck.locationDistanceMeters };
+      clockInMapCorrected = true;
+    }
   }
   const locationConfirmed = hqConfigured && (hqVerifiedByAlternateMeans || Boolean(hqLocationResult?.locationMatch));
 
@@ -298,7 +365,8 @@ attendanceRouter.post('/clock-in', async (req, res) => {
           userId,
           status: 'HQ_WORKING',
           source: 'WEB',
-          note: locationConfirmed ? null : PROVISIONAL_HQ_NOTE,
+          // 2026-10-08: 지도 보정으로 본사 반경 안임이 확인된 경우엔 관리자가 구분할 수 있게 표식을 남긴다.
+          note: clockInMapCorrected ? '[GPS 위치 보정 — 직원이 지도에서 직접 확인함]' : (locationConfirmed ? null : PROVISIONAL_HQ_NOTE),
           locationMatch: hqLocationResult?.locationMatch ?? null,
           locationDistanceMeters: hqLocationResult?.locationDistanceMeters ?? null,
           locationAccuracyMeters: hqLocationResult ? (accuracyMeters ?? null) : null,
@@ -310,7 +378,7 @@ attendanceRouter.post('/clock-in', async (req, res) => {
     }
   }
 
-  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockInAt: record.clockInAt, locationConfirmed } });
+  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockInAt: record.clockInAt, locationConfirmed, mapCorrected: clockInMapCorrected } });
 
   return res.json({ success: true, data: { ...record, locationConfirmed } });
 });
