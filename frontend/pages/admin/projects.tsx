@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import AdminHeader from '@/components/AdminHeader';
+import ProjectBackfillPanel from '@/components/ProjectBackfillPanel';
+import ProjectInsightTabs from '@/components/ProjectInsightTabs';
 import { apiFetch, isAuthExpiredError } from '@/lib/api';
 
 type RefUser = { id: string; name: string; employeeNo: string; department: string };
@@ -11,6 +13,7 @@ type ProjectRow = {
   client: RefClient | null; manager: { id: string; name: string; department: string } | null;
   members: { id: string; userId: string; name: string; department: string; role: string; allocationPct: number }[];
   taskSummary: { total: number; done: number; inProgress: number; blocked: number };
+  lastActivityDate?: string | null;
 };
 type ProjectDetail = {
   id: string; code: string; name: string;
@@ -21,6 +24,8 @@ type ProjectDetail = {
 const STATUS_LABEL: Record<string, string> = { PLANNED: '준비', ACTIVE: '진행', ON_HOLD: '보류', COMPLETED: '완료', CANCELLED: '취소' };
 const TASK_STATUS_LABEL: Record<string, string> = { TODO: '대기', IN_PROGRESS: '진행', BLOCKED: '막힘', DONE: '완료' };
 function hours(minutes: number | null | undefined) { return `${((minutes ?? 0) / 60).toFixed(1)}h`; }
+type SortKey = 'recent' | 'hours' | 'name' | 'code';
+const SORT_LABEL: Record<SortKey, string> = { recent: '최근 활동순', hours: '실공수 많은 순', name: '이름순', code: '코드순' };
 
 export default function ProjectsPage() {
   const router = useRouter();
@@ -33,6 +38,11 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ code: '', name: '', clientId: '', managerId: '', status: 'PLANNED', priority: 'NORMAL', difficulty: 3, startDate: '', endDate: '', plannedHours: '', description: '' });
+  const [showCreate, setShowCreate] = useState(false);
+  const [q, setQ] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [engineerFilter, setEngineerFilter] = useState('');
+  const [sortKey, setSortKey] = useState<SortKey>('recent');
   const [memberUserId, setMemberUserId] = useState('');
   const [task, setTask] = useState({ title: '', assigneeId: '', difficulty: 3, plannedHours: '', dueDate: '' });
 
@@ -58,6 +68,29 @@ export default function ProjectsPage() {
   useEffect(() => { if (selectedId) apiFetch<ProjectDetail>(`/projects/${selectedId}`).then(setDetail).catch(() => {}); }, [selectedId]);
 
   const selected = useMemo(() => projects.find((p) => p.id === selectedId) ?? null, [projects, selectedId]);
+
+  // 목록 검색/필터/정렬 — 프로젝트가 수백 개로 늘어나도 찾기 쉽게 한다(서버 데이터는 그대로, 화면에서만 거름).
+  const engineerOptions = useMemo(() => {
+    const m = new Map<string, string>();
+    projects.forEach((p) => p.members.forEach((x) => m.set(x.userId, x.name)));
+    return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ko'));
+  }, [projects]);
+  const visibleProjects = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const rows = projects.filter((p) => {
+      if (statusFilter && p.status !== statusFilter) return false;
+      if (engineerFilter && !p.members.some((m) => m.userId === engineerFilter)) return false;
+      if (!needle) return true;
+      return [p.code, p.name, p.client?.name ?? '', p.manager?.name ?? '', ...p.members.map((m) => m.name)].some((t) => t.toLowerCase().includes(needle));
+    });
+    const by: Record<SortKey, (a: ProjectRow, b: ProjectRow) => number> = {
+      recent: (a, b) => (b.lastActivityDate ?? '').localeCompare(a.lastActivityDate ?? '') || b.actualMinutes - a.actualMinutes,
+      hours: (a, b) => b.actualMinutes - a.actualMinutes,
+      name: (a, b) => a.name.localeCompare(b.name, 'ko'),
+      code: (a, b) => a.code.localeCompare(b.code),
+    };
+    return [...rows].sort(by[sortKey]);
+  }, [projects, q, statusFilter, engineerFilter, sortKey]);
 
   async function createProject(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError('');
@@ -104,6 +137,8 @@ export default function ProjectsPage() {
     {loading && <p>불러오는 중...</p>}
     {!loading && <>
 
+    <ProjectBackfillPanel onApplied={() => loadAll()} />
+
     <div className="stat-row">
       <div className="stat-card"><div className="stat-label">전체 프로젝트</div><div className="stat-value">{projects.length}</div></div>
       <div className="stat-card"><div className="stat-label">진행중</div><div className="stat-value">{projects.filter(p => p.status === 'ACTIVE').length}</div></div>
@@ -112,10 +147,13 @@ export default function ProjectsPage() {
     </div>
 
     <div className="card" style={{ marginBottom: 16 }}>
-      <h2 style={{ marginTop: 0 }}>신규 프로젝트</h2>
-      <form onSubmit={createProject}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <h2 style={{ margin: 0 }}>신규 프로젝트</h2>
+        <button type="button" className="secondary" style={{ width: 'auto' }} onClick={() => setShowCreate(v => !v)}>{showCreate ? '접기' : '직접 만들기'}</button>
+      </div>
+      {showCreate && <form onSubmit={createProject}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 10 }}>
-          <div><label className="field-label">프로젝트 코드</label><input value={form.code} onChange={e => setForm({ ...form, code: e.target.value })} placeholder="예: NH-2026-001" required /></div>
+          <div><label className="field-label">프로젝트 코드</label><input value={form.code} onChange={e => setForm({ ...form, code: e.target.value })} placeholder="예: DSTI-0222 (자동 생성분 다음 번호)" required /></div>
           <div><label className="field-label">프로젝트명</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required /></div>
           <div><label className="field-label">고객사</label><select className="field-select" value={form.clientId} onChange={e => setForm({ ...form, clientId: e.target.value })}><option value="">선택 안 함</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
           <div><label className="field-label">PM</label><select className="field-select" value={form.managerId} onChange={e => setForm({ ...form, managerId: e.target.value })}><option value="">미지정</option>{users.map(u => <option key={u.id} value={u.id}>{u.name} · {u.department}</option>)}</select></div>
@@ -127,16 +165,25 @@ export default function ProjectsPage() {
         </div>
         <label className="field-label">설명</label><textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} />
         <button type="submit" disabled={busy}>{busy ? '생성 중...' : '프로젝트 생성'}</button>
-      </form>
+      </form>}
     </div>
 
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px,0.9fr) minmax(420px,1.6fr)', gap: 16 }}>
       <div className="card">
-        <h2 style={{ marginTop: 0 }}>프로젝트 목록 ({projects.length})</h2>
+        <h2 style={{ marginTop: 0 }}>프로젝트 목록 ({visibleProjects.length}{visibleProjects.length !== projects.length ? ` / ${projects.length}` : ''})</h2>
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="코드·프로젝트명·고객사·PM·엔지니어 검색" />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
+          <select className="field-select" style={{ margin: 0 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="">상태 전체</option>{Object.entries(STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+          <select className="field-select" style={{ margin: 0 }} value={sortKey} onChange={e => setSortKey(e.target.value as SortKey)}>{Object.entries(SORT_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+        </div>
+        <select className="field-select" style={{ marginTop: 8 }} value={engineerFilter} onChange={e => setEngineerFilter(e.target.value)}><option value="">엔지니어 전체</option>{engineerOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select>
         {projects.length === 0 && <p>등록된 프로젝트가 없습니다. 위에서 먼저 생성하세요.</p>}
-        {projects.map(p => <button key={p.id} type="button" onClick={() => setSelectedId(p.id)} className={selectedId === p.id ? '' : 'secondary'} style={{ width: '100%', textAlign: 'left', marginBottom: 8 }}>
-          <b>{p.code}</b> · {p.name}<br/><small>{STATUS_LABEL[p.status] ?? p.status} · {p.manager?.name ?? 'PM 미지정'} · 실공수 {hours(p.actualMinutes)}</small>
-        </button>)}
+        {projects.length > 0 && visibleProjects.length === 0 && <p>조건에 맞는 프로젝트가 없습니다.</p>}
+        <div style={{ maxHeight: '70vh', overflowY: 'auto', marginTop: 4 }}>
+          {visibleProjects.map(p => <button key={p.id} type="button" onClick={() => setSelectedId(p.id)} className={selectedId === p.id ? '' : 'secondary'} style={{ width: '100%', textAlign: 'left', marginBottom: 8 }}>
+            <b>{p.code}</b> · {p.name}<br/><small>{STATUS_LABEL[p.status] ?? p.status} · {p.manager?.name ?? 'PM 미지정'} · 실공수 {hours(p.actualMinutes)}{p.lastActivityDate ? ` · 최근 ${p.lastActivityDate.slice(0, 10)}` : ''}</small>
+          </button>)}
+        </div>
       </div>
       <div className="card">
         {!selected || !detail ? <p>프로젝트를 선택하세요.</p> : <>
@@ -151,6 +198,10 @@ export default function ProjectsPage() {
             <div className="stat-card"><div className="stat-label">난이도</div><div className="stat-value">{selected.difficulty}</div></div>
           </div>
 
+          <ProjectInsightTabs
+            projectId={selected.id}
+            members={detail.members.map(m => ({ userId: m.userId, name: m.user.name }))}
+            overview={<>
           <h3>참여 엔지니어</h3>
           {detail.members.length === 0 ? <p>아직 참여자가 없습니다.</p> : <div className="table-scroll"><table><thead><tr><th>이름</th><th>부서</th><th>역할</th><th>배정</th></tr></thead><tbody>{detail.members.map(m => <tr key={m.id}><td>{m.user.name}</td><td>{m.user.department.name}</td><td>{m.role}</td><td>{m.allocationPct}%</td></tr>)}</tbody></table></div>}
           <div className="toolbar" style={{ marginTop: 8 }}><select className="field-select" style={{ margin:0 }} value={memberUserId} onChange={e => setMemberUserId(e.target.value)}><option value="">참여자 선택</option>{users.filter(u => !detail.members.some(m => m.userId === u.id)).map(u => <option key={u.id} value={u.id}>{u.name} · {u.department}</option>)}</select><button type="button" style={{ width:'auto' }} onClick={addMember} disabled={!memberUserId}>참여자 추가</button></div>
@@ -165,6 +216,8 @@ export default function ProjectsPage() {
             <div><label className="field-label">기한</label><input type="date" value={task.dueDate} onChange={e=>setTask({...task,dueDate:e.target.value})}/></div>
             <button type="button" onClick={addTask} disabled={!task.title.trim()}>Task 추가</button>
           </div>
+            </>}
+          />
         </>}
       </div>
     </div>

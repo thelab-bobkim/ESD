@@ -91,6 +91,15 @@ const WORK_START_STATUSES_FRONT = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLI
 const SIMPLIFIED_EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'NIGHT_WORK', 'WEEKEND_WORK']);
 
 const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
+// 2026-10-08: 프로젝트 공수 데이터 품질을 위해, 이 상태들은 작업유형을 "직접 골라야" 등록된다
+// (예전엔 첫 항목 '정기점검'이 미리 선택돼 있어 실제로 골랐는지 알 수 없었다). 고객사미팅의
+// 미팅목적/야간작업은 프로젝트 공수 집계 대상이 아니라 기존 기본값 방식을 유지한다.
+const WORK_TYPE_REQUIRED_STATUSES = new Set(['HQ_WORKING', 'CLIENT_WORK', 'REMOTE', 'WEEKEND_WORK']);
+// 2026-10-08: 프로젝트 선택 영역을 보여주는 상태(고객사작업/재택/고객사미팅).
+const PROJECT_PICK_STATUSES = new Set(['CLIENT_WORK', 'REMOTE', 'CLIENT_MEETING']);
+function normalizeClientKey(name: string | null | undefined): string {
+  return (name ?? '').normalize('NFKC').toLowerCase().replace(/\(주\)|㈜|주식회사/g, '').replace(/[^\p{L}\p{N}]/gu, '');
+}
 // 고객사미팅은 "작업"이 아니라 "미팅"이라 유형 대신 목적으로 구분한다.
 const MEETING_PURPOSE_OPTIONS = ['백업미팅', '식사', '신규방문', '프로젝트미팅', '기타'];
 // 본사근무는 고객사 작업과 성격이 달라서(기술지원/셀프스터디 등) 별도 유형 목록을 쓴다.
@@ -549,6 +558,32 @@ export default function EmployeeHome() {
       .catch(() => setProjectOptions([]));
   }, []);
   const selectedProject = projectOptions.find((p) => p.id === projectId) ?? null;
+  // 2026-10-08: 고르신 고객사에 해당하는 프로젝트들(고객사 1곳 = 프로젝트 1개가 원칙). 1개면 자동으로
+  // 선택해 보여주고, 2개 이상이면 직접 고르게 하며, 0개면 등록 시 서버가 자동으로 만들어 연결한다.
+  const clientProjectOptions = projectOptions.filter((p) => {
+    if (!p.client || !clientName.trim()) return false;
+    if (clientId) return p.client.id === clientId;
+    return normalizeClientKey(p.client.name) === normalizeClientKey(clientName);
+  });
+  useEffect(() => {
+    if (!detailStatus || !PROJECT_PICK_STATUSES.has(detailStatus)) return;
+    if (clientProjectOptions.length === 1) {
+      const only = clientProjectOptions[0];
+      if (projectId !== only.id) {
+        setProjectId(only.id);
+        setProjectName(only.name);
+        setTaskId('');
+      }
+    } else if (projectId && clientName.trim() && !clientProjectOptions.some((p) => p.id === projectId)) {
+      // 고객사를 바꿨는데 이전 고객사의 프로젝트가 남아 있으면 비운다(엉뚱한 프로젝트에 공수가 붙는 것 방지).
+      setProjectId('');
+      setTaskId('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailStatus, clientName, clientId, projectOptions]);
+  const projectChoiceMissing = Boolean(detailStatus && PROJECT_PICK_STATUSES.has(detailStatus) && !isSimplifiedMeetingForm
+    && clientProjectOptions.length >= 2 && !projectId);
+  const workTypeMissing = Boolean(detailStatus && WORK_TYPE_REQUIRED_STATUSES.has(detailStatus) && !workType);
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
   // 2026-09-03 추가, 2026-09-19 변경: 처음엔 "네, 알림 받을게요" 배너로 먼저 동의를 구했는데,
@@ -1051,7 +1086,8 @@ export default function EmployeeHome() {
     setWorkStart(initialWorkStart);
     setWorkEnd('');
     setStillInProgress(false);
-    const initialWorkType = code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : code === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS[0] : WORK_TYPE_OPTIONS[0];
+    // 2026-10-08: 작업유형 필수 상태는 미리 선택해두지 않는다(직접 골라야 등록 가능).
+    const initialWorkType = WORK_TYPE_REQUIRED_STATUSES.has(code) ? '' : code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : code === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS[0] : WORK_TYPE_OPTIONS[0];
     setWorkType(initialWorkType);
     setWorkDetail('');
     setWorkReason('');
@@ -1102,7 +1138,10 @@ export default function EmployeeHome() {
           if (open.projectName) setProjectName((prev) => (prev === '' ? open.projectName : prev));
           if (open.projectId) setProjectId((prev) => (prev === '' ? open.projectId! : prev));
           if (open.taskId) setTaskId((prev) => (prev === '' ? open.taskId! : prev));
-          if (open.workType) setWorkType((prev) => (prev === initialWorkType ? open.workType : prev));
+          // 2026-10-08: 즉시등록(재택/주말작업)이 서버 기본값 '기타'로 남겨둔 기록(작업내용이 아직 없음)은
+          // 직원이 실제로 고른 값이 아니므로, 작업유형 필수 상태에서는 이어받지 않고 직접 고르게 둔다.
+          const workTypeIsPlaceholder = WORK_TYPE_REQUIRED_STATUSES.has(code) && open.workType === '기타' && !open.description;
+          if (open.workType && !workTypeIsPlaceholder) setWorkType((prev) => (prev === initialWorkType ? open.workType : prev));
           setWorkStart((prev) => (prev === initialWorkStart ? startHHMM : prev));
           const { workDetail: wd, workReason: wr, personnel: pn } = parseComposedDescription(open.description || '');
           if (wd) setWorkDetail((prev) => (prev === '' ? wd : prev));
@@ -1392,7 +1431,10 @@ export default function EmployeeHome() {
 
     // 간소화된 폼(본사근무/고객사미팅/고객사작업)의 최소 입력 조건 — 버튼 disabled와 동일한 조건을
     // 함수 안에서도 한 번 더 지킨다(다른 경로로 호출되더라도 항상 지켜지도록).
-    const minDetailLen = code === 'HQ_WORKING' ? 15 : 10;
+    // 2026-10-08 수정: 2026-09-22에 버튼의 "최소 10자" 제약은 제거했는데 이 함수 안의 검사는 남아 있어,
+    // 10자 미만으로 쓰고 등록을 누르면 버튼은 활성인데 아무 반응이 없던 문제가 있었다 — 버튼과 동일하게
+    // 맞춘다(본사근무 업무일지만 15자, 나머지는 빈 값만 막음).
+    const minDetailLen = code === 'HQ_WORKING' ? 15 : 1;
     // 2026-09-14: 영업조직(isSimplifiedMeetingForm)은 고객사미팅 화면에서 작업내용·작업위치
     // 입력칸을 아예 없앴으므로, 여기서 안전한 기본값을 대신 채워 백엔드 필수값과 기존
     // 최소글자수 검증을 통과시킨다 — 사용자에게는 보이지 않지만 실제로는 값이 필요하다.
@@ -1408,6 +1450,9 @@ export default function EmployeeHome() {
     // 고객사작업/야간작업/주말작업은 완료시간까지 필수다(2026-09-14 요청) — 버튼 disabled와 동일.
     // 단, 2026-09-15부터 "진행중" 체크박스를 명시적으로 켠 경우에는 예외로 허용한다.
     if (END_TIME_REQUIRED_STATUSES.has(code) && !workEnd && !stillInProgress) return;
+    // 2026-10-08: 작업유형 직접 선택 / 프로젝트 선택 필수 — 버튼 disabled와 동일한 조건을 함수 안에서도 지킨다.
+    if (WORK_TYPE_REQUIRED_STATUSES.has(code) && !workType) return;
+    if (projectChoiceMissing) return;
     const siteDetailSuffix = SITE_DETAIL_STATUSES.has(code)
       ? ` | 작업위치: ${effectiveSiteType === 'ONSITE' ? '현장' : '원격'}${personnel ? ` | 작업인원: ${personnel}` : ''}`
       : '';
@@ -2722,12 +2767,58 @@ export default function EmployeeHome() {
                   {showMoreFields
                     ? '▲ 선택 항목 접기'
                     : detailStatus === 'CLIENT_MEETING'
-                      ? '▾ 프로젝트명 · 완료시간 · 작업인원 입력(선택)'
-                      : '▾ 프로젝트명 · 작업인원 입력(선택)'}
+                      ? '▾ 완료시간 · 작업인원 입력(선택)'
+                      : '▾ 작업인원 입력(선택)'}
                 </button>
               )}
 
-              {EFFORT_STATUSES.has(detailStatus) && detailStatus !== 'HQ_WORKING' && showMoreFields && (
+              {/* 2026-10-08: 프로젝트는 "고객사에 따라 정해지는 값"이라 더 이상 접힌 항목에 숨기지 않고 고객사
+                  바로 아래에 항상 보여준다. 1개면 자동 연결, 2개 이상이면 필수 선택, 없으면 등록 시 서버가
+                  자동으로 만들어 연결한다(등록된 고객사일 때만). */}
+              {PROJECT_PICK_STATUSES.has(detailStatus) && !isSimplifiedMeetingForm && clientName.trim() && (
+                <div style={{ margin: '4px 0 10px' }}>
+                  {clientProjectOptions.length >= 2 && (
+                    <>
+                      <label className="field-label">프로젝트 (필수)</label>
+                      <select
+                        className="field-select"
+                        value={projectId}
+                        onChange={(e) => {
+                          const nextId = e.target.value;
+                          setProjectId(nextId);
+                          setTaskId('');
+                          const p = clientProjectOptions.find((x) => x.id === nextId);
+                          setProjectName(p ? p.name : '');
+                        }}
+                      >
+                        <option value="">프로젝트를 선택하세요</option>
+                        {clientProjectOptions.map((p) => <option key={p.id} value={p.id}>{p.code} · {p.name}</option>)}
+                      </select>
+                    </>
+                  )}
+                  {clientProjectOptions.length === 1 && selectedProject && (
+                    <p style={{ fontSize: 13, color: '#4b5563', margin: '2px 0 6px' }}>
+                      📁 프로젝트: <strong>{selectedProject.name}</strong> <span style={{ color: '#6b7594' }}>({selectedProject.code}, 자동 연결)</span>
+                    </p>
+                  )}
+                  {clientProjectOptions.length === 0 && (
+                    <p style={{ fontSize: 12, color: '#6b7594', margin: '2px 0 6px' }}>
+                      📁 이 고객사의 프로젝트가 등록 시 자동으로 만들어져 연결됩니다.
+                    </p>
+                  )}
+                  {selectedProject && selectedProject.tasks.length > 0 && (
+                    <>
+                      <label className="field-label">Task (선택)</label>
+                      <select className="field-select" value={taskId} onChange={(e) => setTaskId(e.target.value)}>
+                        <option value="">Task 미지정</option>
+                        {selectedProject.tasks.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
+                      </select>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {EFFORT_STATUSES.has(detailStatus) && detailStatus !== 'HQ_WORKING' && showMoreFields && !clientName.trim() && (
                 <>
                   <label className="field-label">프로젝트</label>
                   <select
@@ -2763,8 +2854,9 @@ export default function EmployeeHome() {
                 </>
               )}
 
-              <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅목적' : '작업 유형'}</label>
+              <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅목적' : WORK_TYPE_REQUIRED_STATUSES.has(detailStatus) ? '작업 유형 (필수)' : '작업 유형'}</label>
               <select className="field-select" value={workType} onChange={(e) => setWorkType(e.target.value)}>
+                {WORK_TYPE_REQUIRED_STATUSES.has(detailStatus) && <option value="">선택하세요</option>}
                 {(detailStatus === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS : detailStatus === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS : WORK_TYPE_OPTIONS).map((opt) => (
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
@@ -2917,12 +3009,20 @@ export default function EmployeeHome() {
                   // 고객사작업/야간작업/주말작업은 완료시간도 필수다(2026-09-14 요청 — 고객사미팅은 제외).
                   // 단, "진행중" 체크박스를 켠 경우는 예외(2026-09-15).
                   || (END_TIME_REQUIRED_STATUSES.has(detailStatus) && !workEnd && !stillInProgress)
+                  // 2026-10-08: 프로젝트 데이터 품질을 위해 작업유형 직접 선택, (고객사에 프로젝트가 여러 개면) 프로젝트 선택도 필수.
+                  || workTypeMissing
+                  || projectChoiceMissing
                   || detailSubmitting
                 }
                 onClick={handleDetailFormSubmit}
               >
                 등록
               </button>
+              {(workTypeMissing || projectChoiceMissing) && (
+                <p style={{ fontSize: 12, color: '#f87171', margin: '6px 0 0' }}>
+                  * 필수 항목을 선택해주세요: {[workTypeMissing ? '작업 유형' : null, projectChoiceMissing ? '프로젝트' : null].filter(Boolean).join(', ')}
+                </p>
+              )}
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
             </div>
           )}

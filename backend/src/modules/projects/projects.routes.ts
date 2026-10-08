@@ -3,6 +3,8 @@ import { createRouter } from '../../common/async-router';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
+import { registerBackfillRoutes } from './project-backfill.routes';
+import { registerProjectInsightRoutes } from './project-insights.routes';
 
 // 2026-10-01 수정(Genspark 0001-0008 병합, C-2 일관성 유지): 이 모듈도 다른 22개 라우트 모듈과 동일하게
 // async 핸들러 예외가 프로세스를 종료시키지 않도록 createRouter()를 쓴다(common/async-router.ts 참고).
@@ -84,9 +86,11 @@ projectsRouter.get('/', requireRole(...adminRoles), async (_req, res) => {
       by: ['projectId'],
       where: { projectId: { not: null } },
       _sum: { actualMinutes: true, minutes: true },
+      _max: { workDate: true },
     }),
   ]);
   const effortByProject = new Map(effortTotals.map((e) => [e.projectId as string, Number(e._sum.actualMinutes ?? e._sum.minutes ?? 0)]));
+  const lastActivityByProject = new Map(effortTotals.map((e) => [e.projectId as string, e._max.workDate ? dateOnly(e._max.workDate) : null]));
   return res.json({
     success: true,
     data: projects.map((p) => ({
@@ -99,6 +103,7 @@ projectsRouter.get('/', requireRole(...adminRoles), async (_req, res) => {
       difficulty: p.difficulty,
       plannedMinutes: p.plannedMinutes,
       actualMinutes: effortByProject.get(p.id) ?? 0,
+      lastActivityDate: lastActivityByProject.get(p.id) ?? null,
       startDate: dateOnly(p.startDate),
       endDate: dateOnly(p.endDate),
       description: p.description,
@@ -403,6 +408,11 @@ projectsRouter.get('/performance/summary', requireRole(...adminRoles), async (re
   });
   return res.json({ success: true, data: { from: dateOnly(from), to: dateOnly(toBase), rows } });
 });
+
+// 2026-10-08: 공수 데이터로 프로젝트 자동 생성(미리보기/적용) — 관리자 전용.
+registerBackfillRoutes(projectsRouter);
+// 2026-10-08: 프로젝트 상세 통합 화면용 조회(요약/공수 이력/업무일지) — 읽기 전용.
+registerProjectInsightRoutes(projectsRouter);
 
 /** 프로젝트 상세 — 참여자/Task/실공수를 한 화면에 쓰기 위한 데이터. */
 projectsRouter.get('/:id', requireRole(...adminRoles), async (req, res) => {

@@ -8,6 +8,8 @@ import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST, isWeekendForWorkDate, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 import { recordNightWork, willResumeNightWork } from '../../common/night-work-helpers';
 import { recordEffort, findOpenEffort, willUpdateExistingEffort } from '../../common/effort-helpers';
+import { resolveAutoProject } from '../projects/project-autolink';
+import { DEFAULT_EXCLUDED_WORK_TYPES } from '../projects/project-backfill-plan';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, MAX_ACCURACY_ALLOWANCE_METERS, buildMismatchCoords } from '../../common/location';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
 // 2026-09-30 수정(Critical): 일일업무일지 1단계(퇴근 시 강제 마감)를 /clock-out에서 실제로
@@ -109,6 +111,8 @@ const EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 
 // 본사근무(HQ_WORKING)는 빼야 한다 — 애초에 완료시간 입력칸 자체가 없어 endTime이 항상 null인
 // 하루 단위 상태라, 포함시키면 매일의 업무일지가 전부 최초 한 기록에 계속 덮어써지는 사고가 난다.
 const EFFORT_CONTINUATION_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'WEEKEND_WORK']);
+// 2026-10-08: 프로젝트 미선택 시 "등록된 고객사"의 진행 중 프로젝트에 자동 연결할 상태(본사근무는 제외).
+const AUTO_LINK_PROJECT_STATUSES = new Set(['CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'WEEKEND_WORK']);
 // 주말(토=6,일=0, KST) 여부 — "주말엔 주말작업만" 게이트 판단에 쓴다. 2026-09-14: reminder-scheduler.ts도
 // 같은 기준이 필요해져서 attendance-helpers.ts로 옮기고 여기서는 그걸 그대로 가져다 쓴다.
 
@@ -1064,6 +1068,20 @@ attendanceRouter.post('/status', async (req, res) => {
     // 넣거나, 선택한 프로젝트에 속하지 않는 taskId를 넣을 수 없도록 서버에서 반드시 재검증한다.
     // 클라이언트가 보낸 projectName은 신뢰하지 않고, projectId가 유효하면 DB의 정식 프로젝트명으로
     // 덮어쓴다(아래 effortData.projectName 구성부 참고).
+    // 2026-10-08: 프로젝트를 직접 고르지 않았어도, "등록된 고객사"의 고객사작업/재택/주말작업이면 그
+    // 고객사의 진행 중 프로젝트에 자동 연결한다(없으면 새로 만든다 — 고객사 1곳 = 프로젝트 1개).
+    // 고객사미팅은 기존 프로젝트에만 연결하고 새로 만들지는 않는다. 자유입력 이름·내부업무·식사/교육
+    // 같은 비(非)고객사 업무유형은 연결하지 않는다. 자동 연결이 실패해도 등록 자체는 막지 않는다.
+    if (!effort.projectId && !effort.taskId && AUTO_LINK_PROJECT_STATUSES.has(status) && effort.clientName?.trim()
+      && !DEFAULT_EXCLUDED_WORK_TYPES.includes((effort.workType ?? '').trim())) {
+      const autoProject = await resolveAutoProject({
+        userId,
+        clientId: effort.clientId,
+        clientName: effort.clientName,
+        allowCreate: status !== 'CLIENT_MEETING',
+      });
+      if (autoProject) effort.projectId = autoProject.id;
+    }
     if (effort.taskId && !effort.projectId) {
       return res.status(400).json({ success: false, error: { code: 'INVALID_PROJECT_TASK', message: 'Task를 선택하려면 프로젝트도 선택해야 합니다.' } });
     }
