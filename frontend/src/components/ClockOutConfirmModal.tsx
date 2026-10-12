@@ -9,6 +9,11 @@ interface Props {
   onConfirm: (payload: {
     locationAddress?: string;
     locationStatus: string;
+    // 2026-10-11: 서버가 본사/고객사 어디서 퇴근했는지 판정하는 데만 쓰고 저장하지 않는다.
+    location?: { lat: number; lng: number };
+    accuracyMeters?: number;
+    // 위치를 확인할 수 없을 때 직원이 직접 적는 사유(5자 이상) — 퇴근은 확정되고 관리자 확인 대상으로 남는다.
+    locationFailureReason?: string;
     earlyLeaveReason?: string;
     dailyWorkLog: DailyWorkLogPayload;
   }) => Promise<void>;
@@ -91,6 +96,7 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
   const [submitting, setSubmitting] = useState(false);
   const [earlyLeaveReason, setEarlyLeaveReason] = useState('');
   const [showEarlyLeaveError, setShowEarlyLeaveError] = useState(false);
+  const [locationFailureReason, setLocationFailureReason] = useState('');
 
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [formType, setFormType] = useState<'SIMPLE' | 'DETAILED'>('SIMPLE');
@@ -174,9 +180,13 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
     setSubmitting(true);
     try {
       const result = locationResult === 'checking' ? { status: 'TIMEOUT' as const, address: null, accuracyMeters: null } : locationResult;
+      const locationOk = result.status === 'OK' || Boolean((result as LocationCaptureResult).coords);
       await onConfirm({
         locationAddress: result.address ?? undefined,
         locationStatus: result.status,
+        ...((result as LocationCaptureResult).coords ? { location: (result as LocationCaptureResult).coords as { lat: number; lng: number } } : {}),
+        ...(typeof result.accuracyMeters === 'number' ? { accuracyMeters: result.accuracyMeters } : {}),
+        ...(!locationOk && locationFailureReason.trim() ? { locationFailureReason: locationFailureReason.trim() } : {}),
         earlyLeaveReason: earlyLeaveReason.trim() || undefined,
         dailyWorkLog: {
           formType,
@@ -242,7 +252,25 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
           {locationResult !== 'checking' && !jumpDetected && locationResult.status === 'OK' && `📍 ${locationResult.address}`}
           {locationResult !== 'checking' && !jumpDetected && locationResult.status !== 'OK' && (
             <>
-              📍 위치 없이 퇴근 기록됩니다 — {locationFailureLabel(locationResult.status)}.
+              📍 퇴근 위치를 확인하지 못했어요 — {locationFailureLabel(locationResult.status)}.
+              <div style={{ marginTop: 6, color: '#fbbf24' }}>
+                본사/고객사 현장에서 퇴근하는 경우 위치 확인이 필요해요. 위치 접근을 허용하고 건물 밖에서 다시 확인해 보세요.
+              </div>
+              <button
+                type="button"
+                className="secondary"
+                style={{ width: 'auto', margin: '8px 0 0', padding: '6px 12px', fontSize: 12 }}
+                onClick={() => refreshLocation()}
+              >
+                📍 위치 다시 확인
+              </button>
+              <input
+                type="text"
+                value={locationFailureReason}
+                onChange={(e) => setLocationFailureReason(e.target.value)}
+                placeholder="정말 위치를 확인할 수 없다면 사유를 적어주세요(5자 이상)"
+                style={{ marginTop: 8 }}
+              />
             </>
           )}
           {locationResult !== 'checking' && !jumpDetected && isLowAccuracy(locationResult.accuracyMeters) && (

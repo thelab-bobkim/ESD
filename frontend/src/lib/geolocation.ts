@@ -78,8 +78,6 @@ const GEOLOCATION_OPTIONS: PositionOptions = { enableHighAccuracy: true, timeout
  * 500m라, 오차범위가 그 절반 이하는 되어야 "본사 안인지 아닌지"를 신뢰성 있게 가를 수 있다.
  */
 const LOW_ACCURACY_RETRY_THRESHOLD_METERS = 100;
-// 재시도 사이의 대기시간 — 기기가 새 위성신호를 잡을 최소한의 시간을 준다.
-const ACCURACY_RETRY_DELAY_MS = 1500;
 
 // 2026-09-22: 아이폰(iOS Safari/WebKit) 사용자(백해성님)가 "고객사작업" 등록 시 로딩 스피너가
 // 하루 종일 멈춰있는 문제가 실제로 보고됨 — GEOLOCATION_OPTIONS.timeout(15초)을 지정해도 iOS
@@ -116,23 +114,63 @@ function getPositionOnce(): Promise<GeolocationPosition | { errorCode: number } 
 }
 
 /**
- * 위치를 가져오되, 오차범위가 크면(LOW_ACCURACY_RETRY_THRESHOLD_METERS 초과) 한 번 더 시도해서
- * 더 정확한 값이 나오면 그걸 쓴다. 재시도는 최대 한 번만 하고(안 그러면 사용자가 계속 기다려야
- * 함), 두 번째 시도가 오히려 더 부정확하면 첫 번째 값을 그대로 쓴다. 첫 시도 자체가 실패하면
- * errorCode를 그대로 반환한다.
+ * 2026-10-12: 위치 일치가 이 시스템의 핵심이라 측정을 한 번 더 끈질기게 한다. 예전엔 처음 결과의
+ * 오차가 크면 1.5초 뒤 한 번만 다시 쟀는데, 실내에서는 GPS가 위성을 잡는 데 수십 초가 걸린다.
+ * 이제 watchPosition으로 최대 ACCURACY_WATCH_WINDOW_MS 동안 계속 받으면서, 오차범위가
+ * LOW_ACCURACY_RETRY_THRESHOLD_METERS 이하인 값이 나오면 즉시 그 값을 쓰고, 끝내 안 나오면 그동안
+ * 받은 값 중 오차가 가장 작은 것을 쓴다. 한 번도 못 받고 오류가 나면 그 오류 코드를 그대로 돌려준다.
+ * 이 함수도 iOS처럼 콜백이 아예 안 오는 경우를 대비해 독립 타이머로 반드시 끝난다.
  */
-async function getPositionWithAccuracyRetry(): Promise<{ pos: GeolocationPosition | null; errorCode: number | null }> {
-  const first = await getPositionOnce();
-  if (!first) return { pos: null, errorCode: null };
-  if ('errorCode' in first) return { pos: null, errorCode: first.errorCode };
-  if (first.coords.accuracy <= LOW_ACCURACY_RETRY_THRESHOLD_METERS) {
-    return { pos: first, errorCode: null };
-  }
+const ACCURACY_WATCH_WINDOW_MS = 20000;
 
-  await new Promise((resolve) => setTimeout(resolve, ACCURACY_RETRY_DELAY_MS));
-  const second = await getPositionOnce();
-  if (!second || 'errorCode' in second) return { pos: first, errorCode: null };
-  return { pos: second.coords.accuracy < first.coords.accuracy ? second : first, errorCode: null };
+function watchBestPosition(): Promise<{ pos: GeolocationPosition | null; errorCode: number | null }> {
+  return new Promise((resolve) => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation || typeof navigator.geolocation.watchPosition !== 'function') {
+      resolve({ pos: null, errorCode: null });
+      return;
+    }
+    let best: GeolocationPosition | null = null;
+    let lastErrorCode: number | null = null;
+    let settled = false;
+    let watchId: number | null = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(windowTimerId);
+      clearTimeout(hardTimerId);
+      if (watchId !== null) {
+        try { navigator.geolocation.clearWatch(watchId); } catch { /* 이미 정리됨 */ }
+      }
+      resolve(best ? { pos: best, errorCode: null } : { pos: null, errorCode: lastErrorCode ?? 3 });
+    };
+    // 첫 응답을 못 받는 경우까지 포함해 ACCURACY_WATCH_WINDOW_MS + 버퍼 안에는 반드시 끝난다.
+    const hardTimerId = setTimeout(finish, ACCURACY_WATCH_WINDOW_MS + HARD_TIMEOUT_BUFFER_MS);
+    // 창이 닫혔을 때 받아 둔 값이 있으면 그중 최선값으로 끝낸다.
+    const windowTimerId = setTimeout(() => { if (best) finish(); }, ACCURACY_WATCH_WINDOW_MS);
+    watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        if (!best || pos.coords.accuracy < best.coords.accuracy) best = pos;
+        if (best.coords.accuracy <= LOW_ACCURACY_RETRY_THRESHOLD_METERS) finish();
+      },
+      (err) => {
+        lastErrorCode = err.code;
+        // 권한 거부는 기다려도 소용없다. 그 밖의 오류(일시적 신호 없음/시간 초과)는 창이 끝날 때까지 더 기다려 본다.
+        if (err.code === 1 || best) finish();
+      },
+      GEOLOCATION_OPTIONS
+    );
+  });
+}
+
+async function getPositionWithAccuracyRetry(): Promise<{ pos: GeolocationPosition | null; errorCode: number | null }> {
+  const watched = await watchBestPosition();
+  if (watched.pos) return watched;
+  if (watched.errorCode === 1) return watched; // 권한 거부는 재시도해도 같다
+  // watchPosition 자체가 없거나 아무 값도 못 받았으면 예전 방식(한 번 측정)으로 한 번 더 시도한다.
+  const first = await getPositionOnce();
+  if (!first) return { pos: null, errorCode: watched.errorCode };
+  if ('errorCode' in first) return { pos: null, errorCode: first.errorCode };
+  return { pos: first, errorCode: null };
 }
 
 /** 오차범위(미터)가 기준치보다 커서 "낮은 정확도" 경고를 보여줘야 하는지 판단한다. */
@@ -243,6 +281,9 @@ export interface LocationCaptureResult {
   address: string | null;
   accuracyMeters: number | null;
   jumpDetected: boolean;
+  // 2026-10-11: 퇴근 때 서버가 "본사/고객사 어디서 퇴근했는지" 판정할 수 있도록 좌표도 함께 돌려준다.
+  // 서버는 비교 후 바로 버리고 저장하지 않는다(/status의 위치 대조와 같은 방식).
+  coords?: { lat: number; lng: number } | null;
 }
 
 const LOCATION_FAILURE_LABEL: Record<Exclude<LocationCaptureStatus, 'OK'>, string> = {
@@ -315,9 +356,10 @@ export async function getCurrentLocationDetailed(locationConsentGiven: boolean):
   if (jumpDetected) {
     // 이상치로 판단되면 주소 변환(추가 API 호출)까지 갈 필요 없이 바로 알린다 — 호출하는 쪽이
     // 퇴근 확정을 막고 재측정 버튼을 보여준다.
-    return { status: 'OK', address: null, accuracyMeters, jumpDetected: true };
+    return { status: 'OK', address: null, accuracyMeters, jumpDetected: true, coords: null };
   }
-  const address = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
-  if (!address) return { status: 'GEOCODE_FAILED', address: null, accuracyMeters, jumpDetected: false };
-  return { status: 'OK', address, accuracyMeters, jumpDetected: false };
+  const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  const address = await reverseGeocode(coords.lat, coords.lng);
+  if (!address) return { status: 'GEOCODE_FAILED', address: null, accuracyMeters, jumpDetected: false, coords };
+  return { status: 'OK', address, accuracyMeters, jumpDetected: false, coords };
 }

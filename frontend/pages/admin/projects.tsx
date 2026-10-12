@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import AdminHeader from '@/components/AdminHeader';
 import ProjectBackfillPanel from '@/components/ProjectBackfillPanel';
 import ProjectInsightTabs from '@/components/ProjectInsightTabs';
+import ProjectUnlinkedPanel from '@/components/ProjectUnlinkedPanel';
 import { apiFetch, isAuthExpiredError } from '@/lib/api';
 
 type RefUser = { id: string; name: string; employeeNo: string; department: string };
@@ -14,6 +15,7 @@ type ProjectRow = {
   members: { id: string; userId: string; name: string; department: string; role: string; allocationPct: number }[];
   taskSummary: { total: number; done: number; inProgress: number; blocked: number };
   lastActivityDate?: string | null;
+  suggestedManager?: { id: string; name: string } | null;
 };
 type ProjectDetail = {
   id: string; code: string; name: string;
@@ -125,6 +127,21 @@ export default function ProjectsPage() {
     try { await apiFetch(`/projects/${selectedId}`, { method: 'PATCH', body: JSON.stringify({ status }) }); await loadAll(selectedId); }
     catch (e) { setError(e instanceof Error ? e.message : '상태를 변경하지 못했습니다.'); }
   }
+  async function setProjectManager(managerId: string) {
+    if (!selectedId) return;
+    try { await apiFetch(`/projects/${selectedId}`, { method: 'PATCH', body: JSON.stringify({ managerId }) }); await loadAll(selectedId); }
+    catch (e) { setError(e instanceof Error ? e.message : 'PM을 지정하지 못했습니다.'); }
+  }
+  async function applySuggestedManagers() {
+    const n = projects.filter(p => !p.manager && p.suggestedManager).length;
+    if (!n || !window.confirm(`PM이 비어 있는 프로젝트 ${n}개에, 각 프로젝트의 공수가 가장 많은 엔지니어를 PM으로 지정합니다. 이미 지정된 PM은 바뀌지 않으며, 이후 프로젝트 화면에서 언제든 바꿀 수 있습니다. 진행할까요?`)) return;
+    setBusy(true); setError('');
+    try {
+      const r = await apiFetch<{ updated: number }>('/projects/managers/apply-suggested', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+      window.alert(`${r.updated}개 프로젝트에 PM을 지정했습니다.`);
+      await loadAll(selectedId);
+    } catch (e) { setError(e instanceof Error ? e.message : 'PM을 일괄 지정하지 못했습니다(시스템/인사 관리자 권한 필요).'); } finally { setBusy(false); }
+  }
   async function setTaskStatus(taskId: string, status: string) {
     try { await apiFetch(`/projects/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ status }) }); await loadAll(selectedId); }
     catch (e) { setError(e instanceof Error ? e.message : 'Task 상태를 변경하지 못했습니다.'); }
@@ -138,6 +155,7 @@ export default function ProjectsPage() {
     {!loading && <>
 
     <ProjectBackfillPanel onApplied={() => loadAll()} />
+    <ProjectUnlinkedPanel projects={projects.map(p => ({ id: p.id, code: p.code, name: p.name }))} onChanged={() => loadAll()} />
 
     <div className="stat-row">
       <div className="stat-card"><div className="stat-label">전체 프로젝트</div><div className="stat-value">{projects.length}</div></div>
@@ -177,18 +195,21 @@ export default function ProjectsPage() {
           <select className="field-select" style={{ margin: 0 }} value={sortKey} onChange={e => setSortKey(e.target.value as SortKey)}>{Object.entries(SORT_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
         </div>
         <select className="field-select" style={{ marginTop: 8 }} value={engineerFilter} onChange={e => setEngineerFilter(e.target.value)}><option value="">엔지니어 전체</option>{engineerOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select>
+        {projects.some(p => !p.manager && p.suggestedManager) && <button type="button" className="secondary" style={{ marginTop: 8, fontSize: 13 }} disabled={busy} onClick={applySuggestedManagers}>PM 미지정 {projects.filter(p => !p.manager && p.suggestedManager).length}개 — 공수 최다 엔지니어로 일괄 지정</button>}
         {projects.length === 0 && <p>등록된 프로젝트가 없습니다. 위에서 먼저 생성하세요.</p>}
         {projects.length > 0 && visibleProjects.length === 0 && <p>조건에 맞는 프로젝트가 없습니다.</p>}
         <div style={{ maxHeight: '70vh', overflowY: 'auto', marginTop: 4 }}>
           {visibleProjects.map(p => <button key={p.id} type="button" onClick={() => setSelectedId(p.id)} className={selectedId === p.id ? '' : 'secondary'} style={{ width: '100%', textAlign: 'left', marginBottom: 8 }}>
-            <b>{p.code}</b> · {p.name}<br/><small>{STATUS_LABEL[p.status] ?? p.status} · {p.manager?.name ?? 'PM 미지정'} · 실공수 {hours(p.actualMinutes)}{p.lastActivityDate ? ` · 최근 ${p.lastActivityDate.slice(0, 10)}` : ''}</small>
+            <b>{p.code}</b> · {p.name}<br/><small>{STATUS_LABEL[p.status] ?? p.status} · {p.manager?.name ?? (p.suggestedManager ? `PM 미지정(추정 ${p.suggestedManager.name})` : 'PM 미지정')} · 실공수 {hours(p.actualMinutes)}{p.lastActivityDate ? ` · 최근 ${p.lastActivityDate.slice(0, 10)}` : ''}</small>
           </button>)}
         </div>
       </div>
       <div className="card">
         {!selected || !detail ? <p>프로젝트를 선택하세요.</p> : <>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-            <div><h2 style={{ margin: 0 }}>{selected.name}</h2><p style={{ margin: '6px 0', color: '#6b7280' }}>{selected.code} · {selected.client?.name ?? '고객사 미지정'}</p></div>
+            <div><h2 style={{ margin: 0 }}>{selected.name}</h2><p style={{ margin: '6px 0', color: '#6b7280' }}>{selected.code} · {selected.client?.name ?? '고객사 미지정'} · PM {selected.manager?.name ?? '미지정'}</p>
+              {!selected.manager && selected.suggestedManager && <p style={{ margin: '0 0 6px', fontSize: 13 }}>공수가 가장 많은 엔지니어는 <b>{selected.suggestedManager.name}</b>입니다. <button type="button" className="secondary" style={{ width: 'auto', padding: '2px 8px', fontSize: 12 }} onClick={() => setProjectManager(selected.suggestedManager!.id)}>이 분을 PM으로 지정</button></p>}
+            </div>
             <select className="field-select" style={{ width: 'auto' }} value={selected.status} onChange={e => setProjectStatus(e.target.value)}>{Object.entries(STATUS_LABEL).map(([k,v]) => <option key={k} value={k}>{v}</option>)}</select>
           </div>
           <div className="stat-row" style={{ marginTop: 12 }}>

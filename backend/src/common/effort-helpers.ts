@@ -30,6 +30,12 @@ export interface EffortInput {
   // 이 모듈은 그 값을 그대로 저장만 하고, 클라이언트 신뢰 여부를 다시 판단하지 않는다.
   projectId?: string;
   taskId?: string;
+  // 2026-10-11: 고객사 담당자 스냅샷 — undefined면 기존 값을 건드리지 않는다(재저장 때 지워지지 않게).
+  contactId?: string | null;
+  contactName?: string | null;
+  contactPhone?: string | null;
+  // 종료시각을 자동으로 정한 경우의 표식(field-rules.ts closedByFor 참고) — undefined면 건드리지 않는다.
+  closedBy?: string | null;
 }
 
 /**
@@ -113,6 +119,8 @@ export async function recordEffort(userId: string, status: string, data: EffortI
         description: data.description,
         projectId: data.projectId ?? null,
         taskId: data.taskId ?? null,
+        ...(data.contactName !== undefined ? { contactId: data.contactId ?? null, contactName: data.contactName, contactPhone: data.contactPhone ?? null } : {}),
+        ...(data.closedBy !== undefined ? { closedBy: data.closedBy } : {}),
       },
     });
   }
@@ -134,6 +142,10 @@ export async function recordEffort(userId: string, status: string, data: EffortI
       sourceStatus: status,
       projectId: data.projectId ?? null,
       taskId: data.taskId ?? null,
+      contactId: data.contactId ?? null,
+      contactName: data.contactName ?? null,
+      contactPhone: data.contactPhone ?? null,
+      closedBy: data.closedBy ?? null,
     },
   });
 }
@@ -153,5 +165,37 @@ export async function findOpenEffort(userId: string, status: string) {
   return prisma.effortLog.findFirst({
     where: { userId, sourceStatus: status, endTime: null, startTime: { gte: new Date(Date.now() - CONTINUE_WINDOW_MS) } },
     orderBy: { startTime: 'desc' },
+  });
+}
+
+// 2026-10-11: 자동 마무리 대상 — 시작~완료가 있고 위치로 확인하는 고객사 작업류. 재택(REMOTE)은 위치가 없고
+// 직원이 직접 끝내는 것이 원칙이라 제외한다.
+export const AUTO_CLOSE_SOURCE_STATUSES = ['CLIENT_WORK', 'CLIENT_MEETING', 'WEEKEND_WORK'];
+
+/** 이 직원의 "진행중"(종료시각 없음) 고객사 작업류 기록들 — 24시간 이내 것만(그보다 오래된 건 관리자 추정 대상). */
+export async function findOpenAutoCloseEfforts(userId: string, excludeEffortId?: string) {
+  return prisma.effortLog.findMany({
+    where: {
+      userId,
+      sourceStatus: { in: AUTO_CLOSE_SOURCE_STATUSES },
+      endTime: null,
+      startTime: { gte: new Date(Date.now() - CONTINUE_WINDOW_MS) },
+      ...(excludeEffortId ? { id: { not: excludeEffortId } } : {}),
+    },
+    orderBy: { startTime: 'asc' },
+  });
+}
+
+/**
+ * 열려 있는 기록 하나를 endTime으로 닫는다. 분(minutes/actualMinutes)은 recordEffort와 같은 방식으로 계산하고,
+ * 누가/어떻게 닫았는지(closedBy)를 남긴다. 이미 닫혔거나 endTime이 시작보다 앞서면 시작시각으로 맞춘다.
+ */
+export async function closeEffortAt(effortId: string, startTime: Date, endTime: Date, closedBy: string) {
+  const end = endTime.getTime() < startTime.getTime() ? startTime : endTime;
+  const minutes = Math.max(0, Math.round((end.getTime() - startTime.getTime()) / 60000));
+  const actualMinutes = await computeActualMinutes(startTime, end, minutes);
+  return prisma.effortLog.update({
+    where: { id: effortId },
+    data: { endTime: end, minutes, actualMinutes, closedBy },
   });
 }

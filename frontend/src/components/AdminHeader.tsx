@@ -9,6 +9,8 @@ const NAV_ITEMS = [
   // 2026-10-01 추가(ESD 2.0 Phase 1)
   { href: '/admin/projects', label: '프로젝트관리', icon: '🧩' },
   { href: '/admin/performance', label: '직원성과', icon: '📈' },
+  // 2026-10-11: 출퇴근 위치·고객사 도착·작업내용·담당자·소요시간 기록이 빠짐없이 되는지 점검(field-check.routes.ts 참고).
+  { href: '/admin/field-check', label: '현장 기록 점검', icon: '🔎' },
   { href: '/admin/calendar', label: '캘린더', icon: '🗓️' },
   { href: '/admin/approvals', label: '승인함', icon: '✅' },
   { href: '/admin/clients', label: '고객사 위치관리', icon: '📍' },

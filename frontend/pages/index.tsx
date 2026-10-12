@@ -90,7 +90,9 @@ const WORK_START_STATUSES_FRONT = new Set(['HQ_WORKING', 'RESIDENT_ONSITE', 'CLI
 // 목적/사유 항목을 없애고, 진행률/차수(야간작업에만 있던 항목)도 없애서 형식을 통일했다.
 const SIMPLIFIED_EFFORT_STATUSES = new Set(['HQ_WORKING', 'CLIENT_MEETING', 'CLIENT_WORK', 'REMOTE', 'NIGHT_WORK', 'WEEKEND_WORK']);
 
-const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅', '기타'];
+const WORK_TYPE_OPTIONS = ['정기점검', '신규설치', '장애대응', '미팅'];
+// 2026-10-12: '기타' 대신 '직접 입력' — 목록에 없는 작업은 직원이 직접 적는다(적은 글이 그대로 작업유형으로 저장됨).
+const CUSTOM_WORK_TYPE_VALUE = '__custom_work_type__';
 // 2026-10-08: 프로젝트 공수 데이터 품질을 위해, 이 상태들은 작업유형을 "직접 골라야" 등록된다
 // (예전엔 첫 항목 '정기점검'이 미리 선택돼 있어 실제로 골랐는지 알 수 없었다). 고객사미팅의
 // 미팅목적/야간작업은 프로젝트 공수 집계 대상이 아니라 기존 기본값 방식을 유지한다.
@@ -101,15 +103,23 @@ function normalizeClientKey(name: string | null | undefined): string {
   return (name ?? '').normalize('NFKC').toLowerCase().replace(/\(주\)|㈜|주식회사/g, '').replace(/[^\p{L}\p{N}]/gu, '');
 }
 // 고객사미팅은 "작업"이 아니라 "미팅"이라 유형 대신 목적으로 구분한다.
-const MEETING_PURPOSE_OPTIONS = ['백업미팅', '식사', '신규방문', '프로젝트미팅', '기타'];
+const MEETING_PURPOSE_OPTIONS = ['백업미팅', '식사', '신규방문', '프로젝트미팅'];
 // 본사근무는 고객사 작업과 성격이 달라서(기술지원/셀프스터디 등) 별도 유형 목록을 쓴다.
-const HQ_WORK_TYPE_OPTIONS = ['기술지원', '셀프스터디', '교육', '문서작성', '내부미팅', '기타'];
+const HQ_WORK_TYPE_OPTIONS = ['기술지원', '셀프스터디', '교육', '문서작성', '내부미팅'];
 const WEEKLY_LIMIT_MINUTES = 52 * 60;
 // 상태 아이콘을 잘못 눌렀을 때 흔적 없이 취소할 수 있는 "되돌리기" 허용 시간(2026-09-04) —
 // 백엔드 /attendance/status/undo 의 UNDO_WINDOW_MS와 반드시 같은 값을 유지해야 한다.
 const UNDO_WINDOW_MS = 10 * 60 * 1000;
 // 마지막 근무위치(본사/고객사)를 이만큼 계속 벗어나 있으면 퇴근 제안을 만든다(2026-09-04).
 const DEPARTURE_AWAY_THRESHOLD_MS = 30 * 60 * 1000;
+
+// 2026-10-11: 고객사작업/미팅은 "고객사 담당자"가 필수다(저장된 담당자는 다음에 같은 고객사를 고르면 자동으로 불러온다).
+const CONTACT_STATUSES_FRONT = new Set(['CLIENT_WORK', 'CLIENT_MEETING']);
+const NEW_CONTACT_VALUE = '__new__';
+interface ContactOption { id: string; name: string; phone: string | null; department?: string | null }
+// 위치 안내창: GPS 오차가 큼(건물 밖에서 재측정) / 위치를 못 구함(재측정 또는 사유 입력) / 첫 출근 등록은 재측정만.
+type LocationPromptState = { kind: 'GPS_LOW' | 'NO_LOCATION' | 'NO_LOCATION_START'; message: string };
+type LocationPromptAnswer = { action: 'RETRY' } | { action: 'REASON'; reason: string } | { action: 'CANCEL' };
 
 // 부서별로 (1) 9개 상태 아이콘 중 실제로 보여줄 것, (2) 그중 등록만 하고 세부입력폼은 아예
 // 열지 않을 것을 다르게 설정한다(2026-09-04, 경영관리부 요청 — "본사출근은 확인만 하면 되고,
@@ -285,6 +295,24 @@ function nowDateTimeLocal(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** ISO 시각 → <input type="datetime-local"> 값(로컬시간, YYYY-MM-DDTHH:MM). 잘못된 값이면 ''. */
+function isoToDateTimeLocal(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 출장 등록 때 남긴 메모("목적지: … | 출발: … | 복귀예정: …|미정 | 목적: …")를 다시 폼 값으로 읽는다.
+ * 이 형식은 프론트(submitDetailForm)가 직접 만든 것이라 정규식으로 되읽어도 안전하다. 즉시등록(첫 클릭)처럼
+ * 메모가 없으면 상태가 바뀐 시각(changedAt)을 출발시각으로 쓴다. */
+function parseTripNote(note: string | null | undefined, changedAt: string | null | undefined): { destination: string; start: string; end: string; purpose: string } {
+  const m = (note ?? '').match(/^목적지: ([\s\S]*?) \| 출발: (\S+)(?: \| 복귀예정: (\S+)| \| 복귀예정 미정) \| 목적: ([\s\S]*)$/);
+  if (m) return { destination: m[1], start: m[2], end: m[3] ?? '', purpose: m[4] };
+  return { destination: '', start: isoToDateTimeLocal(changedAt), end: '', purpose: '' };
+}
+
 /** <input type="date">에 넣을 "오늘" 기본값 (YYYY-MM-DD, 로컬시간 기준) */
 function todayDateLocal(): string {
   const d = new Date();
@@ -415,7 +443,7 @@ export default function EmployeeHome() {
   // "이동중"으로 전환한다(관리자가 바로 확인할 수 있는 "1차 로그"). 본인은 그 사실을 안내 배너로
   // 통보받고, 실제와 다르면(아직 작업중이었다면) 아래 "상태 정정" 메뉴에서 사유를 입력해 바로잡는다
   // — 하루 근태(clockOutAt)에는 손대지 않으므로 최소근무시간 등 퇴근 관련 규칙과는 무관하다.
-  const [effortDepartureNotice, setEffortDepartureNotice] = useState<{ estimatedAt: string } | null>(null);
+  const [effortDepartureNotice, setEffortDepartureNotice] = useState<{ estimatedAt: string; label?: string } | null>(null);
   // 2026-09-15: 관리자가 상황판에서 보낸 짧은 메시지(위치 불일치 등 확인 요청) — 안 읽은 것만
   // 주기적으로 받아와 배너로 보여준다. 이미 등록된 푸시로도 즉시 알림이 가지만(sw.js), 앱을
   // 열었을 때도 놓치지 않도록 여기서 한 번 더 보여준다. messages.routes.ts 참고.
@@ -512,6 +540,10 @@ export default function EmployeeHome() {
   const [projectId, setProjectId] = useState('');
   const [taskId, setTaskId] = useState('');
   const [projectOptions, setProjectOptions] = useState<ProjectOption[]>([]);
+  // 2026-10-08: 고객사별 "지난번에 쓴 작업유형/프로젝트" — 선택 칸을 미리 채워 두어 누르는 횟수를 줄인다.
+  const [clientDefaults, setClientDefaults] = useState<{ clientName: string; workType: string | null; projectId: string | null }[]>([]);
+  const [workTypeAutoFilled, setWorkTypeAutoFilled] = useState(false);
+  const [projectAutoFilled, setProjectAutoFilled] = useState(false);
   const [workStart, setWorkStart] = useState(nowHHMM());
   const [workEnd, setWorkEnd] = useState('');
   // 2026-09-15: 박준영/이보용 피드백 — 고객사작업 등 완료시간 필수 상태인데 언제 끝날지 몰라 등록
@@ -523,11 +555,27 @@ export default function EmployeeHome() {
   // 알려주고, 그 기록의 내용으로 폼을 채워넣는다(openDetailForm 참고).
   const [continuedNotice, setContinuedNotice] = useState<string | null>(null);
   const [workType, setWorkType] = useState(WORK_TYPE_OPTIONS[0]);
+  // '직접 입력'을 고른 상태 — 이때 workType에는 직원이 적은 글이 들어간다.
+  const [workTypeCustom, setWorkTypeCustom] = useState(false);
   const [workDetail, setWorkDetail] = useState('');
   const [workReason, setWorkReason] = useState(''); // 육하원칙 중 "왜(목적/사유)"
   // 작업위치(원격/현장, 필수) · 작업인원(추가 투입 인원, 선택) · 진행률/차수(선택)
   const [siteType, setSiteType] = useState<'ONSITE' | 'REMOTE'>('ONSITE');
   const [personnel, setPersonnel] = useState('');
+  // 2026-10-11: 고객사 담당자 — contactId: '' | 저장된 담당자 id | NEW_CONTACT_VALUE(새로 입력)
+  const [contactOptions, setContactOptions] = useState<ContactOption[]>([]);
+  const [contactId, setContactId] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [contactAutoFilled, setContactAutoFilled] = useState(false);
+  const contactTouchedRef = useRef(false);
+  // 작업유형을 직원이 직접 만졌는지(늦게 도착한 '진행중 작업' 응답이 덮어쓰지 않도록).
+  const workTypeTouchedRef = useRef(false);
+  const prevContactClientRef = useRef('');
+  // 2026-10-11: GPS 재측정/위치 사유 안내창
+  const [locationPrompt, setLocationPrompt] = useState<LocationPromptState | null>(null);
+  const [locationPromptReason, setLocationPromptReason] = useState('');
+  const locationPromptResolverRef = useRef<((a: LocationPromptAnswer) => void) | null>(null);
   const [progressStage, setProgressStage] = useState('');
   // 2026-09-14: 고객사미팅/고객사작업 폼 입력항목이 너무 많다는 의견 — 필수가 아닌 항목
   // (프로젝트명/완료시간/작업인원)은 기본으로 접어두고, 필요할 때만 펼쳐서 입력하게 한다.
@@ -540,6 +588,7 @@ export default function EmployeeHome() {
   const [tripDestination, setTripDestination] = useState('');
   const [tripStart, setTripStart] = useState('');
   const [tripEnd, setTripEnd] = useState('');
+  const [tripPrefilled, setTripPrefilled] = useState(false);
   const [tripPurpose, setTripPurpose] = useState('');
   // 이동중 전용 필드 (출발지/목적지)
   const [movingFrom, setMovingFrom] = useState('');
@@ -552,6 +601,11 @@ export default function EmployeeHome() {
   const detailFormRef = useRef<HTMLDivElement | null>(null);
   // 진행중 공수 이어받기 조회의 요청 번호 — 늦게 도착한 옛 응답이 지금 열려 있는 폼을 덮지 않게.
   const detailFormRequestRef = useRef(0);
+  useEffect(() => {
+    apiFetch<{ clientName: string; workType: string | null; projectId: string | null }[]>('/projects/my-defaults')
+      .then((rows) => setClientDefaults(Array.isArray(rows) ? rows : []))
+      .catch(() => setClientDefaults([]));
+  }, []);
   useEffect(() => {
     apiFetch<ProjectOption[]>('/projects/options')
       .then((rows) => setProjectOptions(Array.isArray(rows) ? rows : []))
@@ -578,12 +632,78 @@ export default function EmployeeHome() {
       // 고객사를 바꿨는데 이전 고객사의 프로젝트가 남아 있으면 비운다(엉뚱한 프로젝트에 공수가 붙는 것 방지).
       setProjectId('');
       setTaskId('');
+      setProjectAutoFilled(false);
+    } else if (!projectId && clientProjectOptions.length >= 2) {
+      // 2026-10-08: 프로젝트가 여러 개면 이 고객사에서 지난번에 쓴 프로젝트를 미리 선택해 둔다(바꿀 수 있음).
+      const last = clientDefaults.find((d) => normalizeClientKey(d.clientName) === normalizeClientKey(clientName))?.projectId;
+      const pick = last ? clientProjectOptions.find((p) => p.id === last) : undefined;
+      if (pick) {
+        setProjectId(pick.id);
+        setProjectName(pick.name);
+        setTaskId('');
+        setProjectAutoFilled(true);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailStatus, clientName, clientId, projectOptions]);
+  }, [detailStatus, clientName, clientId, projectOptions, clientDefaults]);
+  // 작업유형도 같은 방식: 아직 고르지 않았고 이 고객사에서 지난번에 쓴 값이 이 목록에 있으면 미리 선택한다.
+  useEffect(() => {
+    if (!detailStatus || !WORK_TYPE_REQUIRED_STATUSES.has(detailStatus) || detailStatus === 'HQ_WORKING') return;
+    if (workType || workTypeCustom || !clientName.trim()) return;
+    const last = clientDefaults.find((d) => normalizeClientKey(d.clientName) === normalizeClientKey(clientName))?.workType;
+    if (last && WORK_TYPE_OPTIONS.includes(last)) {
+      setWorkType(last);
+      setWorkTypeAutoFilled(true);
+    } else if (last && last.trim() && last !== '기타') {
+      // 지난번에 '직접 입력'으로 적은 작업유형도 그대로 이어받는다(바꿔도 됨).
+      setWorkTypeCustom(true);
+      setWorkType(last);
+      setWorkTypeAutoFilled(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailStatus, clientName, clientDefaults, workType, workTypeCustom]);
   const projectChoiceMissing = Boolean(detailStatus && PROJECT_PICK_STATUSES.has(detailStatus) && !isSimplifiedMeetingForm
     && clientProjectOptions.length >= 2 && !projectId);
-  const workTypeMissing = Boolean(detailStatus && WORK_TYPE_REQUIRED_STATUSES.has(detailStatus) && !workType);
+  const workTypeMissing = Boolean(detailStatus && (WORK_TYPE_REQUIRED_STATUSES.has(detailStatus) || workTypeCustom) && !workType.trim());
+  // 2026-10-11: 담당자 필수(고객사작업/미팅). 저장된 담당자를 고르거나, 새 담당자 이름을 입력해야 한다.
+  const needsContact = Boolean(detailStatus && CONTACT_STATUSES_FRONT.has(detailStatus));
+  const contactClientId = clientId || (clientName.trim()
+    ? (clientOptions.find((c) => normalizeClientKey(c.name) === normalizeClientKey(clientName))?.id ?? '')
+    : '');
+  const contactIsSaved = Boolean(contactId) && contactId !== NEW_CONTACT_VALUE;
+  const contactMissing = needsContact && !contactIsSaved && !contactName.trim();
+  // 고객사가 바뀌면 이전 고객사 담당자 선택을 비운다(다른 회사 담당자가 섞이지 않게).
+  useEffect(() => {
+    if (!detailStatus) { prevContactClientRef.current = ''; return; }
+    const prev = prevContactClientRef.current;
+    if (prev && prev !== contactClientId) {
+      setContactId('');
+      setContactName('');
+      setContactPhone('');
+      setContactAutoFilled(false);
+      setContactOptions([]);
+      contactTouchedRef.current = false;
+    }
+    prevContactClientRef.current = contactClientId;
+  }, [detailStatus, contactClientId]);
+  // 고객사의 저장된 담당자 목록을 불러오고, 아직 손대지 않았다면 가장 최근에 쓴 담당자를 자동으로 고른다.
+  useEffect(() => {
+    if (!needsContact || !contactClientId) return;
+    let cancelled = false;
+    apiFetch<ContactOption[]>(`/attendance/clients/${contactClientId}/contacts`)
+      .then((rows) => {
+        if (cancelled) return;
+        setContactOptions(rows);
+        if (!contactTouchedRef.current && rows.length > 0) {
+          setContactId((prev) => (prev === '' ? rows[0].id : prev));
+          setContactName((prev) => (prev === '' ? rows[0].name : prev));
+          setContactPhone((prev) => (prev === '' ? (rows[0].phone ?? '') : prev));
+          setContactAutoFilled(true);
+        }
+      })
+      .catch(() => { if (!cancelled) setContactOptions([]); });
+    return () => { cancelled = true; };
+  }, [needsContact, contactClientId]);
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
   // 2026-09-03 추가, 2026-09-19 변경: 처음엔 "네, 알림 받을게요" 배너로 먼저 동의를 구했는데,
@@ -852,14 +972,15 @@ export default function EmployeeHome() {
             departureAwaySinceRef.current = { anchorKey, since: Date.now() };
           } else if (Date.now() - departureAwaySinceRef.current.since >= DEPARTURE_AWAY_THRESHOLD_MS) {
             const estimatedAt = new Date(departureAwaySinceRef.current.since);
-            if (currentStatus?.status === 'CLIENT_WORK') {
+            if (currentStatus?.status === 'CLIENT_WORK' || currentStatus?.status === 'CLIENT_MEETING') {
               try {
+                // 2026-10-11: 고객사미팅도 같은 규칙 — 30분 이상 벗어나면 벗어난 시각(=감지 30분 전)에 자동 마무리한다.
                 await apiFetch('/attendance/effort-departure-confirm', {
                   method: 'POST',
-                  body: JSON.stringify({ estimatedEndAt: estimatedAt.toISOString() }),
+                  body: JSON.stringify({ estimatedEndAt: estimatedAt.toISOString(), status: currentStatus.status }),
                 });
                 departureAwaySinceRef.current = null;
-                setEffortDepartureNotice({ estimatedAt: estimatedAt.toISOString() });
+                setEffortDepartureNotice({ estimatedAt: estimatedAt.toISOString(), label: currentStatus.status === 'CLIENT_MEETING' ? '고객사미팅' : '고객사작업' });
                 refreshMyStatus();
               } catch {
                 // 실패해도 조용히 넘어간다 — 다음 5분 주기에 다시 시도된다.
@@ -878,6 +999,12 @@ export default function EmployeeHome() {
           }
         } else {
           departureAwaySinceRef.current = null;
+          // 2026-10-11: 아직 그 고객사 위치에 있음을 서버에 시각만 알려 둔다(좌표는 보내지 않음) —
+          // 나중에 퇴근/자동 마무리 때 "마지막으로 고객사에 있었던 시각"의 근거가 된다.
+          const st = currentStatus?.status;
+          if (st === 'CLIENT_WORK' || st === 'CLIENT_MEETING' || st === 'WEEKEND_WORK') {
+            apiFetch('/attendance/effort-presence', { method: 'POST', body: JSON.stringify({}) }).catch(() => {});
+          }
         }
       }
     };
@@ -915,16 +1042,74 @@ export default function EmployeeHome() {
    * 된다).
    */
   async function withMismatchConfirm<T>(code: string, body: Record<string, unknown>, submit: () => Promise<T>): Promise<T> {
-    try {
-      return await submit();
-    } catch (err) {
-      const errCode = err instanceof Error ? (err as Error & { code?: string }).code : undefined;
-      if (errCode !== 'LOCATION_MISMATCH_BLOCKED') throw err;
-      const loc = body.location as { lat: number; lng: number } | undefined;
-      if (loc) setLocationCorrection({ code, body, lat: loc.lat, lng: loc.lng, blocked: true });
-      const silentErr = new Error(err instanceof Error ? err.message : '위치 확인이 필요합니다.');
-      (silentErr as Error & { silent?: boolean }).silent = true;
-      throw silentErr;
+    // 2026-10-11: 위치 관련 서버 응답(GPS 오차 큼 / 위치 없음)은 안내창으로 풀고 같은 요청을 다시 보낸다(최대 5회).
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await submit();
+      } catch (err) {
+        const errCode = err instanceof Error ? (err as Error & { code?: string }).code : undefined;
+        const errMessage = err instanceof Error ? err.message : '위치 확인이 필요합니다.';
+        const makeSilent = () => {
+          const silentErr = new Error(errMessage);
+          (silentErr as Error & { silent?: boolean }).silent = true;
+          return silentErr;
+        };
+        if (errCode === 'LOCATION_MISMATCH_BLOCKED') {
+          const loc = body.location as { lat: number; lng: number } | undefined;
+          if (loc) {
+            setLocationCorrectionError(errMessage);
+            setLocationCorrection({ code, body, lat: loc.lat, lng: loc.lng, blocked: true });
+          }
+          throw makeSilent();
+        }
+        const isLocationPromptCode = errCode === 'GPS_ACCURACY_LOW' || errCode === 'LOCATION_REQUIRED' || errCode === 'LOCATION_REQUIRED_FOR_WORK_START' || errCode === 'LOCATION_REQUIRED_STRICT';
+        if (!isLocationPromptCode || attempt >= 4) throw err;
+        const answer = await askLocationPrompt({
+          kind: errCode === 'GPS_ACCURACY_LOW' ? 'GPS_LOW' : errCode === 'LOCATION_REQUIRED' ? 'NO_LOCATION' : 'NO_LOCATION_START',
+          message: errMessage,
+        });
+        if (answer.action === 'CANCEL') {
+          setMessage('위치 확인을 하지 않아 등록되지 않았어요. 건물 밖에서 다시 시도해 주세요.');
+          setMessageIsError(true);
+          throw makeSilent();
+        }
+        if (answer.action === 'REASON') {
+          body.locationFailureReason = answer.reason;
+          continue;
+        }
+        if (errCode === 'GPS_ACCURACY_LOW') body.outdoorRecheckCount = (Number(body.outdoorRecheckCount) || 0) + 1;
+        setMessage('📡 위치를 다시 측정하고 있어요. 잠시만 기다려주세요...');
+        setMessageIsError(false);
+        await remeasureStatusBody(body);
+      }
+    }
+  }
+
+  /** 위치 안내창을 띄우고 직원의 선택(다시 측정 / 사유 입력 / 취소)을 기다린다. */
+  function askLocationPrompt(p: LocationPromptState): Promise<LocationPromptAnswer> {
+    setLocationPromptReason('');
+    setLocationPrompt(p);
+    return new Promise((resolve) => { locationPromptResolverRef.current = resolve; });
+  }
+  function answerLocationPrompt(a: LocationPromptAnswer) {
+    const resolver = locationPromptResolverRef.current;
+    locationPromptResolverRef.current = null;
+    setLocationPrompt(null);
+    resolver?.(a);
+  }
+
+  /** 상태 등록 요청(body)의 위치 필드를 현재 위치로 다시 채운다(재측정 안내 후 호출). */
+  async function remeasureStatusBody(body: Record<string, unknown>) {
+    const { status: locStatus, coords, accuracyMeters } = await getCurrentLocationWithStatus(Boolean(me?.locationConsentGiven));
+    body.locationStatus = locStatus;
+    if (coords) {
+      body.location = coords;
+      body.accuracyMeters = accuracyMeters ?? undefined;
+      body.locationAddress = body.status === 'HQ_WORKING' ? (await reverseGeocode(coords.lat, coords.lng)) ?? undefined : undefined;
+    } else {
+      delete body.location;
+      delete body.locationAddress;
+      delete body.accuracyMeters;
     }
   }
 
@@ -1082,6 +1267,8 @@ export default function EmployeeHome() {
     setProjectName('');
     setProjectId('');
     setTaskId('');
+    setWorkTypeAutoFilled(false);
+    setProjectAutoFilled(false);
     const initialWorkStart = nowHHMM();
     setWorkStart(initialWorkStart);
     setWorkEnd('');
@@ -1089,16 +1276,32 @@ export default function EmployeeHome() {
     // 2026-10-08: 작업유형 필수 상태는 미리 선택해두지 않는다(직접 골라야 등록 가능).
     const initialWorkType = WORK_TYPE_REQUIRED_STATUSES.has(code) ? '' : code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS[0] : code === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS[0] : WORK_TYPE_OPTIONS[0];
     setWorkType(initialWorkType);
+    setWorkTypeCustom(false);
+    setWorkTypeAutoFilled(false);
+    workTypeTouchedRef.current = false;
     setWorkDetail('');
     setWorkReason('');
     setSiteType('ONSITE');
     setPersonnel('');
+    setContactOptions([]);
+    setContactId('');
+    setContactName('');
+    setContactPhone('');
+    setContactAutoFilled(false);
+    contactTouchedRef.current = false;
+    prevContactClientRef.current = '';
     setProgressStage('');
     setShowMoreFields(false);
-    setTripDestination('');
-    setTripStart(nowDateTimeLocal());
-    setTripEnd('');
-    setTripPurpose('');
+    // 2026-10-12: 출장 폼을 다시 열면 먼저 등록해 둔 출발시각/목적지/목적/복귀예정을 그대로 불러온다
+    // (예전에는 열 때마다 출발시각이 "지금"으로 바뀌어서 처음 누른 시각이 사라졌다).
+    const tripPrefill = code === 'BUSINESS_TRIP' && currentStatus?.status === 'BUSINESS_TRIP'
+      ? parseTripNote(currentStatus.note, currentStatus.changedAt)
+      : null;
+    setTripDestination(tripPrefill?.destination ?? '');
+    setTripStart(tripPrefill?.start || nowDateTimeLocal());
+    setTripEnd(tripPrefill?.end ?? '');
+    setTripPurpose(tripPrefill?.purpose ?? '');
+    setTripPrefilled(Boolean(tripPrefill?.start));
     setMovingFrom('');
     setMovingTo('');
     setLeaveStart(todayDateLocal());
@@ -1119,7 +1322,7 @@ export default function EmployeeHome() {
       // 요청 순서는 보장되지 않았다 — 폼 A를 열고 즉시 폼 B를 열면 A의 늦은 응답이 B 폼에 적용될
       // 수 있다(두 폼의 초기값이 같으면 비교 조건이 참이 되어 통과). 요청 번호로 최신 것만 반영한다.
       const detailRequestId = ++detailFormRequestRef.current;
-      apiFetch<{ sourceStatus: string; clientName: string; projectName: string; projectId?: string | null; taskId?: string | null; workType: string; startTime: string; description: string } | null>(
+      apiFetch<{ sourceStatus: string; clientName: string; projectName: string; projectId?: string | null; taskId?: string | null; workType: string; startTime: string; description: string; contactId?: string | null; contactName?: string | null; contactPhone?: string | null } | null>(
         `/attendance/effort/in-progress?status=${code}`
       )
         .then((open) => {
@@ -1140,13 +1343,27 @@ export default function EmployeeHome() {
           if (open.taskId) setTaskId((prev) => (prev === '' ? open.taskId! : prev));
           // 2026-10-08: 즉시등록(재택/주말작업)이 서버 기본값 '기타'로 남겨둔 기록(작업내용이 아직 없음)은
           // 직원이 실제로 고른 값이 아니므로, 작업유형 필수 상태에서는 이어받지 않고 직접 고르게 둔다.
-          const workTypeIsPlaceholder = WORK_TYPE_REQUIRED_STATUSES.has(code) && open.workType === '기타' && !open.description;
-          if (open.workType && !workTypeIsPlaceholder) setWorkType((prev) => (prev === initialWorkType ? open.workType : prev));
+          // 2026-10-12: '기타'는 선택지에서 빠졌다. 서버 기본값 '기타'(작업내용 없음)는 직원이 고른 값이 아니므로 무시하고,
+          // 목록에 없는 값(직접 입력했던 값, 작업내용이 있는 예전 '기타')은 '직접 입력'으로 이어받는다.
+          const workTypeIsPlaceholder = open.workType === '기타' && !open.description;
+          if (open.workType && !workTypeIsPlaceholder) {
+            const listed = (code === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS : code === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS : WORK_TYPE_OPTIONS).includes(open.workType);
+            if (!listed) setWorkTypeCustom((prev) => (workTypeTouchedRef.current ? prev : true));
+            setWorkType((prev) => (prev === initialWorkType && !workTypeTouchedRef.current ? open.workType : prev));
+          }
           setWorkStart((prev) => (prev === initialWorkStart ? startHHMM : prev));
           const { workDetail: wd, workReason: wr, personnel: pn } = parseComposedDescription(open.description || '');
           if (wd) setWorkDetail((prev) => (prev === '' ? wd : prev));
           if (wr) setWorkReason((prev) => (prev === '' ? wr : prev));
           if (pn) setPersonnel((prev) => (prev === '' ? pn : prev));
+          // 2026-10-11: 먼저 저장해 둔 진행중 기록에 담당자가 있으면 그대로 이어받는다(직접 고른 게 있으면 덮어쓰지 않음).
+          if (CONTACT_STATUSES_FRONT.has(code) && (open.contactId || open.contactName) && !contactTouchedRef.current) {
+            setContactId(open.contactId ?? NEW_CONTACT_VALUE);
+            setContactName(open.contactName ?? '');
+            setContactPhone(open.contactPhone ?? '');
+            setContactAutoFilled(false);
+            contactTouchedRef.current = true;
+          }
           setContinuedNotice(`⏳ 진행중이던 작업을 이어서 불러왔어요(시작 ${startHHMM}). 끝나셨으면 완료시간을 입력하고 등록해주세요.`);
         })
         .catch(() => {});
@@ -1384,11 +1601,13 @@ export default function EmployeeHome() {
 
     if (code === 'BUSINESS_TRIP') {
       if (!tripDestination.trim() || !tripStart || !tripPurpose.trim()) return;
+      if (tripEnd && tripEnd < tripStart) return;
       const note = `목적지: ${tripDestination} | 출발: ${tripStart}${tripEnd ? ` | 복귀예정: ${tripEnd}` : ' | 복귀예정 미정'} | 목적: ${tripPurpose}`;
       const body = {
         status: code,
         note,
-        businessTrip: { destination: tripDestination, purpose: tripPurpose, startAt: tripStart, endAt: tripEnd || undefined },
+        // 서버는 시간대 없는 문자열을 UTC로 읽으므로, 폰의 로컬시간을 ISO(UTC 표기)로 바꿔 보낸다.
+        businessTrip: { destination: tripDestination, purpose: tripPurpose, startAt: new Date(tripStart).toISOString(), endAt: tripEnd ? new Date(tripEnd).toISOString() : undefined },
       };
       run(() => apiFetch('/attendance/status', { method: 'POST', body: JSON.stringify(body) }), `출장(${tripDestination})이 등록되었습니다. 😊`);
       setDetailStatus(null);
@@ -1438,7 +1657,8 @@ export default function EmployeeHome() {
     // 2026-09-14: 영업조직(isSimplifiedMeetingForm)은 고객사미팅 화면에서 작업내용·작업위치
     // 입력칸을 아예 없앴으므로, 여기서 안전한 기본값을 대신 채워 백엔드 필수값과 기존
     // 최소글자수 검증을 통과시킨다 — 사용자에게는 보이지 않지만 실제로는 값이 필요하다.
-    const effectiveWorkDetail = isSimplifiedMeetingForm ? (workDetail.trim() || `${workType} 미팅 진행`) : workDetail;
+    const workTypeClean = workType.trim();
+    const effectiveWorkDetail = isSimplifiedMeetingForm ? (workDetail.trim() || `${workTypeClean} 미팅 진행`) : workDetail;
     const effectiveSiteType = isSimplifiedMeetingForm ? (siteType || 'ONSITE') : siteType;
     if (effectiveWorkDetail.trim().length < minDetailLen) return;
     // 본사근무는 관련 프로젝트/고객사 자유서술이 필수, 고객사미팅/고객사작업은 등록된 고객사
@@ -1451,17 +1671,19 @@ export default function EmployeeHome() {
     // 단, 2026-09-15부터 "진행중" 체크박스를 명시적으로 켠 경우에는 예외로 허용한다.
     if (END_TIME_REQUIRED_STATUSES.has(code) && !workEnd && !stillInProgress) return;
     // 2026-10-08: 작업유형 직접 선택 / 프로젝트 선택 필수 — 버튼 disabled와 동일한 조건을 함수 안에서도 지킨다.
-    if (WORK_TYPE_REQUIRED_STATUSES.has(code) && !workType) return;
+    if ((WORK_TYPE_REQUIRED_STATUSES.has(code) || workTypeCustom) && !workTypeClean) return;
     if (projectChoiceMissing) return;
+    // 2026-10-11: 고객사 담당자 필수(고객사작업/미팅) — 버튼 disabled와 동일한 조건.
+    if (CONTACT_STATUSES_FRONT.has(code) && contactMissing) return;
     const siteDetailSuffix = SITE_DETAIL_STATUSES.has(code)
       ? ` | 작업위치: ${effectiveSiteType === 'ONSITE' ? '현장' : '원격'}${personnel ? ` | 작업인원: ${personnel}` : ''}`
       : '';
     const reasonSuffix = workReason.trim() ? ` | 목적: ${workReason}` : '';
     const note = (code === 'HQ_WORKING'
-      ? `유형: ${workType} | 관련 프로젝트/고객사: ${clientName || '-'} | 수행업무: ${effectiveWorkDetail}`
+      ? `유형: ${workTypeClean} | 관련 프로젝트/고객사: ${clientName || '-'} | 수행업무: ${effectiveWorkDetail}`
       : code === 'CLIENT_MEETING'
-        ? `미팅목적: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 미팅주제: ${effectiveWorkDetail}${reasonSuffix}`
-        : `유형: ${workType} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${effectiveWorkDetail}${reasonSuffix}`) + siteDetailSuffix;
+        ? `미팅목적: ${workTypeClean} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 미팅주제: ${effectiveWorkDetail}${reasonSuffix}`
+        : `유형: ${workTypeClean} | 고객사: ${clientName || '-'}${projectName ? ` | 프로젝트: ${projectName}` : ''} | 시작 ${workStart}${workEnd ? ` | 완료 ${workEnd}` : ' | 진행중'} | 내용: ${effectiveWorkDetail}${reasonSuffix}`) + siteDetailSuffix;
     const body: Record<string, unknown> = { status: code, note };
     if (SITE_DETAIL_STATUSES.has(code)) {
       body.siteType = effectiveSiteType;
@@ -1475,7 +1697,7 @@ export default function EmployeeHome() {
         projectName,
         projectId: projectId || undefined,
         taskId: taskId || undefined,
-        workType,
+        workType: workTypeClean,
         startTime: workStart,
         endTime: workEnd || undefined,
         // 완료시간을 비워둔 게 실수가 아니라 "진행중" 체크박스를 켜서 의도적으로 비운 것임을
@@ -1483,6 +1705,10 @@ export default function EmployeeHome() {
         inProgress: !workEnd && stillInProgress ? true : undefined,
         description: workReason.trim() ? `${workDetail} (목적: ${workReason})` : workDetail,
         ...(SITE_DETAIL_STATUSES.has(code) ? { personnel: personnel || undefined } : {}),
+        // 2026-10-11: 저장된 담당자를 골랐으면 id, 새로 입력했으면 이름/전화번호를 보낸다(서버가 고객사 아래에 저장).
+        ...(CONTACT_STATUSES_FRONT.has(code)
+          ? (contactIsSaved ? { contactId } : { contactName: contactName.trim(), contactPhone: contactPhone.trim() || undefined })
+          : {}),
       };
     }
     // 고객사미팅/고객사작업은 등록 순간 위치를 확인해서 등록된 고객사 위치와 대조한다(동의한 경우에만).
@@ -1678,13 +1904,16 @@ export default function EmployeeHome() {
         refreshMyStatus();
         return;
       }
-      await apiFetch<{ locationMismatchException?: boolean }>('/attendance/status', {
+      const retried = await apiFetch<{ locationMismatchException?: boolean; locationMapCorrected?: boolean }>('/attendance/status', {
         method: 'POST',
         body: JSON.stringify(retryBody),
       });
       setLocationCorrection(null);
       setMessage(
-        `✅ 실제 위치를 확인해서 '${STATUS_META[code]?.label ?? code}'(으)로 등록했어요. 등록된 위치와는 달라 관리자 화면에 "위치 불일치"로 표시돼요.`
+        // 2026-10-12: 위치 일치 강제 모드에서는 지도로 보정한 위치가 등록 위치와 맞을 때만 등록되므로 "일치"로 안내한다.
+        retried?.locationMapCorrected === true
+          ? `✅ 지도에서 위치를 확인해서 '${STATUS_META[code]?.label ?? code}'(으)로 등록했어요. (위치 일치 — 지도 확인으로 기록됨)`
+          : `✅ 실제 위치를 확인해서 '${STATUS_META[code]?.label ?? code}'(으)로 등록했어요. 등록된 위치와는 달라 관리자 화면에 "위치 불일치"로 표시돼요.`
       );
       setMessageIsError(false);
       refreshMyStatus();
@@ -1891,6 +2120,43 @@ export default function EmployeeHome() {
             <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={dismissIosInstallPrompt}>
               알겠어요
             </button>
+          </div>
+        </div>
+      )}
+
+      {locationPrompt && (
+        // 2026-10-11: GPS 오차가 크거나 위치를 못 구했을 때의 안내창 — 건물 밖에서 다시 측정하도록 유도하고,
+        // 정말 불가능하면(위치 없음) 사유를 적어 등록할 수 있다(관리자 확인 대상으로 남는다).
+        <div className="quick-confirm-backdrop">
+          <div className="card quick-confirm-sheet" style={{ border: '1px solid #ffa94d' }} onClick={(e) => e.stopPropagation()}>
+            📍 {locationPrompt.kind === 'GPS_LOW' ? '위치 정확도가 낮아요' : '위치를 확인하지 못했어요'}
+            <div className="board-empty" style={{ marginTop: 6, marginBottom: 0 }}>{locationPrompt.message}</div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button style={{ width: 'auto', margin: 0 }} onClick={() => answerLocationPrompt({ action: 'RETRY' })}>
+                📍 다시 측정
+              </button>
+              <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={() => answerLocationPrompt({ action: 'CANCEL' })}>
+                취소
+              </button>
+            </div>
+            {locationPrompt.kind === 'NO_LOCATION' && (
+              <div style={{ marginTop: 10 }}>
+                <input
+                  value={locationPromptReason}
+                  onChange={(e) => setLocationPromptReason(e.target.value)}
+                  placeholder="정말 위치를 확인할 수 없다면 사유를 적어주세요(5자 이상)"
+                  maxLength={200}
+                />
+                <button
+                  className="secondary"
+                  style={{ width: 'auto', margin: '6px 0 0' }}
+                  disabled={locationPromptReason.trim().length < 5}
+                  onClick={() => answerLocationPrompt({ action: 'REASON', reason: locationPromptReason.trim() })}
+                >
+                  사유 입력하고 등록
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -2126,7 +2392,7 @@ export default function EmployeeHome() {
 
       {effortDepartureNotice && (
         <div className="card col-full notice-tint-orange">
-          🚚 고객사작업 위치에서 30분 이상 벗어난 것으로 감지되어 <strong>{fmtClock(effortDepartureNotice.estimatedAt)}</strong>에 작업을 마치신 걸로 자동 등록하고 &apos;이동중&apos;으로 전환했어요.
+          🚚 {effortDepartureNotice.label ?? '고객사작업'} 위치에서 30분 이상 벗어난 것으로 감지되어 <strong>{fmtClock(effortDepartureNotice.estimatedAt)}</strong>에 작업을 마치신 걸로 자동 등록하고 &apos;이동중&apos;으로 전환했어요.
           <div className="board-empty" style={{ marginTop: 4, marginBottom: 0 }}>
             아직 그 고객사에서 작업중이셨다면 사유를 입력해서 바로잡아주세요.
           </div>
@@ -2215,13 +2481,31 @@ export default function EmployeeHome() {
                     setMessageIsError(true);
                     return;
                   }
-                  const submitClockIn = () => attemptWithLocationRetry(
+                  const submitClockInOnce = () => attemptWithLocationRetry(
                     () => apiFetch<{ locationConfirmed?: boolean }>('/attendance/clock-in', {
                       method: 'POST',
                       body: JSON.stringify(clockInBody),
                     }),
                     refreshClockInLocation
                   );
+                  // 2026-10-11: GPS 오차가 너무 크면(GPS_ACCURACY_LOW) 건물 밖에서 다시 측정하도록 안내하고 다시 보낸다.
+                  // 재측정 후에도 부정확하면 서버가 출근은 지켜 주되 관리자 확인 대상으로 표시한다.
+                  const submitClockIn = async () => {
+                    for (let attempt = 0; ; attempt++) {
+                      try {
+                        return await submitClockInOnce();
+                      } catch (e) {
+                        const c = e instanceof Error ? (e as Error & { code?: string }).code : undefined;
+                        if (c !== 'GPS_ACCURACY_LOW' || attempt >= 3) throw e;
+                        const answer = await askLocationPrompt({ kind: 'GPS_LOW', message: e instanceof Error ? e.message : 'GPS 오차가 큽니다.' });
+                        if (answer.action !== 'RETRY') throw new Error('위치 재측정을 하지 않아 출근이 처리되지 않았어요. 건물 밖에서 다시 눌러 주세요.');
+                        clockInBody.outdoorRecheckCount = (Number(clockInBody.outdoorRecheckCount) || 0) + 1;
+                        setMessage('📡 위치를 다시 측정하고 있어요. 잠시만 기다려주세요...');
+                        setMessageIsError(false);
+                        await refreshClockInLocation();
+                      }
+                    }
+                  };
                   let result: { locationConfirmed?: boolean };
                   try {
                     result = await submitClockIn();
@@ -2279,7 +2563,7 @@ export default function EmployeeHome() {
                 clockInAt={myStatus.record.clockInAt}
                 locationConsentGiven={Boolean(me?.locationConsentGiven)}
                 onCancel={() => { setShowClockOutConfirm(false); setClockOutThenNightWork(false); }}
-                onConfirm={async ({ locationAddress, locationStatus, earlyLeaveReason, dailyWorkLog }) => {
+                onConfirm={async ({ locationAddress, locationStatus, location: clockOutLocation, accuracyMeters: clockOutAccuracy, locationFailureReason: clockOutFailureReason, earlyLeaveReason, dailyWorkLog }) => {
                   // 18시 이후 정규근무분 초과(야간작업 등록 제안) 여부를 응답에서 바로 확인해야 해서
                   // run()을 안 거치고 직접 호출한다(NIGHT_WORK 등록과 같은 이유).
                   // 2026-09-30 수정(Critical): 일일업무일지(1단계 강제 마감) — 예전엔 이 함수가
@@ -2298,6 +2582,10 @@ export default function EmployeeHome() {
                         body: JSON.stringify({
                           ...(locationAddress ? { locationAddress } : {}),
                           locationStatus,
+                          // 2026-10-11: 퇴근 위치(본사/고객사) 확인용 — 서버가 판정에만 쓰고 좌표는 저장하지 않는다.
+                          ...(clockOutLocation ? { location: clockOutLocation } : {}),
+                          ...(typeof clockOutAccuracy === 'number' ? { accuracyMeters: clockOutAccuracy } : {}),
+                          ...(clockOutFailureReason ? { locationFailureReason: clockOutFailureReason } : {}),
                           ...(earlyLeaveReason ? { earlyLeaveReason } : {}),
                           dailyWorkLog,
                         }),
@@ -2503,16 +2791,55 @@ export default function EmployeeHome() {
               <label className="field-label">목적지</label>
               <input value={tripDestination} onChange={(e) => setTripDestination(e.target.value)} placeholder="예: 부산 OO데이터센터" />
 
-              <div style={{ display: 'flex', gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <label className="field-label">출발 일시</label>
-                  <input type="datetime-local" value={tripStart} onChange={(e) => setTripStart(e.target.value)} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label className="field-label">복귀 예정 일시(선택)</label>
-                  <input type="datetime-local" value={tripEnd} onChange={(e) => setTripEnd(e.target.value)} />
+              {/* 2026-10-12: 폰에서 두 칸을 나란히 두면 오른쪽 칸(복귀 예정)이 화면 밖으로 밀려 입력할 수 없었다 — 위아래로 쌓는다. */}
+              {tripPrefilled && (
+                <p style={{ fontSize: 12, color: '#6b7594', margin: '2px 0 6px' }}>⏳ 먼저 등록해 둔 출장 정보를 불러왔어요. 필요하면 고쳐서 다시 등록하세요.</p>
+              )}
+              {/* 2026-10-12: 폰 브라우저의 datetime-local은 연/월/일/시/분을 칸칸이 눌러 채워야 하고 하나라도 비면 값이 비어
+                  "입력이 안 된다"고 느껴졌다 — 휴가 폼처럼 날짜 선택 + 시/분 드롭다운으로 나눠서 입력한다. */}
+              <label className="field-label">출발 일시</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <input
+                  type="date"
+                  style={{ flex: '1 1 150px', minWidth: 0, boxSizing: 'border-box' }}
+                  value={tripStart.slice(0, 10)}
+                  onChange={(e) => { const d = e.target.value; setTripStart(d ? `${d}T${tripStart.slice(11, 16) || nowHHMM()}` : ''); }}
+                />
+                <div style={{ flex: '1 1 150px', minWidth: 0 }}>
+                  <TimeSelectInput
+                    value={tripStart.slice(11, 16)}
+                    onChange={(t) => setTripStart(`${tripStart.slice(0, 10) || todayDateLocal()}T${t || '09:00'}`)}
+                  />
                 </div>
               </div>
+              <label className="field-label">복귀 예정 일시(선택)</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <input
+                  type="date"
+                  style={{ flex: '1 1 150px', minWidth: 0, boxSizing: 'border-box' }}
+                  value={tripEnd.slice(0, 10)}
+                  min={tripStart.slice(0, 10) || undefined}
+                  onChange={(e) => { const d = e.target.value; setTripEnd(d ? `${d}T${tripEnd.slice(11, 16) || '18:00'}` : ''); }}
+                />
+                {tripEnd && (
+                  <div style={{ flex: '1 1 150px', minWidth: 0 }}>
+                    <TimeSelectInput
+                      value={tripEnd.slice(11, 16)}
+                      onChange={(t) => setTripEnd(`${tripEnd.slice(0, 10)}T${t || '18:00'}`)}
+                    />
+                  </div>
+                )}
+              </div>
+              {!tripEnd && (
+                <p style={{ fontSize: 12, color: '#6b7594', margin: '2px 0 6px' }}>복귀 날짜를 고르면 시간이 18:00으로 들어가요(시/분은 바꿀 수 있어요). 모르면 비워 두세요.</p>
+              )}
+              <div style={{ display: 'flex', gap: 6, margin: '4px 0 6px', flexWrap: 'wrap' }}>
+                <button type="button" className="secondary" style={{ flex: 1 }} onClick={() => setTripEnd(`${tripStart.slice(0, 10) || todayDateLocal()}T${tripEnd.slice(11, 16) || '18:00'}`)}>출발일 당일 복귀</button>
+                {tripEnd && <button type="button" className="secondary" style={{ flex: 1 }} onClick={() => setTripEnd('')}>복귀 미정으로 비우기</button>}
+              </div>
+              {tripEnd && tripStart && tripEnd < tripStart && (
+                <p style={{ fontSize: 12, color: '#b45309', margin: '2px 0 6px' }}>* 복귀 예정 일시가 출발 일시보다 빠릅니다. 다시 확인해주세요.</p>
+              )}
 
               <label className="field-label">목적</label>
               <textarea
@@ -2522,7 +2849,7 @@ export default function EmployeeHome() {
                 value={tripPurpose}
                 onChange={(e) => setTripPurpose(e.target.value)}
               />
-              <button disabled={!tripDestination.trim() || !tripStart || !tripPurpose.trim() || detailSubmitting} onClick={handleDetailFormSubmit}>
+              <button disabled={!tripDestination.trim() || !tripStart || !tripPurpose.trim() || Boolean(tripEnd && tripEnd < tripStart) || detailSubmitting} onClick={handleDetailFormSubmit}>
                 등록
               </button>
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>
@@ -2786,6 +3113,7 @@ export default function EmployeeHome() {
                         onChange={(e) => {
                           const nextId = e.target.value;
                           setProjectId(nextId);
+                          setProjectAutoFilled(false);
                           setTaskId('');
                           const p = clientProjectOptions.find((x) => x.id === nextId);
                           setProjectName(p ? p.name : '');
@@ -2794,6 +3122,9 @@ export default function EmployeeHome() {
                         <option value="">프로젝트를 선택하세요</option>
                         {clientProjectOptions.map((p) => <option key={p.id} value={p.id}>{p.code} · {p.name}</option>)}
                       </select>
+                      {projectAutoFilled && projectId && (
+                        <p style={{ fontSize: 12, color: '#6b7594', margin: '2px 0 8px' }}>💡 이 고객사에서 지난번에 쓴 프로젝트예요. 다른 프로젝트면 바꿔주세요.</p>
+                      )}
                     </>
                   )}
                   {clientProjectOptions.length === 1 && selectedProject && (
@@ -2855,12 +3186,39 @@ export default function EmployeeHome() {
               )}
 
               <label className="field-label">{detailStatus === 'CLIENT_MEETING' ? '미팅목적' : WORK_TYPE_REQUIRED_STATUSES.has(detailStatus) ? '작업 유형 (필수)' : '작업 유형'}</label>
-              <select className="field-select" value={workType} onChange={(e) => setWorkType(e.target.value)}>
+              <select
+                className="field-select"
+                value={workTypeCustom ? CUSTOM_WORK_TYPE_VALUE : workType}
+                onChange={(e) => {
+                  workTypeTouchedRef.current = true;
+                  setWorkTypeAutoFilled(false);
+                  if (e.target.value === CUSTOM_WORK_TYPE_VALUE) {
+                    // 목록 값이 입력칸에 그대로 남아 있지 않게 비운다.
+                    setWorkTypeCustom(true);
+                    setWorkType('');
+                  } else {
+                    setWorkTypeCustom(false);
+                    setWorkType(e.target.value);
+                  }
+                }}
+              >
                 {WORK_TYPE_REQUIRED_STATUSES.has(detailStatus) && <option value="">선택하세요</option>}
                 {(detailStatus === 'HQ_WORKING' ? HQ_WORK_TYPE_OPTIONS : detailStatus === 'CLIENT_MEETING' ? MEETING_PURPOSE_OPTIONS : WORK_TYPE_OPTIONS).map((opt) => (
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
+                <option value={CUSTOM_WORK_TYPE_VALUE}>직접 입력</option>
               </select>
+              {workTypeCustom && (
+                <input
+                  value={workType}
+                  maxLength={50}
+                  onChange={(e) => { workTypeTouchedRef.current = true; setWorkType(e.target.value); setWorkTypeAutoFilled(false); }}
+                  placeholder={detailStatus === 'CLIENT_MEETING' ? '미팅 목적을 직접 입력하세요' : '작업 유형을 직접 입력하세요 (예: 방화벽 정책 변경)'}
+                />
+              )}
+              {workTypeAutoFilled && workType && (
+                <p style={{ fontSize: 12, color: '#6b7594', margin: '2px 0 8px' }}>💡 이 고객사에서 지난번에 쓴 작업 유형이에요. 오늘 작업이 다르면 바꿔주세요.</p>
+              )}
 
               {detailStatus !== 'HQ_WORKING' && (
                 // 고객사미팅만 완료시간이 선택이라 기본으로 접어서 시작시간만 보여준다. 고객사작업/
@@ -2969,6 +3327,64 @@ export default function EmployeeHome() {
                 </>
               )}
 
+              {/* 2026-10-11: 고객사 담당자(필수) — 저장된 담당자는 같은 고객사를 고르면 자동으로 불러온다. */}
+              {CONTACT_STATUSES_FRONT.has(detailStatus) && (
+                <>
+                  <label className="field-label">고객사 담당자 (필수)</label>
+                  {(contactOptions.length > 0 || contactIsSaved) && (
+                    <select
+                      className="field-select"
+                      value={contactId}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        contactTouchedRef.current = true;
+                        setContactAutoFilled(false);
+                        setContactId(v);
+                        const picked = contactOptions.find((c) => c.id === v);
+                        setContactName(picked ? picked.name : '');
+                        setContactPhone(picked ? (picked.phone ?? '') : '');
+                      }}
+                    >
+                      <option value="">담당자를 선택하세요</option>
+                      {contactIsSaved && !contactOptions.some((c) => c.id === contactId) && (
+                        <option value={contactId}>{contactName || '선택한 담당자'}</option>
+                      )}
+                      {contactOptions.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}{c.phone ? ` (${c.phone})` : ''}</option>
+                      ))}
+                      <option value={NEW_CONTACT_VALUE}>+ 새 담당자 직접 입력</option>
+                    </select>
+                  )}
+                  {!contactIsSaved && (
+                    <>
+                      <input
+                        value={contactName}
+                        maxLength={50}
+                        onChange={(e) => { contactTouchedRef.current = true; setContactAutoFilled(false); setContactName(e.target.value); }}
+                        placeholder="담당자 이름 (예: 김과장)"
+                      />
+                      <input
+                        value={contactPhone}
+                        maxLength={30}
+                        inputMode="tel"
+                        onChange={(e) => { contactTouchedRef.current = true; setContactPhone(e.target.value); }}
+                        placeholder="연락처 (선택)"
+                      />
+                    </>
+                  )}
+                  {contactAutoFilled && contactIsSaved && (
+                    <p style={{ fontSize: 12, color: '#6b7594', marginTop: -6, marginBottom: 10 }}>
+                      💡 지난번에 만난 담당자를 불러왔어요. 다른 분이면 바꿔주세요.
+                    </p>
+                  )}
+                  {!contactClientId && clientName.trim() && (
+                    <p style={{ fontSize: 12, color: '#6b7594', marginTop: -6, marginBottom: 10 }}>
+                      ※ 목록에 없는 고객사라 담당자는 이번 기록에만 저장돼요.
+                    </p>
+                  )}
+                </>
+              )}
+
               {/* 영업조직은 작업위치(siteType)를 화면에서 안 묻고 기본값(현장)으로 자동 처리한다
                   (effectiveSiteType 참고) — 작업인원 항목도 같이 없앤다. */}
               {SITE_DETAIL_STATUSES.has(detailStatus) && !isSimplifiedMeetingForm && (
@@ -3012,15 +3428,16 @@ export default function EmployeeHome() {
                   // 2026-10-08: 프로젝트 데이터 품질을 위해 작업유형 직접 선택, (고객사에 프로젝트가 여러 개면) 프로젝트 선택도 필수.
                   || workTypeMissing
                   || projectChoiceMissing
+                  || (CONTACT_STATUSES_FRONT.has(detailStatus) && contactMissing)
                   || detailSubmitting
                 }
                 onClick={handleDetailFormSubmit}
               >
                 등록
               </button>
-              {(workTypeMissing || projectChoiceMissing) && (
+              {(workTypeMissing || projectChoiceMissing || (CONTACT_STATUSES_FRONT.has(detailStatus) && contactMissing)) && (
                 <p style={{ fontSize: 12, color: '#f87171', margin: '6px 0 0' }}>
-                  * 필수 항목을 선택해주세요: {[workTypeMissing ? '작업 유형' : null, projectChoiceMissing ? '프로젝트' : null].filter(Boolean).join(', ')}
+                  * 필수 항목을 선택해주세요: {[workTypeMissing ? '작업 유형' : null, projectChoiceMissing ? '프로젝트' : null, CONTACT_STATUSES_FRONT.has(detailStatus) && contactMissing ? '고객사 담당자' : null].filter(Boolean).join(', ')}
                 </p>
               )}
               <button className="secondary" onClick={() => setDetailStatus(null)}>취소</button>

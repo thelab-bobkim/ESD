@@ -5,6 +5,7 @@ import { requireAuth, requireRole } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { registerBackfillRoutes } from './project-backfill.routes';
 import { registerProjectInsightRoutes } from './project-insights.routes';
+import { registerProjectAutomationRoutes, loadSuggestedManagers } from './project-automation.routes';
 
 // 2026-10-01 수정(Genspark 0001-0008 병합, C-2 일관성 유지): 이 모듈도 다른 22개 라우트 모듈과 동일하게
 // async 핸들러 예외가 프로세스를 종료시키지 않도록 createRouter()를 쓴다(common/async-router.ts 참고).
@@ -90,6 +91,7 @@ projectsRouter.get('/', requireRole(...adminRoles), async (_req, res) => {
     }),
   ]);
   const effortByProject = new Map(effortTotals.map((e) => [e.projectId as string, Number(e._sum.actualMinutes ?? e._sum.minutes ?? 0)]));
+  const suggestedManagers = await loadSuggestedManagers(projects.filter((p) => !p.managerId).map((p) => p.id)).catch(() => new Map<string, { userId: string; name: string; minutes: number }>());
   const lastActivityByProject = new Map(effortTotals.map((e) => [e.projectId as string, e._max.workDate ? dateOnly(e._max.workDate) : null]));
   return res.json({
     success: true,
@@ -104,6 +106,7 @@ projectsRouter.get('/', requireRole(...adminRoles), async (_req, res) => {
       plannedMinutes: p.plannedMinutes,
       actualMinutes: effortByProject.get(p.id) ?? 0,
       lastActivityDate: lastActivityByProject.get(p.id) ?? null,
+      suggestedManager: p.managerId ? null : (suggestedManagers.get(p.id) ? { id: suggestedManagers.get(p.id)!.userId, name: suggestedManagers.get(p.id)!.name } : null),
       startDate: dateOnly(p.startDate),
       endDate: dateOnly(p.endDate),
       description: p.description,
@@ -413,6 +416,8 @@ projectsRouter.get('/performance/summary', requireRole(...adminRoles), async (re
 registerBackfillRoutes(projectsRouter);
 // 2026-10-08: 프로젝트 상세 통합 화면용 조회(요약/공수 이력/업무일지) — 읽기 전용.
 registerProjectInsightRoutes(projectsRouter);
+// 2026-10-08: 입력 기본값(지난번 값) / 연결 안 된 공수 정리 / PM 후보 일괄 지정.
+registerProjectAutomationRoutes(projectsRouter);
 
 /** 프로젝트 상세 — 참여자/Task/실공수를 한 화면에 쓰기 위한 데이터. */
 projectsRouter.get('/:id', requireRole(...adminRoles), async (req, res) => {

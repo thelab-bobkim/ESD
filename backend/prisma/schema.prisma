@@ -192,8 +192,33 @@ model Client {
   users            User[]
   residentCheckins ResidentCheckin[]
   projects         Project[]
+  contacts         ClientContact[]
 
   @@map("clients")
+}
+
+// 2026-10-11: 고객사 담당자 — 엔지니어가 고객사작업/미팅 때 "누구를 만났는지(누구의 요청으로 일했는지)"를
+// 필수로 남기고, 다음부터는 같은 고객사에서 자동으로 불러오기 위한 테이블. 전화번호/이메일은 선택.
+// (고객사, 이름)이 같으면 한 사람으로 보고 재사용한다. 삭제하지 않고 isActive=false로 숨긴다.
+model ClientContact {
+  id          String    @id @default(uuid())
+  clientId    String    @map("client_id")
+  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name        String
+  phone       String?
+  email       String?
+  department  String?
+  createdBy   String?   @map("created_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  lastUsedAt  DateTime? @map("last_used_at")
+  useCount    Int       @default(0) @map("use_count")
+  isActive    Boolean   @default(true) @map("is_active")
+
+  efforts EffortLog[]
+
+  @@unique([clientId, name])
+  @@index([clientId, lastUsedAt])
+  @@map("client_contacts")
 }
 
 model User {
@@ -321,6 +346,12 @@ model AttendanceRecord {
   // 하드블록 대신 "사유 입력 + 즉시 확정" 방식으로 바꾸면서 추가 — 부족분은 주간 집계에서
   // 자연스럽게(다른 날 초과분과 합산되어) 반영되므로 별도 상쇄 로직은 두지 않는다.
   earlyLeaveReason String? @map("early_leave_reason")
+  // 2026-10-11: 퇴근 위치 확인 결과 — 좌표는 저장하지 않고 "어디서 퇴근했는지(HQ/CLIENT/OTHER)"와 일치 여부·거리만 남긴다.
+  clockOutPlace          String?  @map("clock_out_place")
+  clockOutLocationMatch  Boolean? @map("clock_out_location_match")
+  clockOutDistanceMeters Int?     @map("clock_out_distance_meters")
+  // 퇴근 때 위치를 못 구해서 사유를 입력하고 퇴근한 경우의 사유(관리자 확인 대상).
+  clockOutLocationNote   String?  @map("clock_out_location_note")
 
   breakSessions BreakSession[]
   correctionRequests AttendanceCorrectionRequest[]
@@ -787,6 +818,19 @@ model EffortLog {
   project      Project?     @relation(fields: [projectId], references: [id])
   taskId       String?      @map("task_id")
   task         ProjectTask? @relation(fields: [taskId], references: [id])
+
+  // 2026-10-11: 고객사 담당자(누구를 만났는지/누구 요청인지). contactName/Phone은 담당자 정보가 나중에
+  // 바뀌거나 삭제돼도 그때의 기록이 남도록 한 스냅샷이다.
+  contactId    String?        @map("contact_id")
+  contact      ClientContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  contactName  String?        @map("contact_name")
+  contactPhone String?        @map("contact_phone")
+  // 이 기록의 종료시각을 누가/어떻게 정했는지 — null이면 직원이 직접 입력한 것.
+  // AUTO_AWAY(고객사에서 30분 이상 벗어나 자동 마무리), AUTO_STATUS_CHANGE(다른 상태로 바꾸며 자동 마무리),
+  // AUTO_CLOCKOUT(퇴근하며 자동 마무리), ADMIN_ESTIMATE(관리자가 과거 미종료건을 추정해 마무리).
+  closedBy     String?        @map("closed_by")
+  // 앱이 열려 있는 동안 "아직 고객사 위치에 있음"을 마지막으로 확인한 시각(좌표는 저장하지 않는다).
+  lastSeenAt   DateTime?      @map("last_seen_at")
 
   // 2026-09-30 추가(Medium): (userId+workDate) 일별 조회, "진행중(endTime null) 이어받기",
   // 오늘 마지막 완료 공수(endTime) 조회에 인덱스가 없었다.

@@ -7,7 +7,19 @@ import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST, isWeekendForWorkDate, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 import { recordNightWork, willResumeNightWork } from '../../common/night-work-helpers';
-import { recordEffort, findOpenEffort, willUpdateExistingEffort } from '../../common/effort-helpers';
+import { recordEffort, findOpenEffort, willUpdateExistingEffort, findOpenAutoCloseEfforts, closeEffortAt } from '../../common/effort-helpers';
+import {
+  CONTACT_REQUIRED_STATUSES,
+  missingDetailField, findIncompleteEffort,
+  lowAccuracyDecision,
+  locationFailureDecision,
+  resolveAutoCloseEnd,
+  closedByFor,
+  MIN_LOCATION_FAILURE_REASON_LENGTH,
+  isStrictLocationStatus,
+} from './field-rules';
+import { resolveContactForEffort, registerClientContactRoutes } from './client-contacts';
+import { registerFieldCheckRoutes } from './field-check.routes';
 import { resolveAutoProject } from '../projects/project-autolink';
 import { DEFAULT_EXCLUDED_WORK_TYPES } from '../projects/project-backfill-plan';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, MAX_ACCURACY_ALLOWANCE_METERS, buildMismatchCoords } from '../../common/location';
@@ -236,6 +248,9 @@ attendanceRouter.post('/clock-in', async (req, res) => {
   // 2026-10-08: GPS 오차로 처음엔 불일치였지만 직원이 카카오맵으로 본인 위치를 보정해 본사 반경 안으로
   // 확인된 경우 true — 기록에 "지도 보정" 표식을 남겨 관리자가 구분할 수 있게 한다(아래 statusChangeLog 생성부).
   let clockInMapCorrected = false;
+  // 2026-10-11: GPS 오차가 1km를 넘는데 본사 위치와 안 맞는 경우, 건물 밖 재측정 안내를 거친 뒤 통과했는지(감사로그에 남김).
+  let clockInLowAccuracyPassed = false;
+  const clockInRecheckCount = Number.isInteger(req.body?.outdoorRecheckCount) && req.body.outdoorRecheckCount > 0 ? Math.min(req.body.outdoorRecheckCount, 20) : 0;
   // 2026-09-09: 아래 GPS 좌표대조 블록은 hqVerifiedByAlternateMeans가 false일 때만 실행되는데,
   // true인 경우(사내망/주소로 이미 확인됨) hqLocationResult를 아무도 채워주지 않아서 계속 null로
   // 남아 있었다 — locationConfirmed(213번째 줄)는 맞게 true로 계산되는데 실제 기록되는
@@ -279,6 +294,20 @@ attendanceRouter.post('/clock-in', async (req, res) => {
     //    통과하는 스푸핑 방지) ② 실제로 본사 반경 안일 때만 출근을 확정한다. /status의 본사근무
     //    "그래도 등록"과 달리 여기서는 본사 반경 안이어야만 통과한다 — 출근 버튼은 "본사 위치가
     //    확인될 때만" 처리한다는 원래 정책이기 때문이다(다른 곳이면 실제 근무형태 버튼을 누른다).
+    // 2026-10-12: 엄격 모드(ENFORCE_LOCATION_MATCH=1) — 오차범위가 1km를 넘는 측정으로는 지도 보정을 포함해 어떤 경로로도
+    // 출근을 확정하지 않는다. 건물 밖에서 위치가 확인되어야만 출근된다.
+    const strictClockIn = await isStrictLocationEnabled();
+    if (strictClockIn && hqCheck && !hqCheck.locationMatch && isMismatchAccuracyExempt(accuracyMeters)) {
+      return res.status(400).json(lowAccuracyErrorBody(accuracyMeters, true));
+    }
+    if (hqCheck && !hqCheck.locationMatch && isMismatchAccuracyExempt(accuracyMeters) && req.body?.selfConfirmMismatch !== true) {
+      // 2026-10-11: "GPS 오차 1km 이상이면 건물 밖에서 GPS를 다시 확인한 뒤" — 첫 시도는 재측정 안내, 재측정 후에도
+      // 부정확하면 출근은 지켜지도록 통과시키되 위치 불일치(관리자 확인 대상)로 남긴다.
+      if ((await lowAccuracyGate(accuracyMeters, clockInRecheckCount)) === 'NEED_RECHECK') {
+        return res.status(400).json(lowAccuracyErrorBody(accuracyMeters));
+      }
+      clockInLowAccuracyPassed = true;
+    }
     if (hqCheck && !hqCheck.locationMatch && !isMismatchAccuracyExempt(accuracyMeters)) {
       const unrecoverableDistanceMeters = MAX_ACCURACY_ALLOWANCE_METERS + hqCheck.effectiveRadiusMeters;
       if (hqCheck.locationDistanceMeters > unrecoverableDistanceMeters) {
@@ -382,7 +411,7 @@ attendanceRouter.post('/clock-in', async (req, res) => {
     }
   }
 
-  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockInAt: record.clockInAt, locationConfirmed, mapCorrected: clockInMapCorrected } });
+  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockInAt: record.clockInAt, locationConfirmed, mapCorrected: clockInMapCorrected, lowAccuracyPassed: clockInLowAccuracyPassed } });
 
   return res.json({ success: true, data: { ...record, locationConfirmed } });
 });
@@ -406,6 +435,12 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   const earlyLeaveReason = typeof req.body?.earlyLeaveReason === 'string' && req.body.earlyLeaveReason.trim()
     ? req.body.earlyLeaveReason.trim().slice(0, 300)
     : undefined;
+  // 2026-10-11: 퇴근 위치 확인 — 좌표는 본사/고객사와 비교한 뒤 버리고(저장 안 함) 결과(어디서 퇴근했는지·일치 여부·거리)만 남긴다.
+  const clockOutCoordsParsed = clockInLocationSchema.safeParse(req.body?.location);
+  const clockOutCoords = clockOutCoordsParsed.success ? clockOutCoordsParsed.data : undefined;
+  const rawClockOutAccuracy = req.body?.accuracyMeters;
+  const clockOutAccuracyMeters = typeof rawClockOutAccuracy === 'number' && Number.isFinite(rawClockOutAccuracy) && rawClockOutAccuracy >= 0 ? rawClockOutAccuracy : undefined;
+  const clockOutFailureReason = typeof req.body?.locationFailureReason === 'string' ? req.body.locationFailureReason.trim().slice(0, 200) : '';
 
   // 2026-09-30 수정(Critical): 일일업무일지 1단계(퇴근 시 강제 마감, 대표이사 요청).
   // 근태기록을 건드리기 "전에" 먼저 검증한다 — 검증 실패로 400을 돌려줄 때 근태기록이 이미
@@ -432,6 +467,29 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   }
   if (existing.clockOutAt) {
     return res.status(400).json({ success: false, error: { code: 'ALREADY_CLOCKED_OUT', message: '이미 퇴근 처리되었습니다.' } });
+  }
+
+  // 2026-10-12: 공수관리를 위해 오늘 등록한 고객사작업/미팅 기록은 작업내용·고객사 담당자가 채워져야 퇴근할 수 있다
+  // (정책값 ENFORCE_EFFORT_COMPLETE_AT_CLOCKOUT=1일 때만 — 기본 0). 도착 즉시등록은 허용하되 하루를 마치기 전에 채우게 한다.
+  if ((await getPolicyNumber('ENFORCE_EFFORT_COMPLETE_AT_CLOCKOUT', 0)) === 1) {
+    const [enforceDesc, enforceContact] = await Promise.all([
+      getPolicyNumber('ENFORCE_EFFORT_DESCRIPTION', 1),
+      getPolicyNumber('ENFORCE_CLIENT_CONTACT', 1),
+    ]);
+    const todayEfforts = await prisma.effortLog.findMany({
+      where: { userId, workDate, sourceStatus: { in: ['CLIENT_MEETING', 'CLIENT_WORK'] } },
+      select: { clientName: true, description: true, contactId: true, contactName: true },
+    });
+    const incomplete = findIncompleteEffort(todayEfforts, { enforceDescription: enforceDesc === 1, enforceContact: enforceContact === 1 });
+    if (incomplete) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'EFFORT_INCOMPLETE',
+          message: `'${incomplete.clientName}' 기록에 ${incomplete.missing === 'DESCRIPTION' ? '작업(미팅) 내용' : '고객사 담당자'}이 비어 있어요. 공수관리를 위해 입력을 마친 뒤 퇴근해 주세요. (화면 위쪽 진행중 작업·오늘의 기록에서 내용과 담당자를 채우고 완료시간을 적어주세요.)`,
+        },
+      });
+    }
   }
 
   // 출근 찍자마자 실수로(또는 급하게) 바로 퇴근을 눌러버리는 사고를 막기 위한 최소근무시간
@@ -461,18 +519,73 @@ attendanceRouter.post('/clock-out', async (req, res) => {
     where: { userId, changedAt: { gte: clockOutDayStart, lt: clockOutDayEnd } },
     orderBy: { changedAt: 'desc' },
   });
+  // 2026-10-11: "퇴근도 본사인지 고객사인지 위치를 확인" — 마지막 상태가 본사근무인 경우도 위치 확인 대상에 넣는다
+  // (정책값 CLOCKOUT_HQ_LOCATION_REQUIRED, 기본 1). 사내망(회사 와이파이)에서 누르면 GPS 없이도 본사로 인정한다.
+  const clockOutHqRequired = latestStatusToday?.status === 'HQ_WORKING' && (await getPolicyNumber('CLOCKOUT_HQ_LOCATION_REQUIRED', 1)) === 1;
+  const officeNetworkAtClockOut = clockOutHqRequired ? await isRequestFromOfficeNetwork(req, userId) : false;
   const requiresLocation = !!latestStatusToday && (
     REQUIRE_LOCATION_ON_CLOCKOUT_ALWAYS.has(latestStatusToday.status)
     || (REQUIRE_LOCATION_ON_CLOCKOUT_IF_ONSITE.has(latestStatusToday.status) && latestStatusToday.siteType === 'ONSITE')
+    || (clockOutHqRequired && !officeNetworkAtClockOut)
   );
-  if (requiresLocation && clockOutLocationStatus !== 'OK') {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'LOCATION_REQUIRED_FOR_CLOCKOUT',
-        message: '고객사 현장에서 퇴근하는 경우 위치 확인이 필수입니다. 위치 접근을 허용한 뒤 다시 시도해주세요.',
-      },
-    });
+  // 위치를 못 구해도 퇴근 자체는 지켜져야 한다 — 사유(5자 이상)를 직접 적으면 퇴근을 확정하고 관리자 확인 대상으로 남긴다.
+  let clockOutLocationNote: string | null = null;
+  // 좌표를 구했으면(주소 변환만 실패한 경우 포함) 위치 확인으로 인정한다.
+  if (requiresLocation && clockOutLocationStatus !== 'OK' && !clockOutCoords) {
+    if (clockOutFailureReason.length >= MIN_LOCATION_FAILURE_REASON_LENGTH) {
+      clockOutLocationNote = clockOutFailureReason;
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'LOCATION_REQUIRED_FOR_CLOCKOUT',
+          message: `퇴근 위치를 확인해야 합니다. 위치 접근을 허용한 뒤 다시 시도해주세요. 정말 위치를 확인할 수 없다면 사유(${MIN_LOCATION_FAILURE_REASON_LENGTH}자 이상)를 입력하면 퇴근이 확정되고 관리자 확인 대상으로 표시돼요.`,
+        },
+      });
+    }
+  }
+
+  // 퇴근 위치 판정: 본사 반경 → (고객사 상태였다면) 그 고객사 반경 → 그 외(OTHER). 좌표는 여기서만 쓰고 저장하지 않는다.
+  const expectedClockOutPlace: 'HQ' | 'CLIENT' | null = latestStatusToday?.status === 'HQ_WORKING'
+    ? 'HQ'
+    : (latestStatusToday && REQUIRE_LOCATION_ON_CLOCKOUT_IF_ONSITE.has(latestStatusToday.status) && latestStatusToday.siteType === 'ONSITE')
+      ? 'CLIENT'
+      : null;
+  let clockOutPlace: 'HQ' | 'CLIENT' | 'OTHER' | null = null;
+  let clockOutLocationMatch: boolean | null = null;
+  let clockOutDistanceMeters: number | null = null;
+  if (officeNetworkAtClockOut) {
+    clockOutPlace = 'HQ';
+    clockOutLocationMatch = true;
+    clockOutDistanceMeters = 0;
+  } else if (clockOutCoords) {
+    const hqLatCo = await getPolicyString('HQ_LATITUDE', '');
+    const hqLngCo = await getPolicyString('HQ_LONGITUDE', '');
+    const hqCo = hqLatCo && hqLngCo
+      ? checkLocationMatch(clockOutCoords, { latitude: Number(hqLatCo), longitude: Number(hqLngCo) }, HQ_LOCATION_MATCH_RADIUS_METERS, clockOutAccuracyMeters)
+      : null;
+    let clientCo: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
+    if (expectedClockOutPlace === 'CLIENT') {
+      const lastEffortCo = await prisma.effortLog.findFirst({
+        where: { userId, workDate, sourceStatus: { in: ['CLIENT_MEETING', 'CLIENT_WORK'] } },
+        orderBy: { startTime: 'desc' },
+        select: { clientName: true },
+      });
+      if (lastEffortCo?.clientName) {
+        const clientRow = await prisma.client.findFirst({ where: { name: { equals: lastEffortCo.clientName.trim(), mode: 'insensitive' } } });
+        clientCo = checkLocationMatch(clockOutCoords, clientRow, undefined, clockOutAccuracyMeters);
+      }
+    }
+    if (hqCo?.locationMatch) {
+      clockOutPlace = 'HQ';
+    } else if (clientCo?.locationMatch) {
+      clockOutPlace = 'CLIENT';
+    } else if (hqCo || clientCo) {
+      clockOutPlace = 'OTHER';
+    }
+    const expectedResult = expectedClockOutPlace === 'HQ' ? hqCo : expectedClockOutPlace === 'CLIENT' ? clientCo : null;
+    clockOutDistanceMeters = expectedResult?.locationDistanceMeters ?? null;
+    clockOutLocationMatch = expectedClockOutPlace && clockOutPlace ? clockOutPlace === expectedClockOutPlace : null;
   }
 
   const clockOutAt = new Date();
@@ -536,8 +649,20 @@ attendanceRouter.post('/clock-out', async (req, res) => {
       ...(clockOutLocation ? { clockOutLocation } : {}),
       ...(clockOutLocationStatus ? { clockOutLocationStatus } : {}),
       ...(earlyLeaveReason ? { earlyLeaveReason } : {}),
+      ...(clockOutPlace ? { clockOutPlace } : {}),
+      ...(clockOutLocationMatch !== null ? { clockOutLocationMatch } : {}),
+      ...(clockOutDistanceMeters !== null ? { clockOutDistanceMeters } : {}),
+      ...(clockOutLocationNote ? { clockOutLocationNote } : {}),
     },
   });
+
+  // 2026-10-11: 퇴근하면서 아직 종료시각이 없는 고객사 작업을 자동으로 마무리한다(실패해도 퇴근은 그대로 확정).
+  try {
+    await autoCloseOpenEffortsAtClockOut(userId, clockOutAt, clockOutPlace);
+  } catch (closeErr) {
+    // eslint-disable-next-line no-console
+    console.error('[AutoClose] 퇴근 시 진행중 작업 자동 마무리 실패(퇴근은 계속 확정):', closeErr);
+  }
 
   // 2026-09-30 수정(Critical): 일일업무일지 저장 — (userId, workDate) 기준 하루 1건 upsert라
   // 퇴근 취소 후 재마감 등으로 여러 번 확정돼도 중복되지 않는다. 총 근무시간은 방금 계산한 값을
@@ -553,7 +678,7 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   // 더 이상 의미가 없다 — 승인함에 오탐(false positive)으로 남지 않도록 같이 정리한다.
   await cancelPendingAutoDepartureSuggestion(existing.id, userId, '본인이 정상적으로 "퇴근" 버튼을 눌러 처리됨');
 
-  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes, lateClockOutOverMinutes, dailyWorkLogSaved: true, unloggedGapMinutes: serverUnloggedGap?.minutes ?? null } });
+  await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'attendance_record', targetId: record.id, afterValue: { clockOutAt, totalWorkedMinutes, lateClockOutOverMinutes, dailyWorkLogSaved: true, unloggedGapMinutes: serverUnloggedGap?.minutes ?? null, clockOutPlace, clockOutLocationMatch, clockOutDistanceMeters, clockOutLocationNote } });
 
   const lateClockOutSuggestion = lateClockOutOverMinutes > 0
     ? {
@@ -596,6 +721,11 @@ const effortSchema = z.object({
   // (야간작업/고객사작업 보고서에서 흔히 같이 적는 항목이라 자유서술 설명에 자연스럽게 붙는다).
   personnel: z.string().optional(),
   progressStage: z.string().optional(),
+  // 2026-10-11: 고객사 담당자 — 고객사작업/미팅 세부 저장 시 필수(field-rules.ts missingDetailField).
+  // 목록에서 고른 담당자는 contactId, 새로 입력한 담당자는 contactName(+전화번호)로 온다.
+  contactId: z.string().uuid().optional(),
+  contactName: z.string().max(80).optional(),
+  contactPhone: z.string().max(40).optional(),
 });
 
 /** effort.description + 작업인원/진행률·차수를 사람이 읽기 좋은 하나의 텍스트로 합친다. */
@@ -647,6 +777,12 @@ const statusSchema = z.object({
   // 받아서, 서버가 "원본 GPS에서 너무 먼 곳을 찍어 위치대조를 우회"하는 걸 막는다(아래
   // validateSelfConfirmedLocation 참고).
   confirmedLocation: z.object({ lat: z.number(), lng: z.number() }).optional(),
+  // 2026-10-11: GPS 오차범위가 1km를 넘을 때 "건물 밖에서 다시 측정"을 몇 번 했는지(프론트가 센다).
+  // 서버는 이 값을 신뢰 근거가 아니라 "재측정 안내를 거쳤다"는 표식으로만 쓰고, 통과한 기록은
+  // 항상 관리자 확인 대상으로 남긴다(lowAccuracyDecision, 상태 메모의 [GPS 정확도 낮음]).
+  outdoorRecheckCount: z.number().int().min(0).max(20).optional(),
+  // 2026-10-11: 위치를 전혀 못 구했을 때 직원이 직접 적는 사유(5자 이상) — 관리자 확인 대상으로 남는다.
+  locationFailureReason: z.string().max(200).optional(),
 });
 
 // 2026-10-02: GPS 자체가 스스로 "오차범위가 이 값보다 크다"고 보고한 경우(고층건물 실내 등,
@@ -655,6 +791,118 @@ const statusSchema = z.object({
 // (1km, "봐주는 오차 허용치의 상한")를 그대로 재사용한다.
 function isMismatchAccuracyExempt(accuracyMeters: number | null | undefined): boolean {
   return typeof accuracyMeters === 'number' && Number.isFinite(accuracyMeters) && accuracyMeters > MAX_ACCURACY_ALLOWANCE_METERS;
+}
+
+/**
+ * 2026-10-12: 정책값 ENFORCE_LOCATION_MATCH(기본 0=꺼짐). 1이면 "위치가 TSB의 핵심"이라는 대표 지시대로
+ * 본사출근·본사근무·고객사작업·고객사미팅은 위치가 실제로 일치해야만 등록된다
+ * (불일치 등록·오차 1km 초과 통과·위치 못 구했을 때 사유로 대체하는 길을 모두 막는다).
+ * 현장이 막히면 코드 재배포 없이 이 값을 0으로 되돌려 즉시 예전 동작으로 완화할 수 있다.
+ */
+async function isStrictLocationEnabled(): Promise<boolean> {
+  return (await getPolicyNumber('ENFORCE_LOCATION_MATCH', 0)) === 1;
+}
+
+/** 2026-10-11: 정책값 GPS_LOW_ACCURACY_RECHECK(기본 1=사용, 0이면 예전처럼 오차 1km 초과는 바로 통과). strict=true면 항상 재측정을 요구한다. */
+async function lowAccuracyGate(accuracyMeters: number | null | undefined, recheckCount: number, strict = false) {
+  const enabled = (await getPolicyNumber('GPS_LOW_ACCURACY_RECHECK', 1)) === 1;
+  return lowAccuracyDecision({ accuracyMeters, maxAccuracyMeters: MAX_ACCURACY_ALLOWANCE_METERS, recheckCount, enabled, strict });
+}
+
+function lowAccuracyErrorBody(accuracyMeters: number | null | undefined, strict = false) {
+  const rounded = typeof accuracyMeters === 'number' ? Math.round(accuracyMeters) : null;
+  return {
+    success: false,
+    error: {
+      code: 'GPS_ACCURACY_LOW',
+      message: strict
+        ? `GPS 오차가 ${rounded != null ? `약 ${rounded}m로 ` : ''}커서 위치를 확인할 수 없어요. 건물 밖(하늘이 트인 곳)으로 나가 다시 측정해 주세요. 위치가 확인되어야만 등록됩니다.`
+        : `GPS 오차가 ${rounded != null ? `약 ${rounded}m로 ` : ''}커서 위치를 확인할 수 없어요. 건물 밖(하늘이 트인 곳)으로 나가 다시 측정해 주세요. 그래도 안 잡히면 한 번 더 측정하면 등록은 진행되고, 관리자 확인 대상으로 표시돼요.`,
+      accuracyMeters: rounded,
+    },
+  };
+}
+
+/** 2026-10-11: 정책값 LOCATION_FAILURE_GRACE_COUNT(기본 0 = 위치를 못 구한 날 첫 1회 봐주기 없음, 1로 두면 예전 동작). */
+async function locationFailureGate(priorFailures: number, reason: string | undefined, strict = false) {
+  const graceCount = await getPolicyNumber('LOCATION_FAILURE_GRACE_COUNT', 0);
+  return locationFailureDecision({ priorFailures, graceCount, reason, strict });
+}
+
+function locationFailureErrorBody(context: string, strict = false) {
+  if (strict) {
+    // 엄격 모드: 사유 입력으로 대체할 수 없다 — 프론트가 사유 입력칸 없이 다시 측정만 안내하도록 별도 코드를 쓴다.
+    return {
+      success: false,
+      error: {
+        code: 'LOCATION_REQUIRED_STRICT',
+        message: `${context} 위치를 확인할 수 없어 등록되지 않았어요. 위치 접근을 허용하고 건물 밖에서 다시 측정해 주세요. 위치가 확인되어야만 등록됩니다.`,
+      },
+    };
+  }
+  return {
+    success: false,
+    error: {
+      code: 'LOCATION_REQUIRED',
+      message: `${context} 위치를 확인할 수 없어 등록되지 않았어요. 위치 접근을 허용하고 건물 밖에서 다시 시도해 주세요. 정말 불가능하면 사유(${MIN_LOCATION_FAILURE_REASON_LENGTH}자 이상)를 입력해 등록할 수 있고, 관리자 확인 대상으로 표시돼요.`,
+    },
+  };
+}
+
+/**
+ * 2026-10-11: 다른 상태로 바꾸거나 새 작업을 저장할 때, 아직 종료시각이 없는 고객사 작업류(진행중) 기록을 자동으로 닫는다.
+ * 과거에는 상태를 바꿔도 이전 기록이 영원히 "진행중"으로 남아 공수가 비던 문제(최근 30일 144건)를 막는다.
+ * - 방금 저장한 기록과 같은 상태·같은 고객사의 열린 기록은 "대체된 것"으로 보고 시작시각에 닫는다(0분) —
+ *   예: 도착 때 즉시등록한 기록을 세부폼에서 프로젝트를 바꿔 다시 저장한 경우, 시간이 이중으로 잡히지 않게.
+ * - 그 외 열린 기록은 지금 시각으로 닫는다.
+ * 실패해도 상태 등록 자체는 막지 않는다(호출부에서 try/catch).
+ */
+async function autoCloseOtherOpenEfforts(userId: string, keep: { id: string; sourceStatus?: string | null; clientName: string } | null) {
+  const open = await findOpenAutoCloseEfforts(userId, keep?.id);
+  if (open.length === 0) return;
+  const now = new Date();
+  for (const e of open) {
+    const superseded = Boolean(keep && e.sourceStatus === keep.sourceStatus && e.clientName === keep.clientName);
+    const end = superseded ? e.startTime : resolveAutoCloseEnd({ reason: 'STATUS_CHANGE', startTime: e.startTime, now });
+    const closedBy = superseded ? 'SUPERSEDED' : closedByFor('STATUS_CHANGE');
+    const closed = await closeEffortAt(e.id, e.startTime, end, closedBy);
+    await recordAuditLog({
+      actorUserId: userId,
+      actionType: 'CORRECT',
+      targetType: 'effort_log',
+      targetId: e.id,
+      beforeValue: { endTime: null },
+      afterValue: { endTime: closed.endTime, closedBy, auto: true },
+    });
+  }
+}
+
+/**
+ * 2026-10-11: 퇴근할 때 아직 종료시각이 없는 고객사 작업류 기록을 자동으로 닫는다.
+ * 퇴근 위치가 그 고객사가 아니고, 앱이 마지막으로 "고객사에 있음"을 확인한 뒤 30분 이상 지났다면 그 시각으로,
+ * 아니면 퇴근 시각으로 닫는다(resolveAutoCloseEnd). 앱이 닫혀 있는 동안은 위치를 알 수 없으므로 한계가 있다.
+ */
+async function autoCloseOpenEffortsAtClockOut(userId: string, clockOutAt: Date, clockOutPlace: string | null) {
+  const open = await findOpenAutoCloseEfforts(userId);
+  for (const e of open) {
+    const end = resolveAutoCloseEnd({
+      reason: 'CLOCK_OUT',
+      startTime: e.startTime,
+      now: clockOutAt,
+      lastSeenAt: e.lastSeenAt ?? null,
+      awayFromClientAtClockOut: clockOutPlace === 'HQ' || clockOutPlace === 'OTHER',
+    });
+    const closedBy = closedByFor('CLOCK_OUT');
+    const closed = await closeEffortAt(e.id, e.startTime, end, closedBy);
+    await recordAuditLog({
+      actorUserId: userId,
+      actionType: 'CORRECT',
+      targetType: 'effort_log',
+      targetId: e.id,
+      beforeValue: { endTime: null },
+      afterValue: { endTime: closed.endTime, closedBy, auto: true, clockOutPlace },
+    });
+  }
 }
 
 /**
@@ -710,7 +958,11 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '상태값을 확인하세요.' } });
   }
   const userId = req.authUser!.userId;
-  const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus, locationAddress, accuracyMeters, selfConfirmMismatch, confirmedLocation } = parsed.data;
+  const { status, note, effort, location, businessTrip, siteType, locationStatus: rawLocationStatus, locationAddress, accuracyMeters, selfConfirmMismatch, confirmedLocation, outdoorRecheckCount: rawRecheckCount, locationFailureReason } = parsed.data;
+  const outdoorRecheckCount = rawRecheckCount ?? 0;
+  // 2026-10-12: 위치 일치 강제(ENFORCE_LOCATION_MATCH) — 본사근무/고객사작업/고객사미팅에만 적용된다.
+  const strictHere = isStrictLocationStatus(status, await isStrictLocationEnabled());
+  let strictMapCorrected = false;
 
   // 주말(토/일, KST) 게이트(2026-09-06 요청): 주말엔 "주말작업"만 등록할 수 있고 나머지 상태는
   // 막는다 — 반대로 평일엔 "주말작업"을 등록할 수 없다. 관리자 계정도 예외 없이 적용한다(프론트
@@ -795,6 +1047,23 @@ attendanceRouter.post('/status', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'SITE_TYPE_REQUIRED', message: '작업위치(원격/현장)를 선택해야 합니다.' } });
   }
 
+  // 2026-10-11: "고객사 작업·미팅은 작업시간·작업내용·고객사 담당자 입력이 필수"(대표 지시). 도착 직후 즉시등록
+  // (시작시간+고객사만)은 막지 않고, 작업내용이나 완료시간이 들어간 세부 저장에서만 확인한다. 현장에서 문제가
+  // 생기면 정책값 ENFORCE_EFFORT_DESCRIPTION / ENFORCE_CLIENT_CONTACT 를 0으로 바꿔 즉시 완화할 수 있다.
+  if (CONTACT_REQUIRED_STATUSES.has(status)) {
+    const [enforceDescription, enforceContact] = await Promise.all([
+      getPolicyNumber('ENFORCE_EFFORT_DESCRIPTION', 1),
+      getPolicyNumber('ENFORCE_CLIENT_CONTACT', 1),
+    ]);
+    const missing = missingDetailField(status, effort, { enforceDescription: enforceDescription === 1, enforceContact: enforceContact === 1 });
+    if (missing === 'DESCRIPTION_REQUIRED') {
+      return res.status(400).json({ success: false, error: { code: 'DESCRIPTION_REQUIRED', message: '작업(미팅) 내용을 입력해야 합니다.' } });
+    }
+    if (missing === 'CONTACT_REQUIRED') {
+      return res.status(400).json({ success: false, error: { code: 'CONTACT_REQUIRED', message: '고객사 담당자를 선택하거나 입력해야 합니다.' } });
+    }
+  }
+
   // 정규 출근 시각 제한: 저녁 정책시각(기본 18시, KST) 이후에 아직 오늘 출근이 안 찍힌 상태에서
   // 정규 근무류 상태를 등록하려 하면 막고 "야간작업"으로 등록하도록 안내한다. 이미 정상적으로
   // 출근한 뒤 저녁에 상태만 바꾸는 경우까지 막을 이유는 없어서 "출근 전"인 경우에만 적용한다.
@@ -848,6 +1117,9 @@ attendanceRouter.post('/status', async (req, res) => {
   // 자체가 실패(권한거부/타임아웃/미동의 등)했으면 오늘 첫 실패는 봐주되 그 다음부터는 실제
   // 위치 일치를 요구한다. 이게 없으면 위치를 안 주는 것만으로 검증이 통째로 무력화된다.
   let hqLocationResult: { locationMatch: boolean; locationDistanceMeters: number } | null = null;
+  // 2026-10-11: GPS 오차가 커서 "건물 밖 재측정" 안내를 거친 뒤 통과한 경우 / 위치를 못 구해 사유를 적고 통과한 경우의 표식.
+  let lowAccuracyPassed = false;
+  let locationFailureNote: string | null = null;
   // 사내망 공인IP·주소 키워드로 이미 본사임이 확인된 경우: 아래 좌표 대조 블록 자체를 건너뛰기만
   // 하고 끝내면(과거 버그), 이 기록의 locationMatch가 계속 null로 남아 상황판에서 "위치 미확인"으로
   // 잘못 표시된다(2026-09-08, 관리자가 "본사에 다 있는데 왜 위치확인이 안 되냐" 문의 — 서버 로그로
@@ -870,13 +1142,27 @@ attendanceRouter.post('/status', async (req, res) => {
       // 예외로 통과시킨다. 사내망 IP·주소 매칭이라는 다른 안전장치는 이 블록 위에서 이미 별도로
       // 처리되며(hqVerifiedByAlternateMeans), 위치 자체가 순간이동급으로 튄 경우는 프론트에서
       // 별도로 차단한다(jumpDetected).
+      // 2026-10-12: 엄격 모드 — 오차범위가 1km를 넘는 측정으로는 불일치인 채로 어떤 경로로도 등록하지 않는다.
+      if (strictHere && hqLocationResult && !hqLocationResult.locationMatch && isMismatchAccuracyExempt(accuracyMeters)) {
+        return res.status(400).json(lowAccuracyErrorBody(accuracyMeters, true));
+      }
+      if (hqLocationResult && !hqLocationResult.locationMatch && isMismatchAccuracyExempt(accuracyMeters) && !selfConfirmMismatch) {
+        // 2026-10-11: 예전엔 GPS 오차가 1km를 넘으면 불일치여도 무조건 통과시켰다. 이제 먼저 건물 밖에서
+        // 다시 측정하도록 안내하고, 재측정 후에도 부정확하면 등록은 허용하되 관리자 확인 대상으로 남긴다.
+        if ((await lowAccuracyGate(accuracyMeters, outdoorRecheckCount)) === 'NEED_RECHECK') {
+          return res.status(400).json(lowAccuracyErrorBody(accuracyMeters));
+        }
+        lowAccuracyPassed = true;
+      }
       if (hqLocationResult && !hqLocationResult.locationMatch && !isMismatchAccuracyExempt(accuracyMeters)) {
         if (!selfConfirmMismatch) {
           return res.status(400).json({
             success: false,
             error: {
               code: 'LOCATION_MISMATCH_BLOCKED',
-              message: `등록된 본사 위치에서 약 ${hqLocationResult.locationDistanceMeters}m 떨어져 있어 본사근무로 등록할 수 없습니다. 실제로 계신 곳에 맞는 근무형태(고객사작업 등)를 선택하거나, 지도에서 실제 위치를 확인하고 등록해주세요.`,
+              message: strictHere
+                ? `등록된 본사 위치에서 약 ${hqLocationResult.locationDistanceMeters}m 떨어져 있어요. 본사 건물 밖에서 지도로 현재 위치를 확인해 본사 근처로 맞춰야만 본사근무로 등록돼요. 본사가 아닌 곳이라면 실제 계신 곳에 맞는 상태(고객사작업 등)를 눌러주세요.`
+                : `등록된 본사 위치에서 약 ${hqLocationResult.locationDistanceMeters}m 떨어져 있어 본사근무로 등록할 수 없습니다. 실제로 계신 곳에 맞는 근무형태(고객사작업 등)를 선택하거나, 지도에서 실제 위치를 확인하고 등록해주세요.`,
               distanceMeters: hqLocationResult.locationDistanceMeters,
             },
           });
@@ -890,6 +1176,22 @@ attendanceRouter.post('/status', async (req, res) => {
               message: `처음 측정된 내 위치에서 ${hqConfirmCheck.distanceMeters}m 떨어져 있어 정정으로 인정되지 않습니다. 실제 계신 곳 근처에서 다시 시도해주세요.`,
             },
           });
+        }
+        // 2026-10-12: 엄격 모드 — 지도로 보정한 위치도 본사 반경 안이어야만 "일치"로 인정해 등록한다(출근 버튼과 같은 원칙).
+        // 반경 밖이면 불일치인 채로 등록되지 않는다.
+        if (strictHere) {
+          const hqCorrectedCheck = checkLocationMatch(confirmedLocation, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS);
+          if (!hqCorrectedCheck || !hqCorrectedCheck.locationMatch) {
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'LOCATION_CORRECTION_NOT_AT_TARGET',
+                message: `지도에서 확인한 위치도 본사에서 약 ${hqCorrectedCheck?.locationDistanceMeters ?? 0}m 떨어져 있어 본사근무로 등록할 수 없어요. 본사에 도착한 뒤 다시 시도하거나, 실제 계신 곳에 맞는 상태(고객사작업·재택 등)를 눌러주세요.`,
+              },
+            });
+          }
+          hqLocationResult = { locationMatch: true, locationDistanceMeters: hqCorrectedCheck.locationDistanceMeters };
+          strictMapCorrected = true;
         }
         // selfConfirmMismatch 검증을 통과했으니 등록은 계속 진행한다 — hqLocationResult는 그대로
         // 두어(locationMatch=false 유지) 관리자 화면에 "위치 불일치"로 계속 보이게 한다(아래
@@ -910,15 +1212,13 @@ attendanceRouter.post('/status', async (req, res) => {
             OR: [{ locationCaptureStatus: null }, { locationCaptureStatus: { notIn: ['OK'] } }],
           },
         });
-        if (priorHqLocationFailures >= 1) {
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'LOCATION_REQUIRED',
-              message: '오늘 이미 한 번 위치 확인 없이 본사근무로 등록하셨어요. 이번엔 위치 접근을 허용한 뒤 다시 시도해주세요.',
-            },
-          });
+        // 2026-10-11: "무조건 위치 확인" 원칙 — 정책값 LOCATION_FAILURE_GRACE_COUNT(기본 0)만큼만 봐주고,
+        // 그 뒤에는 사유를 직접 적어야 등록된다(관리자 확인 대상).
+        const hqFailureDecision = await locationFailureGate(priorHqLocationFailures, locationFailureReason, strictHere);
+        if (hqFailureDecision === 'BLOCK') {
+          return res.status(400).json(locationFailureErrorBody('본사근무를 등록하려면', strictHere));
         }
+        if (hqFailureDecision === 'ALLOW_WITH_REASON') locationFailureNote = (locationFailureReason ?? '').trim();
       }
     }
   }
@@ -971,13 +1271,19 @@ attendanceRouter.post('/status', async (req, res) => {
   let locationMismatchException = false;
   if (LOCATION_CHECK_ELIGIBLE_STATUSES.has(status) && matchedClientForLocation?.latitude != null && matchedClientForLocation?.longitude != null) {
     if (locationResult && !locationResult.locationMatch) {
+      // 2026-10-12: 엄격 모드 — 오차범위가 1km를 넘는 측정으로는 불일치인 채로 어떤 경로로도 등록하지 않는다.
+      if (strictHere && isMismatchAccuracyExempt(accuracyMeters)) {
+        return res.status(400).json(lowAccuracyErrorBody(accuracyMeters, true));
+      }
       if (!isMismatchAccuracyExempt(accuracyMeters)) {
         if (!selfConfirmMismatch) {
           return res.status(400).json({
             success: false,
             error: {
               code: 'LOCATION_MISMATCH_BLOCKED',
-              message: `등록된 고객사 위치에서 약 ${locationResult.locationDistanceMeters}m 떨어져 있어 등록할 수 없습니다. 실제 그 자리에 계신 게 맞다면, 지도에서 지금 위치를 직접 확인하고 등록해주세요.`,
+              message: strictHere
+                ? `등록된 고객사 위치에서 약 ${locationResult.locationDistanceMeters}m 떨어져 있어요. 고객사 현장(건물 밖)에서 지도로 현재 위치를 확인해 고객사 위치와 맞춰야만 등록돼요.`
+                : `등록된 고객사 위치에서 약 ${locationResult.locationDistanceMeters}m 떨어져 있어 등록할 수 없습니다. 실제 그 자리에 계신 게 맞다면, 지도에서 지금 위치를 직접 확인하고 등록해주세요.`,
               distanceMeters: locationResult.locationDistanceMeters,
             },
           });
@@ -992,8 +1298,31 @@ attendanceRouter.post('/status', async (req, res) => {
             },
           });
         }
+        // 2026-10-12: 엄격 모드 — 지도로 보정한 위치도 그 고객사 반경 안이어야만 "일치"로 인정해 등록한다.
+        // 반경 밖이면 불일치인 채로 등록되지 않는다(고객사 등록 좌표가 틀렸다면 관리자가 좌표를 바로잡아야 한다).
+        if (strictHere) {
+          const clientCorrectedCheck = checkLocationMatch(confirmedLocation, matchedClientForLocation);
+          if (!clientCorrectedCheck || !clientCorrectedCheck.locationMatch) {
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'LOCATION_CORRECTION_NOT_AT_TARGET',
+                message: `지도에서 확인한 위치도 등록된 고객사 위치에서 약 ${clientCorrectedCheck?.locationDistanceMeters ?? 0}m 떨어져 있어 등록할 수 없어요. 고객사 현장에 도착한 뒤 다시 시도해주세요. 현장에 계신데도 계속 안 되면 관리자에게 고객사 위치 등록 확인을 요청해주세요.`,
+              },
+            });
+          }
+          locationResult = { locationMatch: true, locationDistanceMeters: clientCorrectedCheck.locationDistanceMeters };
+          strictMapCorrected = true;
+        }
       }
-      locationMismatchException = true;
+      if (isMismatchAccuracyExempt(accuracyMeters) && !selfConfirmMismatch) {
+        // 2026-10-11: 고객사 도착 확인도 본사와 같은 원칙 — GPS 오차가 1km를 넘으면 건물 밖에서 다시 측정한 뒤에만 통과.
+        if ((await lowAccuracyGate(accuracyMeters, outdoorRecheckCount)) === 'NEED_RECHECK') {
+          return res.status(400).json(lowAccuracyErrorBody(accuracyMeters));
+        }
+        lowAccuracyPassed = true;
+      }
+      if (!strictMapCorrected) locationMismatchException = true;
     }
     if (!locationResult) {
       const { start: dayStartForLocation, end: dayEndForLocation } = realDayWindow(todayDateOnly());
@@ -1015,15 +1344,12 @@ attendanceRouter.post('/status', async (req, res) => {
           OR: [{ locationCaptureStatus: null }, { locationCaptureStatus: { notIn: ['OK'] } }],
         },
       });
-      if (priorLocationFailures >= 1) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'LOCATION_REQUIRED',
-            message: '오늘 이미 한 번 위치 확인 없이 등록하셨어요. 이번엔 위치 접근을 허용한 뒤 고객사 현장에서 다시 시도해주세요.',
-          },
-        });
+      // 2026-10-11: 본사근무와 동일 — 위치를 못 구한 날의 봐주기는 정책값(기본 0회)만큼만, 이후엔 사유 입력으로만 통과.
+      const clientFailureDecision = await locationFailureGate(priorLocationFailures, locationFailureReason, strictHere);
+      if (clientFailureDecision === 'BLOCK') {
+        return res.status(400).json(locationFailureErrorBody('고객사 현장 도착을 등록하려면', strictHere));
       }
+      if (clientFailureDecision === 'ALLOW_WITH_REASON') locationFailureNote = (locationFailureReason ?? '').trim();
     }
   }
 
@@ -1060,7 +1386,7 @@ attendanceRouter.post('/status', async (req, res) => {
   // 같은 기준으로, 상태변경 로그도 새 줄을 추가하는 대신 방금 그 상태였던 로그를 그대로 갱신한다
   // — 두 테이블이 "같은 저장"을 서로 다르게(하나는 갱신, 하나는 새로 생성) 처리해 어긋나는 일이
   // 없도록 여기서 먼저 판단해두고, 아래 공수기록/야간작업 기록에도 그대로 적용한다.
-  let effortData: { workDate: Date; clientName: string; projectName: string; workType: string; startTime: Date; endTime: Date | null; description?: string; projectId?: string; taskId?: string } | null = null;
+  let effortData: { workDate: Date; clientName: string; projectName: string; workType: string; startTime: Date; endTime: Date | null; description?: string; projectId?: string; taskId?: string; contactId?: string | null; contactName?: string | null; contactPhone?: string | null } | null = null;
   let nightWorkTimes: { startTime: Date; endTime: Date | null; description?: string } | null = null;
   let isSessionResubmit = false;
   if (EFFORT_STATUSES.has(status) && effort) {
@@ -1122,6 +1448,28 @@ attendanceRouter.post('/status', async (req, res) => {
       projectId: linkedProject?.id,
       taskId: linkedProject && effort.taskId ? effort.taskId : undefined,
     };
+    // 2026-10-11: 고객사 담당자 저장 — (고객사, 이름)으로 DB에 보관해 다음번에 자동으로 불러온다. 저장에 실패해도
+    // 등록 자체는 막지 않는다(담당자 필수 여부는 위 missingDetailField에서 이미 확인함).
+    if (CONTACT_REQUIRED_STATUSES.has(status) && (effort.contactId || effort.contactName?.trim())) {
+      try {
+        const contact = await resolveContactForEffort({
+          userId,
+          clientId: effort.clientId,
+          clientName: effort.clientName,
+          contactId: effort.contactId,
+          contactName: effort.contactName,
+          contactPhone: effort.contactPhone,
+        });
+        if (contact) {
+          effortData.contactId = contact.contactId;
+          effortData.contactName = contact.contactName;
+          effortData.contactPhone = contact.contactPhone;
+        }
+      } catch (contactErr) {
+        // eslint-disable-next-line no-console
+        console.error('[ClientContact] 담당자 저장 실패(등록은 계속 진행):', contactErr);
+      }
+    }
     // 본사근무는 "완료"라는 개념이 없는 하루단위 상태라 이 판단 자체를 하지 않는다(기존과 동일).
     if (EFFORT_CONTINUATION_STATUSES.has(status)) {
       isSessionResubmit = await willUpdateExistingEffort(userId, status, effortData);
@@ -1144,9 +1492,12 @@ attendanceRouter.post('/status', async (req, res) => {
   const anyLocationMismatch = Boolean(
     (locationResult && !locationResult.locationMatch) || (hqLocationResult && !hqLocationResult.locationMatch)
   );
-  const finalNote = (anyLocationMismatch && selfConfirmMismatch)
-    ? `[위치 불일치 — 직원이 실제 위치를 직접 확인하고 등록함]${note ? ` ${note}` : ''}`
-    : note;
+  const noteTags: string[] = [];
+  if (anyLocationMismatch && selfConfirmMismatch) noteTags.push('[위치 불일치 — 직원이 실제 위치를 직접 확인하고 등록함]');
+  if (lowAccuracyPassed) noteTags.push('[GPS 정확도 낮음 — 건물 밖 재측정 후 등록]');
+  if (strictMapCorrected) noteTags.push('[GPS 위치 보정 — 직원이 지도에서 직접 확인함]');
+  if (locationFailureNote) noteTags.push(`[위치 확인 불가 — 사유: ${locationFailureNote}]`);
+  const finalNote = noteTags.length > 0 ? `${noteTags.join(' ')}${note ? ` ${note}` : ''}` : note;
   const statusLogFields = {
     status,
     note: finalNote,
@@ -1246,6 +1597,17 @@ attendanceRouter.post('/status', async (req, res) => {
       : await prisma.effortLog.create({ data: { userId, ...effortData, sourceStatus: status } });
   }
 
+  // 2026-10-11: 다른 상태로 바꾸거나 새 작업을 저장하면 이전의 "진행중" 고객사 작업을 자동으로 닫는다.
+  try {
+    await autoCloseOtherOpenEfforts(
+      userId,
+      effortLog ? { id: effortLog.id, sourceStatus: effortLog.sourceStatus, clientName: effortLog.clientName } : null
+    );
+  } catch (closeErr) {
+    // eslint-disable-next-line no-console
+    console.error('[AutoClose] 이전 진행중 작업 자동 마무리 실패(등록은 계속 진행):', closeErr);
+  }
+
   let nightWork = null;
   if (nightWorkTimes) {
     nightWork = await recordNightWork(userId, nightWorkTimes.startTime, nightWorkTimes.endTime, nightWorkTimes.description);
@@ -1265,7 +1627,7 @@ attendanceRouter.post('/status', async (req, res) => {
   }
 
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'status_change_log', targetId: log.id, afterValue: { log, effortLog, nightWork, businessTripLog } });
-  return res.json({ success: true, data: { statusLog: log, effortLog, nightWork, businessTripLog, locationMismatchException, undoable: statusLogCreatedNow } });
+  return res.json({ success: true, data: { statusLog: log, effortLog, nightWork, businessTripLog, locationMismatchException, locationMapCorrected: strictMapCorrected, undoable: statusLogCreatedNow } });
 });
 
 // 9개 상태 아이콘은 확인창 없이 눌리는 즉시 등록된다(2026-08 설계, "우선 등록 후 세부내용은
@@ -1316,8 +1678,24 @@ attendanceRouter.post('/status/undo', async (req, res) => {
   await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     if (effortLogId) {
       const effort = await tx.effortLog.findUnique({ where: { id: effortLogId } });
-      if (effort && effort.userId === userId) await tx.effortLog.delete({ where: { id: effortLogId } });
+      if (effort && effort.userId === userId) {
+        await tx.effortLog.delete({ where: { id: effortLogId } });
+        // 2026-10-11: 이 등록 때문에 자동으로 닫혔던 이전 기록(같은 고객사로 대체된 것)을 다시 연다.
+        await tx.effortLog.updateMany({
+          where: { userId, closedBy: 'SUPERSEDED', sourceStatus: effort.sourceStatus, clientName: effort.clientName, startTime: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
+          data: { endTime: null, minutes: null, actualMinutes: null, closedBy: null },
+        });
+      }
     }
+    // 이 등록 직전에 "상태 변경"으로 자동으로 닫힌 이전 작업(종료시각이 이 로그와 거의 같은 시각)을 다시 연다.
+    await tx.effortLog.updateMany({
+      where: {
+        userId,
+        closedBy: 'AUTO_STATUS_CHANGE',
+        endTime: { gte: new Date(log.changedAt.getTime() - 2 * 60_000), lte: new Date(log.changedAt.getTime() + 2 * 60_000) },
+      },
+      data: { endTime: null, minutes: null, actualMinutes: null, closedBy: null },
+    });
     if (businessTripLogId) {
       const trip = await tx.businessTripLog.findUnique({ where: { id: businessTripLogId } });
       if (trip && trip.userId === userId) await tx.businessTripLog.delete({ where: { id: businessTripLogId } });
@@ -1583,6 +1961,8 @@ attendanceRouter.post('/departure-suggest/dismiss', async (req, res) => {
 
 const effortDepartureConfirmSchema = z.object({
   estimatedEndAt: z.string().min(1),
+  // 2026-10-11: 고객사작업 외에 미팅·주말작업도 같은 방식으로 자동 마무리한다(기본 고객사작업).
+  status: z.enum(['CLIENT_WORK', 'CLIENT_MEETING', 'WEEKEND_WORK']).optional(),
 });
 
 /**
@@ -1608,9 +1988,14 @@ attendanceRouter.post('/effort-departure-confirm', async (req, res) => {
     return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '추정 종료시각 형식이 올바르지 않습니다.' } });
   }
 
-  const openEffort = await findOpenEffort(userId, 'CLIENT_WORK');
+  const departureStatus = parsed.data.status ?? 'CLIENT_WORK';
+  const openEffort = await findOpenEffort(userId, departureStatus);
   if (!openEffort) {
     return res.status(400).json({ success: false, error: { code: 'NOT_FOUND', message: '진행중인 고객사작업 기록을 찾을 수 없습니다.' } });
+  }
+  // 2026-10-11: 미래 시각으로는 마무리할 수 없다(앱이 보낸 값을 그대로 믿지 않는다).
+  if (estimatedEndAt.getTime() > Date.now() + 60_000) {
+    return res.status(400).json({ success: false, error: { code: 'OUT_OF_RANGE', message: '추정 종료시각이 현재보다 뒤입니다.' } });
   }
   if (estimatedEndAt <= openEffort.startTime) {
     return res.status(400).json({ success: false, error: { code: 'OUT_OF_RANGE', message: '추정 종료시각이 시작시각보다 앞섭니다.' } });
@@ -1618,7 +2003,7 @@ attendanceRouter.post('/effort-departure-confirm', async (req, res) => {
 
   // recordEffort()는 같은 시작시각(endTime: null)의 "진행중" 기록을 그대로 찾아 갱신하므로
   // (effort-helpers.ts findResubmitTarget), 새 기록을 만들지 않고 이 건의 종료시간만 채운다.
-  const updatedEffort = await recordEffort(userId, 'CLIENT_WORK', {
+  const updatedEffort = await recordEffort(userId, departureStatus, {
     workDate: openEffort.workDate,
     clientName: openEffort.clientName,
     projectName: openEffort.projectName,
@@ -1626,6 +2011,9 @@ attendanceRouter.post('/effort-departure-confirm', async (req, res) => {
     startTime: openEffort.startTime,
     endTime: estimatedEndAt,
     description: openEffort.description ?? undefined,
+    projectId: openEffort.projectId ?? undefined,
+    taskId: openEffort.taskId ?? undefined,
+    closedBy: closedByFor('AWAY'),
   });
 
   const hhmm = estimatedEndAt.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });
@@ -1644,10 +2032,24 @@ attendanceRouter.post('/effort-departure-confirm', async (req, res) => {
     targetType: 'effort_log',
     targetId: updatedEffort.id,
     beforeValue: { endTime: null },
-    afterValue: { endTime: estimatedEndAt, autoDetected: true, movingStatusLogId: movingLog.id },
+    afterValue: { endTime: estimatedEndAt, autoDetected: true, closedBy: closedByFor('AWAY'), movingStatusLogId: movingLog.id },
   });
 
   return res.json({ success: true, data: { effortLog: updatedEffort, statusLog: movingLog } });
+});
+
+/**
+ * 2026-10-11: 앱이 열려 있는 동안 "아직 그 고객사 위치에 있음"을 확인한 순간을 기록한다(좌표는 보내지도 저장하지도 않고
+ * 시각만 남긴다). 퇴근 때 자동 마무리의 종료시각 근거로 쓰인다(autoCloseOpenEffortsAtClockOut).
+ */
+attendanceRouter.post('/effort-presence', async (req, res) => {
+  const userId = req.authUser!.userId;
+  const open = await findOpenAutoCloseEfforts(userId);
+  if (open.length === 0) return res.json({ success: true, data: { updated: 0 } });
+  // 가장 최근 시작한 진행중 기록 하나만 갱신한다(앱이 확인한 고객사는 현재 작업 중인 그곳이다).
+  const target = open[open.length - 1];
+  await prisma.effortLog.update({ where: { id: target.id }, data: { lastSeenAt: new Date() } });
+  return res.json({ success: true, data: { updated: 1 } });
 });
 
 /** 본인 오늘 근태 조회 (상태는 "오늘" 것만 — 며칠 지난 상태를 현재처럼 보여주지 않는다) */
@@ -1720,6 +2122,9 @@ attendanceRouter.get('/effort/in-progress', async (req, res) => {
       workType: open.workType,
       startTime: open.startTime,
       description: open.description ?? '',
+      contactId: open.contactId ?? null,
+      contactName: open.contactName ?? null,
+      contactPhone: open.contactPhone ?? null,
     },
   });
 });
@@ -1850,6 +2255,11 @@ attendanceRouter.post('/clients', async (req, res) => {
   const created = await prisma.client.create({ data: { name, address, latitude, longitude } });
   return res.json({ success: true, data: { id: created.id, name: created.name } });
 });
+
+// 2026-10-11: 고객사별 담당자 목록/등록(GET·POST /attendance/clients/:clientId/contacts)
+registerClientContactRoutes(attendanceRouter);
+// 2026-10-11: 관리자 "현장 기록 점검"(위치 예외·퇴근 위치·자동 마무리·입력 누락 + 과거 미종료 작업 추정 마무리)
+registerFieldCheckRoutes(attendanceRouter);
 
 /**
  * (관리자 리포트와 달리 본인 것만, 아무 권한이나 조회 가능)
