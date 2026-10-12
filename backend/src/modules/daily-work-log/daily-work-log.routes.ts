@@ -8,6 +8,7 @@ import { requireAuth, requireRole } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, realDayWindow } from '../../common/attendance-helpers';
 import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
+import { isMeaningfulPlan, PLAN_RULE_MESSAGE } from './work-log-rules';
 
 /**
  * 일일업무일지 모듈 (2026-09-26, 김형태 대표이사 요청 — "매일 업무 마감을 일일업무일지로").
@@ -107,7 +108,8 @@ export const dailyWorkLogInputSchema = z.object({
   // min(1)을 통과해 DB에 빈 문자열로 저장될 수 있었다 — trim 후 검증하도록 바꾼다.
   issues: z.string().trim().min(1, '이슈/특이사항을 입력해주세요.').max(2000),
   followUp: z.string().max(2000).optional(),
-  tomorrowPlan: z.string().trim().min(1, '내일 예정 업무를 입력해주세요.').max(2000),
+  // 2026-10-12: "."/"없음"/"미정" 같은 의미 없는 값을 막는다(work-log-rules.ts). 휴가·반차 등 짧지만 분명한 답은 허용.
+  tomorrowPlan: z.string().trim().min(1, '내일 예정 업무를 입력해주세요.').max(2000).refine(isMeaningfulPlan, PLAN_RULE_MESSAGE),
   supportRequest: z.string().max(2000).optional(),
   totalWorkedMinutes: z.number().int().min(0).optional(),
   actualEffortMinutes: z.number().int().min(0).optional(),

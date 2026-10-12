@@ -447,11 +447,17 @@ attendanceRouter.post('/clock-out', async (req, res) => {
   // 퇴근 처리된 상태로 남는 부분 반영을 막기 위함이다. 이슈/특이사항·내일 예정 업무는 필수다.
   const dailyWorkLogParsed = dailyWorkLogInputSchema.safeParse(req.body?.dailyWorkLog);
   if (!dailyWorkLogParsed.success) {
+    // 2026-10-12: 일지 객체는 왔는데 특정 칸(내일 예정 업무 글자 수 등)이 규칙에 안 맞으면 그 칸의 안내문을 그대로 보여준다.
+    const logObjectSent = typeof req.body?.dailyWorkLog === 'object' && req.body?.dailyWorkLog !== null;
+    const fieldIssue = logObjectSent
+      ? dailyWorkLogParsed.error.issues.find((i) => i.path[0] === 'issues' || i.path[0] === 'tomorrowPlan')
+      : undefined;
     return res.status(400).json({
       success: false,
       error: {
         code: 'WORK_LOG_REQUIRED',
         message:
+          fieldIssue?.message ??
           '오늘 업무일지(이슈/특이사항·내일 예정 업무)를 입력해야 퇴근이 확정됩니다. 화면을 새로고침한 뒤 다시 시도해주세요.',
       },
     });

@@ -49,7 +49,21 @@ let lastPendingDetailSentAt = new Map<string, number>();
 // 상황판의 "지금 확인이 필요한 직원" 목록에 계속 떠서 관리자 문의로 발견했다. 세부내용 미입력
 // 알림(PENDING_DETAIL)과 같은 패턴으로, 본인에게 먼저 확정을 재촉하는 게 근본 해결책이다.
 let lastProvisionalSentAt = new Map<string, number>();
+// 2026-10-12: 업무일지 로그 점검에서 "퇴근을 안 누르고 날짜가 넘어간" 기록(주로 오후 출근자)이 남아 있었다. 당일 퇴근
+// 알림(위)은 오늘 기록만 대상이라 다음 날이 되면 아무도 알려주지 않는다 — 지난 근무일 미퇴근 기록이 있는 직원에게
+// 4시간 간격으로 "퇴근 정정 신청"을 안내한다(시스템이 임의로 퇴근시각을 채우지 않는 원칙은 그대로).
+const UNCLOSED_PAST_REMINDER_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const UNCLOSED_PAST_LOOKBACK_DAYS = 14;
+let lastUnclosedPastSentAt = new Map<string, number>();
 let trackedDateKey: string | null = null;
+
+/** 지난 근무일 미퇴근 안내 문구 — 날짜는 workDate(UTC 자정으로 저장된 달력 날짜)를 그대로 M/D로 쓴다. */
+export function buildUnclosedPastReminderBody(dates: Date[]): string {
+  const sorted = [...dates].sort((a, b) => a.getTime() - b.getTime());
+  const fmt = (d: Date) => `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+  const which = sorted.length === 1 ? fmt(sorted[0]) : `${fmt(sorted[0])} 외 ${sorted.length - 1}건`;
+  return `지난 근무일(${which}) 퇴근 기록이 비어 있어요. 앱을 열어 '지난 근무일 퇴근 정정'을 신청해주세요. 그날의 업무일지(이슈·내일 예정 업무)도 함께 남겨주시면 됩니다.`;
+}
 
 function kstHourOf(now: Date): number {
   return (now.getUTCHours() + 9) % 24;
@@ -102,6 +116,7 @@ export function startClockInReminderScheduler() {
         lastStaleTransitSentAt = new Map();
         lastPendingDetailSentAt = new Map();
         lastProvisionalSentAt = new Map();
+        lastUnclosedPastSentAt = new Map();
       }
       if (kstHour >= QUIET_HOUR_KST || kstHour < 9) return; // 조용한 시간대엔 아무것도 안 보낸다.
       // 2026-09-14: 주말/공휴일엔 출근을 강요할 이유가 없으므로 이 틱 자체를 조용히 건너뛴다
@@ -174,6 +189,43 @@ export function startClockInReminderScheduler() {
           // eslint-disable-next-line no-console
           console.log(`[ClockOutReminder] 미퇴근 재알림 ${clockOutSentCount}명 발송`);
         }
+      }
+
+      // 2026-10-12: 지난 근무일에 출근만 찍고 퇴근 기록이 없는 직원에게 "퇴근 정정 신청"을 안내한다(4시간 간격).
+      // 이미 정정 신청이 승인 대기(PENDING)인 기록은 본인이 할 일을 끝낸 상태이므로 제외한다.
+      const unclosedLookbackStart = new Date(workDate.getTime() - UNCLOSED_PAST_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+      const unclosedPastRecords = await prisma.attendanceRecord.findMany({
+        where: {
+          userId: { in: activeUsers.map((u: { id: string }) => u.id) },
+          workDate: { lt: workDate, gte: unclosedLookbackStart },
+          clockInAt: { not: null },
+          clockOutAt: null,
+          correctionRequests: { none: { status: 'PENDING' } },
+        },
+        orderBy: { workDate: 'asc' },
+        select: { userId: true, workDate: true },
+      });
+      const unclosedByUser = new Map<string, Date[]>();
+      for (const r of unclosedPastRecords) {
+        const list = unclosedByUser.get(r.userId) ?? [];
+        list.push(r.workDate);
+        unclosedByUser.set(r.userId, list);
+      }
+      let unclosedPastSentCount = 0;
+      for (const [uid, dates] of unclosedByUser) {
+        const last = lastUnclosedPastSentAt.get(uid);
+        if (last && now.getTime() - last < UNCLOSED_PAST_REMINDER_INTERVAL_MS) continue;
+        lastUnclosedPastSentAt.set(uid, now.getTime());
+        unclosedPastSentCount++;
+        await sendPushToUser(uid, {
+          title: 'DSTI-TSB',
+          body: buildUnclosedPastReminderBody(dates),
+          url: '/',
+        });
+      }
+      if (unclosedPastSentCount > 0) {
+        // eslint-disable-next-line no-console
+        console.log(`[UnclosedPastReminder] 지난 근무일 미퇴근 안내 ${unclosedPastSentCount}명 발송`);
       }
 
       // 2026-09-04: "이동중" 상태가 정책값(기본 30분) 이상 그대로면, 도착 후 상태를 안 바꾼

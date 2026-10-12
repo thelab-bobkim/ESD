@@ -232,6 +232,32 @@ describe('POST /attendance/clock-out — 퇴근 위치와 자동 마무리', () 
   }
   const out = (body: any = {}) => request(app).post('/attendance/clock-out').send({ dailyWorkLog: dwl, ...body });
 
+  it('내일 예정 업무가 "없음" 같은 의미 없는 값이면 글자 수 안내와 함께 WORK_LOG_REQUIRED (근태는 건드리지 않음)', async () => {
+    policyHq();
+    setupOut({ status: 'HQ_WORKING', siteType: null });
+    const r = await out({ dailyWorkLog: { issues: '특이사항 없음', tomorrowPlan: '없음' } });
+    expect(r.status).toBe(400);
+    expect(r.body.error.code).toBe('WORK_LOG_REQUIRED');
+    expect(r.body.error.message).toContain('3글자');
+    expect(fns['attendanceRecord.update']).not.toHaveBeenCalled();
+  });
+
+  it('일지 객체 자체가 없으면 기존 안내문(새로고침 후 다시 시도)', async () => {
+    policyHq();
+    setupOut({ status: 'HQ_WORKING', siteType: null });
+    const r = await request(app).post('/attendance/clock-out').send({});
+    expect(r.status).toBe(400);
+    expect(r.body.error.code).toBe('WORK_LOG_REQUIRED');
+    expect(r.body.error.message).toContain('새로고침');
+  });
+
+  it('휴가처럼 짧지만 분명한 내일 예정 업무는 통과한다', async () => {
+    policyHq();
+    setupOut({ status: 'HQ_WORKING', siteType: null });
+    const r = await out({ dailyWorkLog: { issues: '특이사항 없음', tomorrowPlan: '휴가' } });
+    expect(r.body.error?.code).not.toBe('WORK_LOG_REQUIRED');
+  });
+
   it('본사근무로 퇴근하는데 위치도 사유도 없으면 LOCATION_REQUIRED_FOR_CLOCKOUT', async () => {
     policyHq();
     setupOut({ status: 'HQ_WORKING', siteType: null });

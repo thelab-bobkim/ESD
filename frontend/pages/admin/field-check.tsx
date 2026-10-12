@@ -12,10 +12,11 @@ import AdminHeader from '@/components/AdminHeader';
  *  - 자동 마무리: 직원이 끝내지 않아 시스템/관리자가 종료시각을 채운 건
  *  - 입력 누락: 작업내용/담당자가 비어 있는 건
  *  - 미종료 작업: 종료시각 없이 남은 과거 작업(추정 종료시각 미리보기 → 적용). 10시간을 넘는 건은 자동 적용하지 않는다.
+ *  - 퇴근·일지 점검(2026-10-12): 퇴근 기록이 비어 있는 지난 근무일(+정정 신청 상태)과, 퇴근은 됐는데 업무일지가 없는 날. 조회 전용.
  * 좌표는 화면에도 서버 응답에도 없다(거리·정확도·사유만).
  */
 
-type Tab = 'location' | 'clockout' | 'auto' | 'incomplete' | 'open';
+type Tab = 'location' | 'clockout' | 'auto' | 'incomplete' | 'open' | 'gaps';
 
 interface LocationRow { id: string; userName: string; status: string; changedAt: string; note: string | null; locationMatch: boolean | null; distanceMeters: number | null; accuracyMeters: number | null; siteType: string | null }
 interface ClockOutRow { id: string; userName: string; workDate: string; clockOutAt: string | null; place: string | null; locationMatch: boolean | null; distanceMeters: number | null; note: string | null }
@@ -24,6 +25,9 @@ interface IncompleteRow { id: string; userName: string; workDate: string; client
 interface ExceptionsData { locationExceptions: LocationRow[]; clockOutExceptions: ClockOutRow[]; autoClosed: AutoRow[]; incomplete: IncompleteRow[]; capped: boolean }
 interface OpenRow { id: string; userName: string; workDate: string; clientName: string | null; workType: string | null; sourceStatus: string | null; startTime: string; hasDescription: boolean; estimatedEnd: string | null; minutes: number | null; verdict: 'OK' | 'NO_NEXT' | 'TOO_LONG' | 'INVALID' }
 interface OpenData { items: OpenRow[]; capped: boolean; applicable: number }
+interface UnclosedRow { id: string; userName: string; workDate: string; clockInAt: string | null; dataSource: string; hasWorkLog: boolean; requestStatus: 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED'; requestedAt: string | null }
+interface NoLogRow { id: string; userName: string; workDate: string; clockOutAt: string | null; isCorrected: boolean }
+interface GapsData { unclosed: UnclosedRow[]; noLog: NoLogRow[]; capped: boolean }
 
 const STATUS_LABEL: Record<string, string> = {
   CLIENT_WORK: '고객사작업', CLIENT_MEETING: '고객사미팅', WEEKEND_WORK: '주말작업', NIGHT_WORK: '야간작업', HQ_WORKING: '본사근무',
@@ -33,6 +37,9 @@ const CLOSED_BY_LABEL: Record<string, string> = {
   AUTO_AWAY: '고객사에서 30분 이상 벗어남', AUTO_STATUS_CHANGE: '다른 상태로 변경하며 마무리', AUTO_CLOCKOUT: '퇴근하며 마무리', ADMIN_ESTIMATE: '관리자 추정 마무리',
 };
 const PLACE_LABEL: Record<string, string> = { HQ: '본사', CLIENT: '고객사', OTHER: '그 외 장소' };
+const REQUEST_STATUS_LABEL: Record<string, string> = {
+  NONE: '신청 안 함', PENDING: '승인 대기중', APPROVED: '승인됨(퇴근 반영 대기)', REJECTED: '반려됨(다시 신청 필요)',
+};
 const VERDICT_LABEL: Record<string, string> = { OK: '적용 가능', NO_NEXT: '근거 없음(다음 기록 없음)', TOO_LONG: '10시간 초과(직접 확인)', INVALID: '시간 이상' };
 
 function ymd(d: Date): string { return d.toISOString().slice(0, 10); }
@@ -63,6 +70,7 @@ export default function AdminFieldCheckPage() {
   const [to, setTo] = useState(today);
   const [data, setData] = useState<ExceptionsData | null>(null);
   const [openData, setOpenData] = useState<OpenData | null>(null);
+  const [gapsData, setGapsData] = useState<GapsData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
@@ -84,6 +92,9 @@ export default function AdminFieldCheckPage() {
       .catch((e) => { if (requestRef.current === id) handleErr(e); });
     apiFetch<OpenData>(`/attendance/admin/field-check/open-efforts?${qs}`)
       .then((d) => { if (requestRef.current === id) { setOpenData(d); setSelected(new Set()); setConfirming(false); } })
+      .catch((e) => { if (requestRef.current === id) handleErr(e); });
+    apiFetch<GapsData>(`/attendance/admin/field-check/attendance-gaps?${qs}`)
+      .then((d) => { if (requestRef.current === id) setGapsData(d); })
       .catch((e) => { if (requestRef.current === id) handleErr(e); });
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -125,6 +136,7 @@ export default function AdminFieldCheckPage() {
     auto: data?.autoClosed.length ?? 0,
     incomplete: data?.incomplete.length ?? 0,
     open: openData?.items.length ?? 0,
+    gaps: (gapsData?.unclosed.length ?? 0) + (gapsData?.noLog.length ?? 0),
   };
   const TABS: { key: Tab; label: string }[] = [
     { key: 'location', label: '위치 예외' },
@@ -132,6 +144,7 @@ export default function AdminFieldCheckPage() {
     { key: 'auto', label: '자동 마무리' },
     { key: 'incomplete', label: '입력 누락' },
     { key: 'open', label: '미종료 작업' },
+    { key: 'gaps', label: '퇴근·일지 점검' },
   ];
 
   return (
@@ -270,6 +283,64 @@ export default function AdminFieldCheckPage() {
             </div>
           )}
         </div>
+      )}
+
+      {tab === 'gaps' && (
+        <>
+          <div className="card">
+            <h2>퇴근 기록이 비어 있는 지난 근무일 ({gapsData?.unclosed.length ?? 0}건)</h2>
+            <p style={{ fontSize: 12.5, color: '#868e96', marginTop: 0 }}>
+              출근만 찍고 퇴근 기록 없이 날짜가 넘어간 건입니다(주로 오후 출근자). 시스템이 퇴근시각을 임의로 채우지 않으며, 본인에게 푸시 알림이 가고 본인이 &quot;지난 근무일 퇴근 정정&quot;을 신청해야 합니다.
+              승인 대기중인 건은 팀장/인사 승인이 필요합니다.
+            </p>
+            {!gapsData && <div className="board-empty">불러오는 중...</div>}
+            {gapsData && gapsData.unclosed.length === 0 && <div className="board-empty">해당 기간에 퇴근이 비어 있는 지난 근무일이 없습니다.</div>}
+            {gapsData && gapsData.unclosed.length > 0 && (
+              <div className="table-scroll">
+                <table style={{ minWidth: 700 }}>
+                  <thead><tr><th>날짜</th><th>이름</th><th>출근</th><th>정정 신청</th><th>업무일지</th></tr></thead>
+                  <tbody>
+                    {gapsData.unclosed.map((r) => (
+                      <tr key={r.id}>
+                        <td style={{ whiteSpace: 'nowrap' }}>{r.workDate}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>{r.userName}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>{kstTime(r.clockInAt)}</td>
+                        <td style={{ whiteSpace: 'nowrap', color: r.requestStatus === 'PENDING' ? undefined : '#e8590c' }}>{REQUEST_STATUS_LABEL[r.requestStatus] ?? r.requestStatus}</td>
+                        <td style={{ whiteSpace: 'nowrap', color: r.hasWorkLog ? undefined : '#e8590c' }}>{r.hasWorkLog ? '있음' : '없음'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <div className="card">
+            <h2>퇴근은 했는데 업무일지가 없는 날 ({gapsData?.noLog.length ?? 0}건)</h2>
+            <p style={{ fontSize: 12.5, color: '#868e96', marginTop: 0 }}>
+              앱에서 퇴근 처리됐지만 그 날의 업무일지가 없는 기록입니다(다우오피스 동기화분은 제외). 이 기능 적용 전에 정정으로 닫힌 날이 여기에 나타날 수 있어요.
+            </p>
+            {!gapsData && <div className="board-empty">불러오는 중...</div>}
+            {gapsData && gapsData.noLog.length === 0 && <div className="board-empty">일지가 빠진 날이 없습니다.</div>}
+            {gapsData && gapsData.noLog.length > 0 && (
+              <div className="table-scroll">
+                <table style={{ minWidth: 560 }}>
+                  <thead><tr><th>날짜</th><th>이름</th><th>퇴근</th><th>구분</th></tr></thead>
+                  <tbody>
+                    {gapsData.noLog.map((r) => (
+                      <tr key={r.id}>
+                        <td style={{ whiteSpace: 'nowrap' }}>{r.workDate}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>{r.userName}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>{kstTime(r.clockOutAt)}</td>
+                        <td>{r.isCorrected ? '퇴근 정정으로 마감' : '일반 퇴근'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          {gapsData?.capped && <div className="notice-inline-orange">⚠️ 일부 목록이 잘렸어요. 기간을 줄여서 보세요.</div>}
+        </>
       )}
 
       {tab === 'open' && (

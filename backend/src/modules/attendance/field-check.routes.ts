@@ -204,4 +204,61 @@ export function registerFieldCheckRoutes(router: any) {
       },
     });
   });
+
+  /**
+   * 2026-10-12: "퇴근·일지 점검" — 업무일지 로그 점검에서 드러난 두 가지를 한 곳에서 본다.
+   *  1) 지난 근무일에 출근만 있고 퇴근이 비어 있는 기록(주로 오후 출근자) + 본인이 정정 신청을 했는지(상태).
+   *  2) 퇴근은 처리됐는데 그 날 업무일지가 없는 기록(정정 경로로 닫힌 날 등) — 다우오피스 동기화분은 앱 퇴근이 아니므로 제외한다.
+   * 시스템이 임의로 퇴근시각을 채우지 않는다(조회 전용). 기본 조회 기간은 최근 14일.
+   */
+  router.get('/admin/field-check/attendance-gaps', requireRole(...viewRoles), async (req: any, res: any) => {
+    const today = todayDateOnly();
+    const defaultFrom = ymd(new Date(today.getTime() - 13 * 86_400_000));
+    const range = parseRange(req.query, defaultFrom);
+    if (!range) return badRange(res);
+    const userFilter = { employmentStatus: 'ACTIVE' as const, name: { not: { startsWith: 'SAMPLE_' } } };
+
+    const [unclosedRows, clockedOutRows, logRows] = await Promise.all([
+      prisma.attendanceRecord.findMany({
+        where: { workDate: { gte: range.from, lte: range.to, lt: today }, clockInAt: { not: null }, clockOutAt: null, user: userFilter },
+        orderBy: [{ workDate: 'desc' }],
+        take: ROW_CAP,
+        select: {
+          id: true, userId: true, workDate: true, clockInAt: true, dataSource: true, user: { select: { name: true } },
+          correctionRequests: { orderBy: { createdAt: 'desc' }, take: 1, select: { status: true, createdAt: true } },
+        },
+      }),
+      prisma.attendanceRecord.findMany({
+        where: { workDate: { gte: range.from, lte: range.to }, clockOutAt: { not: null }, dataSource: 'MANUAL', user: userFilter },
+        orderBy: [{ workDate: 'desc' }],
+        take: 12000,
+        select: { id: true, userId: true, workDate: true, clockOutAt: true, isCorrected: true, user: { select: { name: true } } },
+      }),
+      prisma.dailyWorkLog.findMany({
+        where: { workDate: { gte: range.from, lte: range.to } },
+        take: 12000,
+        select: { userId: true, workDate: true },
+      }),
+    ]);
+
+    const logKeys = new Set((logRows as any[]).map((l) => `${l.userId}|${ymd(l.workDate)}`));
+    const unclosed = (unclosedRows as any[]).map((r) => {
+      const latest = r.correctionRequests?.[0] ?? null;
+      return {
+        id: r.id, userName: r.user?.name ?? '', workDate: ymd(r.workDate), clockInAt: r.clockInAt, dataSource: r.dataSource,
+        hasWorkLog: logKeys.has(`${r.userId}|${ymd(r.workDate)}`),
+        requestStatus: latest ? latest.status : 'NONE',
+        requestedAt: latest ? latest.createdAt : null,
+      };
+    });
+    const noLogAll = (clockedOutRows as any[]).filter((r) => !logKeys.has(`${r.userId}|${ymd(r.workDate)}`));
+    const noLog = noLogAll.slice(0, ROW_CAP).map((r) => ({
+      id: r.id, userName: r.user?.name ?? '', workDate: ymd(r.workDate), clockOutAt: r.clockOutAt, isCorrected: !!r.isCorrected,
+    }));
+
+    return res.json({
+      success: true,
+      data: { unclosed, noLog, capped: unclosed.length >= ROW_CAP || noLogAll.length > ROW_CAP },
+    });
+  });
 }

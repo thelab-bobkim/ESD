@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { apiFetch } from '@/lib/api';
+import { isMeaningfulPlan, PLAN_RULE_MESSAGE } from '@/lib/work-log-rules';
 
 // TSB-Ver3.1: 자주 나오는 정정 사유를 칩으로 먼저 보여준다 — 실제 DB에 쌓인 사유 표본을 보면
 // "퇴근 버튼 누락" 계열이 압도적으로 많았고, 자유서술만 강제하니 오타/비정형 문구가 많았다
@@ -15,6 +16,8 @@ export interface PendingCorrectionRow {
   attendanceRecordId: string;
   workDate: string;
   clockInAt: string;
+  // 2026-10-12: 그 날의 업무일지가 이미 있는지. false면 정정 신청 때 일지(이슈/특이사항 + 내일 예정 업무)를 함께 받는다.
+  hasWorkLog?: boolean;
   latestRequest: { id: string; status: string; proposedClockOutAt: string; reason: string } | null;
 }
 
@@ -41,6 +44,9 @@ function defaultProposedClockOut(clockInIso: string): string {
 function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubmitted: () => void }) {
   const [proposedClockOutAt, setProposedClockOutAt] = useState(defaultProposedClockOut(row.clockInAt));
   const [reason, setReason] = useState('');
+  const [issues, setIssues] = useState('');
+  const [tomorrowPlan, setTomorrowPlan] = useState('');
+  const needsWorkLog = row.hasWorkLog === false;
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,6 +64,16 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
       setError('사유를 10자 이상 입력해주세요.');
       return;
     }
+    if (needsWorkLog) {
+      if (!issues.trim()) {
+        setError('그 날의 이슈/특이사항을 입력해주세요. (없으면 "특이사항 없음"처럼 적어주세요)');
+        return;
+      }
+      if (!isMeaningfulPlan(tomorrowPlan)) {
+        setError(tomorrowPlan.trim() ? PLAN_RULE_MESSAGE : '그 다음 날 예정이었던 업무를 입력해주세요.');
+        return;
+      }
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -67,6 +83,7 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
           attendanceRecordId: row.attendanceRecordId,
           proposedClockOutAt: new Date(proposedClockOutAt).toISOString(),
           reason: reason.trim(),
+          ...(needsWorkLog ? { dailyWorkLog: { issues: issues.trim(), tomorrowPlan: tomorrowPlan.trim() } } : {}),
         }),
       });
       onSubmitted();
@@ -118,6 +135,30 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
         value={reason}
         onChange={(e) => setReason(e.target.value)}
       />
+      {needsWorkLog && (
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px dashed #4a3a12' }}>
+          <div style={{ fontSize: 13, color: '#fbbf24', fontWeight: 600 }}>📝 그 날의 업무일지도 함께 남겨주세요</div>
+          <div style={{ fontSize: 12, color: '#9aa5c3', marginTop: 2 }}>정상 퇴근할 때와 같이, 퇴근 정정을 신청할 때도 업무일지가 필요해요.</div>
+          <label style={{ display: 'block', fontSize: 13, color: '#9aa5c3', marginTop: 8 }}>
+            이슈/특이사항 <span style={{ color: '#f87171' }}>*</span>
+            <textarea
+              style={{ width: '100%', marginTop: 4, minHeight: 50 }}
+              placeholder="그 날 있었던 이슈나 특이사항 (없으면 '특이사항 없음')"
+              value={issues}
+              onChange={(e) => setIssues(e.target.value)}
+            />
+          </label>
+          <label style={{ display: 'block', fontSize: 13, color: '#9aa5c3', marginTop: 8 }}>
+            내일 예정 업무 <span style={{ color: '#f87171' }}>*</span>
+            <textarea
+              style={{ width: '100%', marginTop: 4, minHeight: 50 }}
+              placeholder="그 날 기준 다음 근무일 예정 업무 (3글자 이상, 쉬는 날이면 '휴가')"
+              value={tomorrowPlan}
+              onChange={(e) => setTomorrowPlan(e.target.value)}
+            />
+          </label>
+        </div>
+      )}
       {error && <div style={{ color: '#f87171', fontSize: 12, marginTop: 4 }}>{error}</div>}
       <button style={{ marginTop: 8 }} disabled={submitting} onClick={submit}>
         {submitting ? '신청 중...' : '정정 신청'}

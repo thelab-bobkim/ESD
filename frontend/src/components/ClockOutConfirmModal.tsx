@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getCurrentLocationDetailed, locationFailureLabel, isLowAccuracy, accuracyWarningLabel, LOCATION_JUMP_WARNING, type LocationCaptureResult } from '@/lib/geolocation';
 import SlideToConfirm from '@/components/SlideToConfirm';
+import { isMeaningfulPlan, PLAN_RULE_MESSAGE } from '@/lib/work-log-rules';
 import { apiFetch } from '@/lib/api';
 
 interface Props {
@@ -161,7 +162,9 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
   // 이상치(순간이동) 감지 시 퇴근 확정을 막고 재측정을 유도한다(2026-09 요청 — 등록 차단).
   const jumpDetected = locationResult !== 'checking' && locationResult.jumpDetected;
   const unloggedGapRequired = !!draft?.unloggedGap;
-  const workLogMissing = !issues.trim() || !tomorrowPlan.trim() || (unloggedGapRequired && !unloggedGapReason.trim());
+  // 2026-10-12: 내일 예정 업무는 "."/"없음"/"미정" 같은 의미 없는 값을 받지 않는다(3글자 이상, 휴가·반차 등은 예외).
+  const planInvalid = !isMeaningfulPlan(tomorrowPlan);
+  const workLogMissing = !issues.trim() || planInvalid || (unloggedGapRequired && !unloggedGapReason.trim());
 
   // 2026-09-16: 슬라이더(SlideToConfirm)의 onConfirm은 반환값이 false면 손잡이를 원위치로
   // 되돌리고 확정 처리하지 않는다 — 조기퇴근 사유 미입력처럼 아직 확정하면 안 되는 경우 그대로
@@ -361,14 +364,14 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
           )}
 
           <div style={{ marginBottom: 10 }}>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: showWorkLogError && !tomorrowPlan.trim() ? '#f87171' : '#fbbf24', marginBottom: 4 }}>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: showWorkLogError && planInvalid ? '#f87171' : '#fbbf24', marginBottom: 4 }}>
               내일 예정 업무 *
             </label>
             <textarea
               value={tomorrowPlan}
               onChange={(e) => { setTomorrowPlan(e.target.value); setShowWorkLogError(false); }}
-              placeholder="예: OO고객사 정기점검, XX건 이어서 진행"
-              style={{ ...textareaStyle, border: `1px solid ${showWorkLogError && !tomorrowPlan.trim() ? '#ef4444' : '#212a45'}` }}
+              placeholder="예: OO고객사 정기점검, XX건 이어서 진행 (3글자 이상 · 쉬는 날은 '휴가')"
+              style={{ ...textareaStyle, border: `1px solid ${showWorkLogError && planInvalid ? '#ef4444' : '#212a45'}` }}
             />
           </div>
 
@@ -381,7 +384,9 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
 
           {showWorkLogError && workLogMissing && (
             <div style={{ fontSize: 12, color: '#f87171', marginTop: 4 }}>
-              이슈/특이사항과 내일 예정 업무{unloggedGapRequired ? ', 그리고 위 공백시간 사유' : ''}는 반드시 입력해야 퇴근이 확정돼요.
+              {issues.trim() && tomorrowPlan.trim() && planInvalid
+                ? PLAN_RULE_MESSAGE
+                : `이슈/특이사항과 내일 예정 업무${unloggedGapRequired ? ', 그리고 위 공백시간 사유' : ''}는 반드시 입력해야 퇴근이 확정돼요.`}
             </div>
           )}
         </div>

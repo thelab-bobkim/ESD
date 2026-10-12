@@ -4,6 +4,7 @@ import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush, isIOSDevice, isStandalonePWA } from '@/lib/push';
 import { getCurrentLocationWithStatus, distanceMeters, reverseGeocode, isLowAccuracy, accuracyWarningLabel, LOCATION_JUMP_WARNING } from '@/lib/geolocation';
+import { findNearbyOtherClients, distanceToNamedClient, formatDistance, applyClientSwitchToBody } from '@/lib/client-switch';
 import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greetings';
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
@@ -120,6 +121,23 @@ interface ContactOption { id: string; name: string; phone: string | null; depart
 // 위치 안내창: GPS 오차가 큼(건물 밖에서 재측정) / 위치를 못 구함(재측정 또는 사유 입력) / 첫 출근 등록은 재측정만.
 type LocationPromptState = { kind: 'GPS_LOW' | 'NO_LOCATION' | 'NO_LOCATION_START'; message: string };
 type LocationPromptAnswer = { action: 'RETRY' } | { action: 'REASON'; reason: string } | { action: 'CANCEL' };
+// 2026-10-12: 위치가 선택한 고객사와 맞지 않는데 가까운 곳에 다른 지점이 등록돼 있을 때, 정중하게 바꿔 등록할지 묻는 안내창.
+type ClientSwitchAnswer =
+  | { action: 'SWITCH'; name: string; clientId?: string; contact?: { contactId?: string; contactName?: string; contactPhone?: string } }
+  | { action: 'MAP' }
+  | { action: 'CANCEL' };
+interface ClientSwitchPromptState {
+  selected: string;
+  selectedDistanceMeters: number | null;
+  options: { name: string; distanceMeters: number }[];
+  needsContact: boolean;
+  chosen: { name: string; clientId?: string } | null;
+  contacts: ContactOption[];
+  contactsLoading: boolean;
+  contactChoice: string;
+  contactName: string;
+  contactPhone: string;
+}
 
 // 부서별로 (1) 9개 상태 아이콘 중 실제로 보여줄 것, (2) 그중 등록만 하고 세부입력폼은 아예
 // 열지 않을 것을 다르게 설정한다(2026-09-04, 경영관리부 요청 — "본사출근은 확인만 하면 되고,
@@ -576,6 +594,8 @@ export default function EmployeeHome() {
   const [locationPrompt, setLocationPrompt] = useState<LocationPromptState | null>(null);
   const [locationPromptReason, setLocationPromptReason] = useState('');
   const locationPromptResolverRef = useRef<((a: LocationPromptAnswer) => void) | null>(null);
+  const [clientSwitchPrompt, setClientSwitchPrompt] = useState<ClientSwitchPromptState | null>(null);
+  const clientSwitchResolverRef = useRef<((a: ClientSwitchAnswer) => void) | null>(null);
   const [progressStage, setProgressStage] = useState('');
   // 2026-09-14: 고객사미팅/고객사작업 폼 입력항목이 너무 많다는 의견 — 필수가 아닌 항목
   // (프로젝트명/완료시간/작업인원)은 기본으로 접어두고, 필요할 때만 펼쳐서 입력하게 한다.
@@ -1043,6 +1063,7 @@ export default function EmployeeHome() {
    */
   async function withMismatchConfirm<T>(code: string, body: Record<string, unknown>, submit: () => Promise<T>): Promise<T> {
     // 2026-10-11: 위치 관련 서버 응답(GPS 오차 큼 / 위치 없음)은 안내창으로 풀고 같은 요청을 다시 보낸다(최대 5회).
+    let clientSwitchAsked = 0;
     for (let attempt = 0; ; attempt++) {
       try {
         return await submit();
@@ -1056,6 +1077,41 @@ export default function EmployeeHome() {
         };
         if (errCode === 'LOCATION_MISMATCH_BLOCKED') {
           const loc = body.location as { lat: number; lng: number } | undefined;
+          // 2026-10-12: 지금 계신 곳 근처에 "다른 지점"이 등록돼 있으면(예: 코스콤 ↔ 코스콤 부산센터) 작은 화면에서
+          // 비슷한 이름을 잘못 누른 경우일 수 있으니, 지도부터 띄우지 않고 먼저 정중하게 바꿔 등록할지 묻는다.
+          const effortForSwitch = body.effort as Record<string, unknown> | undefined;
+          const selectedClient = typeof effortForSwitch?.clientName === 'string' ? effortForSwitch.clientName.trim() : '';
+          if (loc && selectedClient && clientSwitchAsked < 2) {
+            const nearby = findNearbyOtherClients(loc, selectedClient, clientLocations);
+            if (nearby.length > 0) {
+              clientSwitchAsked += 1;
+              const needsContact = Boolean(effortForSwitch?.contactId || (typeof effortForSwitch?.contactName === 'string' && effortForSwitch.contactName.trim()));
+              const answer = await askClientSwitch({
+                selected: selectedClient,
+                selectedDistanceMeters: distanceToNamedClient(loc, selectedClient, clientLocations),
+                options: nearby,
+                needsContact,
+                chosen: null,
+                contacts: [],
+                contactsLoading: false,
+                contactChoice: '',
+                contactName: '',
+                contactPhone: '',
+              });
+              if (answer.action === 'SWITCH') {
+                applyClientSwitchToBody(body, selectedClient, answer);
+                setMessage(`📍 '${answer.name}'(으)로 바꿔서 다시 등록하고 있어요. 잠시만 기다려주세요...`);
+                setMessageIsError(false);
+                continue;
+              }
+              if (answer.action === 'CANCEL') {
+                setMessage('등록하지 않았어요. 고객사를 다시 확인한 뒤 등록해 주세요.');
+                setMessageIsError(true);
+                throw makeSilent();
+              }
+              // MAP: 아래의 지도 확인 흐름을 그대로 이어간다.
+            }
+          }
           if (loc) {
             setLocationCorrectionError(errMessage);
             setLocationCorrection({ code, body, lat: loc.lat, lng: loc.lng, blocked: true });
@@ -1096,6 +1152,52 @@ export default function EmployeeHome() {
     locationPromptResolverRef.current = null;
     setLocationPrompt(null);
     resolver?.(a);
+  }
+
+  /** 위치 불일치 시 "가까운 다른 지점으로 바꿔 등록할까요?" 안내창을 띄우고 직원의 선택을 기다린다. */
+  function askClientSwitch(p: ClientSwitchPromptState): Promise<ClientSwitchAnswer> {
+    setClientSwitchPrompt(p);
+    return new Promise((resolve) => { clientSwitchResolverRef.current = resolve; });
+  }
+  function answerClientSwitch(a: ClientSwitchAnswer) {
+    const resolver = clientSwitchResolverRef.current;
+    clientSwitchResolverRef.current = null;
+    setClientSwitchPrompt(null);
+    resolver?.(a);
+  }
+  /** 후보 지점을 눌렀을 때 — 담당자가 필요한 등록이면 그 지점의 담당자를 먼저 고르게 하고, 아니면 바로 바꿔 등록한다. */
+  async function chooseClientSwitchOption(name: string) {
+    const current = clientSwitchPrompt;
+    if (!current) return;
+    const id = clientOptions.find((c) => c.name.trim().toLowerCase() === name.trim().toLowerCase())?.id;
+    if (!current.needsContact) {
+      answerClientSwitch({ action: 'SWITCH', name, clientId: id });
+      return;
+    }
+    setClientSwitchPrompt({ ...current, chosen: { name, clientId: id }, contacts: [], contactsLoading: Boolean(id), contactChoice: '', contactName: '', contactPhone: '' });
+    if (!id) {
+      setClientSwitchPrompt((prev) => (prev && prev.chosen?.name === name ? { ...prev, contactsLoading: false, contactChoice: NEW_CONTACT_VALUE } : prev));
+      return;
+    }
+    try {
+      const rows = await apiFetch<ContactOption[]>(`/attendance/clients/${id}/contacts`);
+      setClientSwitchPrompt((prev) => (prev && prev.chosen?.name === name
+        ? { ...prev, contacts: rows, contactsLoading: false, contactChoice: rows.length > 0 ? rows[0].id : NEW_CONTACT_VALUE }
+        : prev));
+    } catch {
+      setClientSwitchPrompt((prev) => (prev && prev.chosen?.name === name ? { ...prev, contactsLoading: false, contactChoice: NEW_CONTACT_VALUE } : prev));
+    }
+  }
+  function confirmClientSwitchContact() {
+    const p = clientSwitchPrompt;
+    if (!p?.chosen) return;
+    const saved = p.contactChoice && p.contactChoice !== NEW_CONTACT_VALUE ? p.contacts.find((c) => c.id === p.contactChoice) : undefined;
+    if (saved) {
+      answerClientSwitch({ action: 'SWITCH', name: p.chosen.name, clientId: p.chosen.clientId, contact: { contactId: saved.id } });
+      return;
+    }
+    if (!p.contactName.trim()) return;
+    answerClientSwitch({ action: 'SWITCH', name: p.chosen.name, clientId: p.chosen.clientId, contact: { contactName: p.contactName.trim(), contactPhone: p.contactPhone.trim() || undefined } });
   }
 
   /** 상태 등록 요청(body)의 위치 필드를 현재 위치로 다시 채운다(재측정 안내 후 호출). */
@@ -2156,6 +2258,92 @@ export default function EmployeeHome() {
                   사유 입력하고 등록
                 </button>
               </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {clientSwitchPrompt && (
+        // 2026-10-12: 선택한 고객사와 위치가 맞지 않는데 근처에 다른 지점이 등록돼 있을 때의 안내창 — 비슷한 이름을
+        // 잘못 눌렀을 수 있다는 점을 정중하게 알리고, 한 번에 바꿔 등록하거나 지도로 직접 확인하게 한다.
+        <div className="quick-confirm-backdrop">
+          <div className="card quick-confirm-sheet" style={{ border: '1px solid #4dabf7', maxHeight: '88vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            {!clientSwitchPrompt.chosen ? (
+              <>
+                📍 위치를 한 번 더 확인해 주세요
+                <div className="board-empty" style={{ marginTop: 6, marginBottom: 0, lineHeight: 1.6 }}>
+                  선택하신 고객사 &apos;{clientSwitchPrompt.selected}&apos;의 등록 위치
+                  {clientSwitchPrompt.selectedDistanceMeters != null ? `는 지금 계신 곳에서 ${formatDistance(clientSwitchPrompt.selectedDistanceMeters)} 떨어져 있어요.` : '와 지금 계신 곳이 맞지 않아요.'}
+                  {' '}대신 지금 계신 곳은 아래 고객사 근처로 확인돼요. 화면이 작아 비슷한 이름이 선택되었을 수 있어요. 아래에서 맞는 곳을 눌러 주시면 바꿔서 등록해 드릴게요.
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                  {clientSwitchPrompt.options.map((o) => (
+                    <button key={o.name} style={{ width: '100%', margin: 0, whiteSpace: 'normal' }} onClick={() => chooseClientSwitchOption(o.name)}>
+                      ✅ &apos;{o.name}&apos;(으)로 바꿔서 등록 <span style={{ opacity: 0.8 }}>({formatDistance(o.distanceMeters)} 거리)</span>
+                    </button>
+                  ))}
+                  <button className="secondary" style={{ width: '100%', margin: 0, whiteSpace: 'normal' }} onClick={() => answerClientSwitch({ action: 'MAP' })}>
+                    아니요, 지도에서 직접 위치를 확인할게요
+                  </button>
+                  <button className="secondary" style={{ width: '100%', margin: 0 }} onClick={() => answerClientSwitch({ action: 'CANCEL' })}>
+                    취소
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                👤 &apos;{clientSwitchPrompt.chosen.name}&apos;의 담당자를 알려 주세요
+                <div className="board-empty" style={{ marginTop: 6, marginBottom: 8, lineHeight: 1.6 }}>
+                  고객사가 바뀌어 담당자도 다시 확인이 필요해요. (필수)
+                </div>
+                {clientSwitchPrompt.contactsLoading ? (
+                  <div className="board-empty">담당자 목록을 불러오는 중이에요...</div>
+                ) : (
+                  <>
+                    {clientSwitchPrompt.contacts.length > 0 && (
+                      <select
+                        className="field-select"
+                        value={clientSwitchPrompt.contactChoice}
+                        onChange={(e) => setClientSwitchPrompt((prev) => (prev ? { ...prev, contactChoice: e.target.value } : prev))}
+                      >
+                        {clientSwitchPrompt.contacts.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}{c.phone ? ` (${c.phone})` : ''}</option>
+                        ))}
+                        <option value={NEW_CONTACT_VALUE}>+ 새 담당자 직접 입력</option>
+                      </select>
+                    )}
+                    {clientSwitchPrompt.contactChoice === NEW_CONTACT_VALUE && (
+                      <>
+                        <input
+                          value={clientSwitchPrompt.contactName}
+                          maxLength={50}
+                          onChange={(e) => setClientSwitchPrompt((prev) => (prev ? { ...prev, contactName: e.target.value } : prev))}
+                          placeholder="담당자 이름 (예: 김과장)"
+                        />
+                        <input
+                          value={clientSwitchPrompt.contactPhone}
+                          maxLength={30}
+                          inputMode="tel"
+                          onChange={(e) => setClientSwitchPrompt((prev) => (prev ? { ...prev, contactPhone: e.target.value } : prev))}
+                          placeholder="연락처 (선택)"
+                        />
+                      </>
+                    )}
+                  </>
+                )}
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button
+                    style={{ width: 'auto', margin: 0 }}
+                    disabled={clientSwitchPrompt.contactsLoading || (clientSwitchPrompt.contactChoice === NEW_CONTACT_VALUE && !clientSwitchPrompt.contactName.trim())}
+                    onClick={confirmClientSwitchContact}
+                  >
+                    이 담당자로 등록
+                  </button>
+                  <button className="secondary" style={{ width: 'auto', margin: 0 }} onClick={() => setClientSwitchPrompt((prev) => (prev ? { ...prev, chosen: null } : prev))}>
+                    뒤로
+                  </button>
+                </div>
+              </>
             )}
           </div>
         </div>

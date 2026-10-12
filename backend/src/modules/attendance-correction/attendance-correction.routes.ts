@@ -5,6 +5,7 @@ import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, combineDateTime } from '../../common/attendance-helpers';
 import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
+import { dailyWorkLogInputSchema, upsertDailyWorkLog } from '../daily-work-log/daily-work-log.routes';
 
 export const attendanceCorrectionRouter = createRouter();
 attendanceCorrectionRouter.use(requireAuth);
@@ -27,10 +28,21 @@ attendanceCorrectionRouter.get('/pending', async (req, res) => {
     },
   });
 
+  // 2026-10-12: 퇴근을 못 누른 날은 업무일지도 비어 있는 경우가 많다 — 정정 신청 시 일지를 함께 받기 위해
+  // 해당 날짜에 이미 제출된 일지가 있는지 알려준다(프론트는 없을 때만 일지 입력칸을 보여준다).
+  const loggedRows = unresolved.length
+    ? await prisma.dailyWorkLog.findMany({
+        where: { userId, workDate: { in: unresolved.map((r) => r.workDate) } },
+        select: { workDate: true },
+      })
+    : [];
+  const loggedKeys = new Set((loggedRows ?? []).map((l) => new Date(l.workDate).toISOString().slice(0, 10)));
+
   const rows = unresolved.map((r) => ({
     attendanceRecordId: r.id,
     workDate: r.workDate,
     clockInAt: r.clockInAt,
+    hasWorkLog: loggedKeys.has(new Date(r.workDate).toISOString().slice(0, 10)),
     latestRequest: r.correctionRequests[0]
       ? {
           id: r.correctionRequests[0].id,
@@ -49,6 +61,15 @@ const requestSchema = z.object({
   proposedClockOutAt: z.string().min(1), // ISO datetime-local 문자열
   // 육하원칙 반영 원칙과 동일하게, 최소 10자 이상의 구체적인 사유를 요구한다.
   reason: z.string().trim().min(10, '사유를 10자 이상 구체적으로 입력해주세요.'),
+});
+
+// 2026-10-12: 퇴근 정정으로 마감하는 날도 정상 퇴근과 똑같이 업무일지(이슈/특이사항 + 내일 예정 업무)를 남겨야 한다.
+// (로그 점검 결과 정상 퇴근은 항상 일지가 있었지만, 정정 경로로 닫힌 날은 일지가 비어 있었다.)
+const correctionWorkLogSchema = dailyWorkLogInputSchema.pick({
+  issues: true,
+  tomorrowPlan: true,
+  workContent: true,
+  followUp: true,
 });
 
 /**
@@ -111,6 +132,44 @@ attendanceCorrectionRouter.post('/requests', async (req, res) => {
         code: 'OUT_OF_RANGE',
         message: '퇴근 시각은 그날 출근 이후, 현재 시각 이전이어야 합니다.',
       },
+    });
+  }
+
+  // 2026-10-12: 그 날짜에 일지가 아직 없으면 정정 신청과 함께 일지를 받아 저장한다(이미 있으면 건드리지 않는다).
+  const existingLog = await prisma.dailyWorkLog.findUnique({
+    where: { userId_workDate: { userId, workDate: record.workDate } },
+    select: { id: true },
+  });
+  let workLogToSave: z.infer<typeof correctionWorkLogSchema> | null = null;
+  if (!existingLog) {
+    const rawLog = req.body?.dailyWorkLog;
+    const logParsed = correctionWorkLogSchema.safeParse(rawLog);
+    if (!logParsed.success) {
+      const logObjectSent = typeof rawLog === 'object' && rawLog !== null;
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'WORK_LOG_REQUIRED',
+          message: logObjectSent
+            ? logParsed.error.issues[0]?.message ?? '업무일지를 확인해주세요.'
+            : '그 날의 업무일지(이슈/특이사항·내일 예정 업무)를 함께 작성해야 퇴근 정정을 신청할 수 있습니다. 화면을 새로고침한 뒤 다시 시도해주세요.',
+        },
+      });
+    }
+    workLogToSave = logParsed.data;
+  }
+  if (workLogToSave) {
+    const savedLog = await upsertDailyWorkLog(userId, record.workDate, {
+      ...workLogToSave,
+      formType: 'SIMPLE',
+      workTypeSnapshot: '(퇴근 정정 시 작성)',
+    });
+    await recordAuditLog({
+      actorUserId: userId,
+      actionType: 'STATUS_CHANGE',
+      targetType: 'daily_work_log',
+      targetId: savedLog.id,
+      afterValue: { workDate: savedLog.workDate, formType: savedLog.formType, via: 'attendance_correction' },
     });
   }
 
