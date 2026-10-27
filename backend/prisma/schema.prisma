@@ -1019,3 +1019,33 @@ model DailyWorkLog {
   @@index([workDate])
   @@map("daily_work_logs")
 }
+
+/// 2026-10-27: 엄격 위치 모드에서 GPS·기지국 오차 등으로 위치를 못 맞춘 엔지니어가 "내 현재 위치로 등록"한 기록 —
+/// 어떤 사용자·기기·통신 환경에서 반복되는지 분석하고, 관리자가 고객사 좌표/기기 문제를 바로잡기 위한 자료.
+model LocationException {
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  workDate       DateTime @map("work_date") @db.Date
+  status         String
+  clientName     String?  @map("client_name")
+  distanceMeters Int?     @map("distance_meters")
+  accuracyMeters Int?     @map("accuracy_meters")
+  latitude       Float?
+  longitude      Float?
+  address        String?
+  reason         String
+  captureStatus  String?  @map("capture_status")
+  userAgent      String?  @map("user_agent")
+  os             String?
+  osVersion      String?  @map("os_version")
+  browser        String?
+  deviceModel    String?  @map("device_model")
+  connectionType String?  @map("connection_type")
+  downlinkMbps   Float?   @map("downlink_mbps")
+  screenSize     String?  @map("screen_size")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("location_exceptions")
+}

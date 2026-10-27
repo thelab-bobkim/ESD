@@ -16,7 +16,18 @@ type MyPerformance = {
   completionRate: number | null; tasks: Task[];
 };
 const TASK_STATUS_LABEL: Record<string, string> = { TODO: '대기', IN_PROGRESS: '진행', BLOCKED: '막힘', DONE: '완료' };
+type Activity = {
+  from: string; to: string; totalMinutes: number; entryCount: number; clientCount: number;
+  byClient: { clientName: string; days: number; entries: number; minutes: number }[];
+  entries: { id: string; workDate: string; clientName: string; projectName: string; workType: string; minutes: number; description: string }[];
+  days?: {
+    date: string; clockIn: string | null; clockOut: string | null; statuses: { label: string; at: string }[];
+    visitedClients: string; workContent: string; issues: string; followUp: string; submitted: boolean;
+    efforts: { id: string; clientName: string; projectName: string; workType: string; minutes: number; description: string; statusLabel: string; timeLabel: string }[];
+  }[];
+};
 function h(m: number) { return (m / 60).toFixed(1); }
+function weekdayKo(ymd: string) { const d = new Date(`${ymd}T00:00:00`); return ['일', '월', '화', '수', '목', '금', '토'][d.getDay()]; }
 function fmt(d: Date) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
 
 export default function MyPerformancePage() {
@@ -35,6 +46,15 @@ export default function MyPerformancePage() {
       .catch((e) => { if (isAuthExpiredError(e)) { router.push('/login'); return; } setError(e instanceof Error ? e.message : '불러오지 못했습니다.'); })
       .finally(() => setLoading(false));
   }, [anchor, router]);
+
+  const [activity, setActivity] = useState<Activity | null>(null);
+  useEffect(() => {
+    const from = fmt(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+    const to = fmt(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0));
+    apiFetch<Activity>(`/projects/me/activity?from=${from}&to=${to}`)
+      .then(setActivity)
+      .catch(() => setActivity(null));
+  }, [anchor]);
 
   return (
     <div className="page">
@@ -67,6 +87,63 @@ export default function MyPerformancePage() {
               <p style={{ color: '#6b7280' }}>참여 프로젝트: {data.projects.map((p) => `${p.code}·${p.name}`).join(', ')}</p>
             )}
           </div>
+          {activity && (
+            <>
+              <div className="card">
+                <h3 style={{ marginTop: 0 }}>고객사별 지원 내역</h3>
+                {activity.byClient.length === 0 ? <p>이 기간에 등록된 작업 기록이 없습니다.</p> : (
+                  <div className="table-scroll">
+                    <table className="att-table">
+                      <thead><tr><th>고객사</th><th>지원 일수</th><th>작업 건수</th><th>지원 시간</th></tr></thead>
+                      <tbody>
+                        {activity.byClient.map((c) => (
+                          <tr key={c.clientName}>
+                            <td>{c.clientName}</td>
+                            <td className="num">{c.days}일</td>
+                            <td className="num">{c.entries}건</td>
+                            <td className="num">{h(c.minutes)}h</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p style={{ fontSize: 12, color: '#6b7280', marginTop: 14 }}>
+                  이번 달 합계: 고객사 {activity.clientCount}곳 · 작업 {activity.entryCount}건 · {h(activity.totalMinutes)}시간 (점심 등 제외한 실공수 기준)
+                </p>
+              </div>
+              <div className="card">
+                <h3 style={{ marginTop: 0 }}>내가 한 일 (날짜별)</h3>
+                <p style={{ fontSize: 12, color: '#6b7280', marginTop: 0 }}>그날의 상태 변화, 방문 고객사, 작업 내용을 날짜별로 모았습니다. 시간 기록이 없는 작업은 "시간 미기록"으로 표시됩니다.</p>
+                {(activity.days ?? []).length === 0 ? <p>이 기간에 기록이 없습니다.</p> : (activity.days ?? []).map((d) => (
+                  <div key={d.date} style={{ borderTop: '1px solid #e5e7eb', padding: '12px 0' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'baseline' }}>
+                      <strong>{d.date} ({weekdayKo(d.date)})</strong>
+                      {d.clockIn && <span style={{ fontSize: 13, color: '#374151' }}>출근 {d.clockIn}{d.clockOut ? ` · 퇴근 ${d.clockOut}` : ''}</span>}
+                    </div>
+                    {d.statuses.length > 0 && (
+                      <div style={{ fontSize: 13, color: '#374151', marginTop: 4 }}>{d.statuses.map((st) => `${st.at} ${st.label}`).join(' → ')}</div>
+                    )}
+                    {d.visitedClients && <div style={{ fontSize: 13, marginTop: 4 }}>방문 고객사: {d.visitedClients}</div>}
+                    {d.efforts.length > 0 && (
+                      <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                        {d.efforts.map((e) => (
+                          <li key={e.id} style={{ fontSize: 13, marginBottom: 4 }}>
+                            <span style={{ color: '#6b7280' }}>{e.timeLabel}</span> · {e.clientName}{e.workType ? ` · ${e.workType}` : ''}{e.minutes > 0 ? ` · ${h(e.minutes)}h` : ''}
+                            {e.description && <div style={{ whiteSpace: 'pre-wrap', color: '#374151' }}>{e.description}</div>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {d.workContent && (
+                      <div style={{ fontSize: 13, marginTop: 6, whiteSpace: 'pre-wrap', color: '#374151' }}><strong>일지 작업 내용</strong>{'\n'}{d.workContent}</div>
+                    )}
+                    {d.issues && <div style={{ fontSize: 13, marginTop: 4, whiteSpace: 'pre-wrap', color: '#374151' }}><strong>이슈</strong> {d.issues}</div>}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
           <div className="card">
             <h3 style={{ marginTop: 0 }}>이번 기간 Task</h3>
             {data.tasks.length === 0 ? <p>해당 기간에 표시할 Task가 없습니다.</p> : (

@@ -83,7 +83,7 @@ export default function CancelClockOutCard({ clockOutAt, latestRequest, onSubmit
 
   return (
     <div style={{ marginTop: 8, padding: 10, borderRadius: 10, border: '1px solid #4a3a12', background: 'rgba(245,158,11,0.10)' }}>
-      <div style={{ fontSize: 13, color: '#9aa5c3' }}>
+      <div style={{ fontSize: 13, color: '#5b6478' }}>
         {fmtClock(clockOutAt)}에 처리된 퇴근을 취소하고 다시 근무중 상태로 되돌리는 신청이에요. 팀장/HR 승인 후 반영돼요.
       </div>
       <textarea

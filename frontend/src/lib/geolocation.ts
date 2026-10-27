@@ -162,15 +162,40 @@ function watchBestPosition(): Promise<{ pos: GeolocationPosition | null; errorCo
   });
 }
 
-async function getPositionWithAccuracyRetry(): Promise<{ pos: GeolocationPosition | null; errorCode: number | null }> {
+/**
+ * 2026-10-27: 퇴근 확인 모달 전용 마지막 보조 수단 — 정밀 GPS를 끝내 못 받았을 때 Wi-Fi/기지국 기반의
+ * 대략적 위치(enableHighAccuracy: false)를 한 번 더 시도한다. 건물 안·지하에서 TIMEOUT으로 퇴근 위치가
+ * 비는 경우(백해성 사례)를 줄이기 위한 것이며, 출근/상태 등록의 위치 대조에는 쓰지 않는다.
+ */
+function getCoarsePositionOnce(): Promise<GeolocationPosition | null> {
+  return new Promise((resolve) => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) { resolve(null); return; }
+    let done = false;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    const settle = (p: GeolocationPosition | null) => {
+      if (done) return;
+      done = true;
+      if (timerId) clearTimeout(timerId);
+      resolve(p);
+    };
+    timerId = setTimeout(() => settle(null), 12000);
+    navigator.geolocation.getCurrentPosition((p) => settle(p), () => settle(null), { enableHighAccuracy: false, timeout: 10000, maximumAge: 2 * 60 * 1000 });
+  });
+}
+
+async function getPositionWithAccuracyRetry(allowCoarseFallback = false): Promise<{ pos: GeolocationPosition | null; errorCode: number | null; coarse?: boolean }> {
   const watched = await watchBestPosition();
   if (watched.pos) return watched;
   if (watched.errorCode === 1) return watched; // 권한 거부는 재시도해도 같다
   // watchPosition 자체가 없거나 아무 값도 못 받았으면 예전 방식(한 번 측정)으로 한 번 더 시도한다.
   const first = await getPositionOnce();
-  if (!first) return { pos: null, errorCode: watched.errorCode };
-  if ('errorCode' in first) return { pos: null, errorCode: first.errorCode };
-  return { pos: first, errorCode: null };
+  if (first && !('errorCode' in first)) return { pos: first, errorCode: null };
+  const lastErrorCode = first && 'errorCode' in first ? first.errorCode : watched.errorCode;
+  if (allowCoarseFallback && lastErrorCode !== 1) {
+    const coarse = await getCoarsePositionOnce();
+    if (coarse) return { pos: coarse, errorCode: null, coarse: true };
+  }
+  return { pos: null, errorCode: lastErrorCode };
 }
 
 /** 오차범위(미터)가 기준치보다 커서 "낮은 정확도" 경고를 보여줘야 하는지 판단한다. */
@@ -339,7 +364,7 @@ export async function getCurrentLocationDetailed(locationConsentGiven: boolean):
   if (!locationConsentGiven) return { status: 'NO_CONSENT', address: null, accuracyMeters: null, jumpDetected: false };
   if (typeof navigator === 'undefined' || !navigator.geolocation) return { status: 'UNSUPPORTED', address: null, accuracyMeters: null, jumpDetected: false };
 
-  const { pos, errorCode } = await getPositionWithAccuracyRetry();
+  const { pos, errorCode, coarse } = await getPositionWithAccuracyRetry(true);
   if (!pos) {
     if (errorCode === null) return { status: 'UNSUPPORTED', address: null, accuracyMeters: null, jumpDetected: false };
     // GeolocationPositionError: 1=PERMISSION_DENIED, 2=POSITION_UNAVAILABLE, 3=TIMEOUT
@@ -351,7 +376,8 @@ export async function getCurrentLocationDetailed(locationConsentGiven: boolean):
     };
   }
 
-  const jumpDetected = checkAndUpdateJumpDetection(pos.coords.latitude, pos.coords.longitude);
+  // 대략적 위치(보조 수단)는 오차가 커서 순간이동 검사에 쓰면 정상 퇴근을 막을 수 있으므로 제외한다.
+  const jumpDetected = coarse ? false : checkAndUpdateJumpDetection(pos.coords.latitude, pos.coords.longitude);
   const accuracyMeters = pos.coords.accuracy;
   if (jumpDetected) {
     // 이상치로 판단되면 주소 변환(추가 API 호출)까지 갈 필요 없이 바로 알린다 — 호출하는 쪽이

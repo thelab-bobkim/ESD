@@ -231,7 +231,8 @@ export function startClockInReminderScheduler() {
       // 2026-09-04: "이동중" 상태가 정책값(기본 30분) 이상 그대로면, 도착 후 상태를 안 바꾼
       // 것으로 보고 5분마다 재알림한다. GPS 도착 팝업(index.tsx)은 앱을 열어놔야만 뜨므로,
       // 이 푸시 알림이 앱을 안 보고 있는 직원에게 "상태를 확인해달라"고 알려주는 보완책이다.
-      const staleTransitMinutes = await getPolicyNumber('STALE_TRANSIT_REMINDER_MINUTES', 30);
+      const staleTransitMinutes = await getPolicyNumber('STALE_TRANSIT_REMINDER_MINUTES', 60);
+      const staleTransitRepeatMinutes = await getPolicyNumber('STALE_TRANSIT_REPEAT_MINUTES', 60);
       const { start: dayStart, end: dayEnd } = realDayWindow(workDate);
       const dayLogs = await prisma.statusChangeLog.findMany({
         where: { changedAt: { gte: dayStart, lt: dayEnd }, userId: { in: activeUsers.map((u: { id: string }) => u.id) } },
@@ -249,12 +250,12 @@ export function startClockInReminderScheduler() {
         if (!latest || latest.status !== 'MOVING') continue;
         if (now.getTime() - latest.changedAt.getTime() < staleTransitMinutes * 60 * 1000) continue;
         const last = lastStaleTransitSentAt.get(u.id);
-        if (last && now.getTime() - last < ESCALATION_INTERVAL_MS) continue;
+        if (last && now.getTime() - last < staleTransitRepeatMinutes * 60 * 1000) continue;
         lastStaleTransitSentAt.set(u.id, now.getTime());
         staleTransitSentCount++;
         await sendPushToUser(u.id, {
           title: 'DSTI-TSB',
-          body: `이동중 상태가 ${staleTransitMinutes}분 넘게 계속되고 있어요. 도착하셨다면 상태를 업데이트해주세요! (등록 전까지 계속 알려드려요)`,
+          body: `이동중 상태가 ${staleTransitMinutes}분 넘게 계속되고 있어요. 도착하셨다면 상태를 업데이트해주세요! (${staleTransitRepeatMinutes}분마다 다시 알려드려요)`,
           url: '/',
         });
       }

@@ -3,6 +3,9 @@ import { getCurrentLocationDetailed, locationFailureLabel, isLowAccuracy, accura
 import SlideToConfirm from '@/components/SlideToConfirm';
 import { isMeaningfulPlan, PLAN_RULE_MESSAGE } from '@/lib/work-log-rules';
 import { apiFetch } from '@/lib/api';
+import SuggestionChips from '@/components/SuggestionChips';
+import { appendSuggestion, type DraftSuggestions } from '@/lib/work-log-suggest';
+import AiAssistPanel from '@/components/AiAssistPanel';
 
 interface Props {
   clockInAt: string;
@@ -47,6 +50,16 @@ interface DraftResponse {
   visitedClients: string | null;
   workContent: string | null;
   actualEffortMinutes: number | null;
+  // 2026-10-15: 작업 설명을 안 적은 작업 기록 수 + 이슈/후속조치/내일 예정 업무 제안 문구(눌러서 넣는 칩).
+  missingDescriptionCount?: number;
+  suggestions?: DraftSuggestions;
+  // 2026-10-15: AI 보조(문장 다듬기·말/메모로 채우기) 사용 가능 여부 — 서버 설정이 꺼져 있으면 false.
+  aiAssistEnabled?: boolean;
+  history?: {
+    previousPlan: { workDate: string; text: string } | null;
+    followUps: { workDate: string; text: string; sameClient: boolean }[];
+    lastVisits: { clientName: string; workDate: string; workType: string; description: string }[];
+  };
   // 2026-09-29: "미등록 공백시간" — 마지막으로 종료시간이 찍힌 작업 이후 새로 등록된 상태 없이
   // 지금(퇴근 직전 조회 시점)까지 공백이 임계값 이상이면 채워진다. 없으면 null.
   unloggedGap: { minutes: number; sinceISO: string } | null;
@@ -80,7 +93,7 @@ function hoursLabel(minutes: number): string {
 
 const textareaStyle: React.CSSProperties = {
   width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8,
-  background: '#0d1326', color: '#e7ebf5', border: '1px solid #212a45', fontFamily: 'inherit',
+  background: '#f5f7fb', color: '#1f2937', border: '1px solid #d5dbe6', fontFamily: 'inherit',
   fontSize: 13, resize: 'vertical', minHeight: 52,
 };
 
@@ -163,7 +176,10 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
   const jumpDetected = locationResult !== 'checking' && locationResult.jumpDetected;
   const unloggedGapRequired = !!draft?.unloggedGap;
   // 2026-10-12: 내일 예정 업무는 "."/"없음"/"미정" 같은 의미 없는 값을 받지 않는다(3글자 이상, 휴가·반차 등은 예외).
-  const planInvalid = !isMeaningfulPlan(tomorrowPlan);
+  // 2026-10-20: 금요일은 내일 예정 업무를 받지 않는다(당일 업무일지로 마감). 서버는 값을 요구하므로 고정 문구를 보낸다.
+  const isFridayKst = new Date(Date.now() + 9 * 3600 * 1000).getUTCDay() === 5;
+  const FRIDAY_PLAN_TEXT = '금요일 마감 (주말 휴무)';
+  const planInvalid = !isFridayKst && !isMeaningfulPlan(tomorrowPlan);
   const workLogMissing = !issues.trim() || planInvalid || (unloggedGapRequired && !unloggedGapReason.trim());
 
   // 2026-09-16: 슬라이더(SlideToConfirm)의 onConfirm은 반환값이 false면 손잡이를 원위치로
@@ -198,7 +214,7 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
           workContent: workContent.trim() || undefined,
           issues: issues.trim(),
           followUp: followUp.trim() || undefined,
-          tomorrowPlan: tomorrowPlan.trim(),
+          tomorrowPlan: isFridayKst ? FRIDAY_PLAN_TEXT : tomorrowPlan.trim(),
           supportRequest: supportRequest.trim() || undefined,
           actualEffortMinutes: draft?.actualEffortMinutes ?? undefined,
           autoDraftSnapshot: draft?.workContent ?? undefined,
@@ -224,9 +240,9 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
         display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, overflowY: 'auto',
       }}
     >
-      <div style={{ background: '#10162a', color: '#e7ebf5', border: '1px solid #212a45', borderRadius: 16, padding: 28, maxWidth: 460, width: '100%', maxHeight: '90vh', overflowY: 'auto' }}>
+      <div style={{ background: '#ffffff', color: '#1f2937', border: '1px solid #d5dbe6', borderRadius: 16, padding: 28, maxWidth: 460, width: '100%', maxHeight: '90vh', overflowY: 'auto' }}>
         <h2 style={{ marginTop: 0 }}>🏁 퇴근 처리 · 오늘 업무일지</h2>
-        <p style={{ fontSize: 14, color: '#9aa5c3', lineHeight: 1.6 }}>
+        <p style={{ fontSize: 14, color: '#5b6478', lineHeight: 1.6 }}>
           지금 퇴근 처리하시겠어요? <strong>현재 시각</strong>이 오늘의 퇴근 시각으로 확정되고,
           점심시간 1시간을 제외한 <strong>{hoursLabel(recordedMinutes)}</strong>이 오늘 근무시간으로 기록됩니다.
           한 번 확정하면 본인이 직접 되돌릴 수 없어요.
@@ -292,22 +308,84 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
               value={earlyLeaveReason}
               onChange={(e) => { setEarlyLeaveReason(e.target.value); setShowEarlyLeaveError(false); }}
               placeholder="예: 병원 진료로 조기퇴근"
-              style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8, background: '#0d1326', color: '#e7ebf5', border: `1px solid ${showEarlyLeaveError ? '#ef4444' : '#212a45'}` }}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8, background: '#f5f7fb', color: '#1f2937', border: `1px solid ${showEarlyLeaveError ? '#ef4444' : '#d5dbe6'}` }}
             />
             {showEarlyLeaveError && (
               <div style={{ fontSize: 12, color: '#f87171', marginTop: 4 }}>사유를 입력해야 조기퇴근으로 확정할 수 있어요.</div>
             )}
-            <div style={{ fontSize: 11, color: '#6b7594', marginTop: 4 }}>부족한 시간은 이번 주 누계에 그대로 반영되어, 다른 날 초과근무와 자연스럽게 합산됩니다.</div>
+            <div style={{ fontSize: 11, color: '#8a93a8', marginTop: 4 }}>부족한 시간은 이번 주 누계에 그대로 반영되어, 다른 날 초과근무와 자연스럽게 합산됩니다.</div>
           </div>
         )}
 
-        <div style={{ borderTop: '1px solid #212a45', margin: '4px 0 16px', paddingTop: 16 }}>
+        <div style={{ borderTop: '1px solid #d5dbe6', margin: '4px 0 16px', paddingTop: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
             <span style={{ fontSize: 13, fontWeight: 700 }}>📓 오늘의 업무일지</span>
-            <span style={{ fontSize: 11, color: '#6b7594' }}>
+            <span style={{ fontSize: 11, color: '#8a93a8' }}>
               {draft === null ? '자동초안 불러오는 중...' : formType === 'DETAILED' ? '상세형(오늘 근무형태 기준)' : '간단형'}
             </span>
           </div>
+
+          {draft?.history && (draft.history.previousPlan || draft.history.followUps.length > 0 || draft.history.lastVisits.length > 0) && (
+            <div style={{ marginBottom: 10, padding: '10px 12px', borderRadius: 10, background: '#f5f7fb', border: '1px solid #d5dbe6', fontSize: 12.5, lineHeight: 1.6, color: '#1f2937' }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                📌 이어쓰기 도우미 <span style={{ fontWeight: 400, color: '#5b6478' }}>— 참고용이에요. 내 지난 기록만 보여드리며, 아래 입력칸에서 자유롭게 수정하세요</span>
+              </div>
+              {((pp) => pp && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: '#5b6478' }}>{pp.workDate.slice(5).replace('-', '/')}에 적은 내일 예정 업무 — 오늘 하셨나요?</div>
+                  <div style={{ whiteSpace: 'pre-wrap' }}>{pp.text}</div>
+                  {formType === 'DETAILED' && (
+                    <button type="button" style={{ marginTop: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid #d5dbe6', background: '#ffffff', color: '#1f2937', fontSize: 12, cursor: 'pointer' }} onClick={() => setWorkContent((c) => (c.trim() ? c.trim() + '\n' : '') + '[어제 계획 수행] ' + pp.text)}>했어요 · 작업 내용에 추가</button>
+                  )}
+                  {formType === 'SIMPLE' && (
+                    <button type="button" style={{ marginTop: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid #d5dbe6', background: '#ffffff', color: '#1f2937', fontSize: 12, cursor: 'pointer' }} onClick={() => setTomorrowPlan((c) => (c.trim() ? c.trimEnd() + '\n' : '') + pp.text)}>아직이에요 · 내일 예정 업무에 이어쓰기</button>
+                  )}
+                </div>
+              ))(draft.history.previousPlan)}
+              {draft.history.followUps.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: '#5b6478' }}>이전에 남긴 후속조치 — 해결됐나요?</div>
+                  {draft.history.followUps.map((f, i) => (
+                    <div key={i} style={{ marginTop: 2 }}>
+                      <span style={{ color: '#5b6478' }}>{f.workDate.slice(5).replace('-', '/')}{f.sameClient ? ' · 오늘 방문한 고객사' : ''}</span> {f.text}
+                      <div>
+                        <button type="button" style={{ marginTop: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid #d5dbe6', background: '#ffffff', color: '#1f2937', fontSize: 12, cursor: 'pointer' }} onClick={() => (formType === 'DETAILED' ? setFollowUp((c) => (c.trim() ? c.trim() + '\n' : '') + '[이어서] ' + f.text) : setIssues((c) => (c.trim() ? c.trim() + '\n' : '') + '[이어서] ' + f.text))}>아직이에요 · 이어쓰기</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {draft.history.lastVisits.length > 0 && (
+                <div>
+                  <div style={{ color: '#5b6478' }}>오늘 방문한 고객사의 지난 작업</div>
+                  {draft.history.lastVisits.map((v) => (
+                    <div key={v.clientName} style={{ marginTop: 2 }}>
+                      <b>{v.clientName}</b> <span style={{ color: '#5b6478' }}>({v.workDate.slice(5).replace('-', '/')}{v.workType ? ' · ' + v.workType : ''})</span>{v.description ? ' ' + v.description : ''}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {draft?.suggestions && (draft.suggestions.issues.length + draft.suggestions.followUp.length + draft.suggestions.tomorrowPlan.length) > 0 && (
+            <div style={{ fontSize: 11.5, color: '#5b6478', marginBottom: 10, lineHeight: 1.5 }}>
+              ✨ 오늘 기록을 바탕으로 만든 제안이에요. 눌러서 넣고 내용을 고쳐 쓰세요.
+            </div>
+          )}
+
+          {draft?.aiAssistEnabled && (
+            <AiAssistPanel
+              formType={formType}
+              values={{ issues, followUp, tomorrowPlan }}
+              onApply={(field, text, mode) => {
+                const put = (cur: string) => (mode === 'polish' ? text : appendSuggestion(cur, text));
+                if (field === 'issues') setIssues(put);
+                else if (field === 'followUp') setFollowUp(put);
+                else setTomorrowPlan(put);
+                setShowWorkLogError(false);
+              }}
+            />
+          )}
 
           {unloggedGapRequired && draft?.unloggedGap && (
             <div style={{ marginBottom: 14 }}>
@@ -320,7 +398,7 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
                 value={unloggedGapReason}
                 onChange={(e) => { setUnloggedGapReason(e.target.value); setShowWorkLogError(false); }}
                 placeholder="예: 다음 고객사 이동 및 대기, 개인 용무 등"
-                style={{ ...textareaStyle, border: `1px solid ${showWorkLogError && !unloggedGapReason.trim() ? '#ef4444' : '#212a45'}` }}
+                style={{ ...textareaStyle, border: `1px solid ${showWorkLogError && !unloggedGapReason.trim() ? '#ef4444' : '#d5dbe6'}` }}
               />
             </div>
           )}
@@ -328,18 +406,23 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
           {formType === 'DETAILED' && (
             <>
               <div style={{ marginBottom: 10 }}>
-                <label style={{ display: 'block', fontSize: 12, color: '#9aa5c3', marginBottom: 4 }}>방문 고객사/현장</label>
+                <label style={{ display: 'block', fontSize: 12, color: '#5b6478', marginBottom: 4 }}>방문 고객사/현장</label>
                 <input
                   type="text"
                   value={visitedClients}
                   onChange={(e) => setVisitedClients(e.target.value)}
                   placeholder="예: OO은행 본점, XX증권"
-                  style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8, background: '#0d1326', color: '#e7ebf5', border: '1px solid #212a45' }}
+                  style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8, background: '#f5f7fb', color: '#1f2937', border: '1px solid #d5dbe6' }}
                 />
               </div>
               <div style={{ marginBottom: 10 }}>
-                <label style={{ display: 'block', fontSize: 12, color: '#9aa5c3', marginBottom: 4 }}>주요 작업내용</label>
-                <textarea value={workContent} onChange={(e) => setWorkContent(e.target.value)} placeholder="오늘 자동으로 모인 작업 기록이에요 — 필요하면 고쳐주세요." style={textareaStyle} />
+                <label style={{ display: 'block', fontSize: 12, color: '#5b6478', marginBottom: 4 }}>주요 작업내용</label>
+                <textarea value={workContent} onChange={(e) => setWorkContent(e.target.value)} placeholder="오늘 자동으로 모인 작업 기록이에요 — 필요하면 고쳐주세요." style={{ ...textareaStyle, minHeight: 110 }} />
+                {(draft?.missingDescriptionCount ?? 0) > 0 && (
+                  <div data-testid="missing-description" style={{ fontSize: 11.5, color: '#fbbf24', marginTop: 4, lineHeight: 1.5 }}>
+                    💡 작업 설명을 적지 않은 기록이 {draft?.missingDescriptionCount}건 있어요. 항목 아래에 "→ 한 일"을 한 줄씩 적어주세요.
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -352,18 +435,25 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
               value={issues}
               onChange={(e) => { setIssues(e.target.value); setShowWorkLogError(false); }}
               placeholder="예: 특이사항 없음 / OO건 장애 대응중, 내일 재확인 필요"
-              style={{ ...textareaStyle, border: `1px solid ${showWorkLogError && !issues.trim() ? '#ef4444' : '#212a45'}` }}
+              style={{ ...textareaStyle, border: `1px solid ${showWorkLogError && !issues.trim() ? '#ef4444' : '#d5dbe6'}` }}
             />
+            <SuggestionChips testId="chips-issues" items={draft?.suggestions?.issues ?? []} current={issues} onPick={(t) => { setIssues((c) => appendSuggestion(c, t)); setShowWorkLogError(false); }} />
           </div>
 
           {formType === 'DETAILED' && (
             <div style={{ marginBottom: 10 }}>
-              <label style={{ display: 'block', fontSize: 12, color: '#9aa5c3', marginBottom: 4 }}>후속조치/미해결 건</label>
+              <label style={{ display: 'block', fontSize: 12, color: '#5b6478', marginBottom: 4 }}>후속조치/미해결 건</label>
               <textarea value={followUp} onChange={(e) => setFollowUp(e.target.value)} placeholder="선택 입력" style={textareaStyle} />
+              <SuggestionChips testId="chips-followup" items={draft?.suggestions?.followUp ?? []} current={followUp} onPick={(t) => setFollowUp((c) => appendSuggestion(c, t))} />
             </div>
           )}
 
-          <div style={{ marginBottom: 10 }}>
+          {isFridayKst && (
+            <div style={{ marginBottom: 10, padding: '12px 14px', borderRadius: 10, background: '#ecfdf5', border: '1px solid #a7f3d0', color: '#065f46', fontSize: 13.5, lineHeight: 1.6 }}>
+              🎉 오늘은 금요일이에요. 내일 작업은 입력하지 않으셔도 되고, 오늘 업무일지로 한 주를 마감합니다. 한 주도 고생 많으셨어요. 즐거운 휴일 보내세요!
+            </div>
+          )}
+          <div style={{ marginBottom: 10, display: isFridayKst ? 'none' : undefined }}>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: showWorkLogError && planInvalid ? '#f87171' : '#fbbf24', marginBottom: 4 }}>
               내일 예정 업무 *
             </label>
@@ -371,13 +461,14 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
               value={tomorrowPlan}
               onChange={(e) => { setTomorrowPlan(e.target.value); setShowWorkLogError(false); }}
               placeholder="예: OO고객사 정기점검, XX건 이어서 진행 (3글자 이상 · 쉬는 날은 '휴가')"
-              style={{ ...textareaStyle, border: `1px solid ${showWorkLogError && planInvalid ? '#ef4444' : '#212a45'}` }}
+              style={{ ...textareaStyle, border: `1px solid ${showWorkLogError && planInvalid ? '#ef4444' : '#d5dbe6'}` }}
             />
+            <SuggestionChips testId="chips-plan" items={draft?.suggestions?.tomorrowPlan ?? []} current={tomorrowPlan} onPick={(t) => { setTomorrowPlan((c) => appendSuggestion(c, t)); setShowWorkLogError(false); }} />
           </div>
 
           {formType === 'DETAILED' && (
             <div style={{ marginBottom: 4 }}>
-              <label style={{ display: 'block', fontSize: 12, color: '#9aa5c3', marginBottom: 4 }}>지원요청/공유사항</label>
+              <label style={{ display: 'block', fontSize: 12, color: '#5b6478', marginBottom: 4 }}>지원요청/공유사항</label>
               <textarea value={supportRequest} onChange={(e) => setSupportRequest(e.target.value)} placeholder="선택 입력" style={textareaStyle} />
             </div>
           )}
@@ -386,7 +477,7 @@ export default function ClockOutConfirmModal({ clockInAt, locationConsentGiven, 
             <div style={{ fontSize: 12, color: '#f87171', marginTop: 4 }}>
               {issues.trim() && tomorrowPlan.trim() && planInvalid
                 ? PLAN_RULE_MESSAGE
-                : `이슈/특이사항과 내일 예정 업무${unloggedGapRequired ? ', 그리고 위 공백시간 사유' : ''}는 반드시 입력해야 퇴근이 확정돼요.`}
+                : `${isFridayKst ? '이슈/특이사항' : '이슈/특이사항과 내일 예정 업무'}${unloggedGapRequired ? ', 그리고 위 공백시간 사유' : ''}${(isFridayKst && !unloggedGapRequired) ? '은' : '는'} 반드시 입력해야 퇴근이 확정돼요.`}
             </div>
           )}
         </div>

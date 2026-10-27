@@ -626,3 +626,55 @@ describe('POST /attendance/clock-out — 작업내용·담당자 미입력 시 �
     expect(r.status).toBe(200);
   });
 });
+
+// ===== 2026-10-13: 엄격 모드로 막힌 위치 등록 시도를 (좌표 없이) 감사로그에 남긴다 — 방문지 점검의 근거 데이터 =====
+describe('위치 때문에 막힌 시도 기록 (location_block)', () => {
+  const { recordAuditLog } = jest.requireMock('../common/audit') as { recordAuditLog: jest.Mock };
+  const blockCalls = () => recordAuditLog.mock.calls.map((c) => c[0]).filter((a: any) => a.targetType === 'location_block');
+  const RAW_1_5KM = { lat: 37.5135, lng: 127.0 };
+  const cbody = (extra: any = {}) => ({ status: 'CLIENT_WORK', siteType: 'ONSITE', locationStatus: 'OK', effort: baseEffort, ...extra });
+  beforeEach(() => { recordAuditLog.mockClear(); });
+
+  it('[켜짐] 고객사에서 멀어 막히면 고객사명·거리·단계만 남기고 좌표는 남기지 않는다', async () => {
+    setup(); policy.ENFORCE_LOCATION_MATCH = 1;
+    const r = await post(cbody({ location: RAW_1_5KM, accuracyMeters: 50 }));
+    expect(r.body.error.code).toBe('LOCATION_MISMATCH_BLOCKED');
+    const calls = blockCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].actorUserId).toBe('u1');
+    expect(calls[0].afterValue).toMatchObject({ kind: 'CLIENT', clientName: '코스콤', phase: 'FIRST', status: 'CLIENT_WORK' });
+    expect(typeof calls[0].afterValue.distanceMeters).toBe('number');
+    expect(JSON.stringify(calls[0])).not.toMatch(/37\.51|127\.0\d/);
+  });
+  it('[켜짐] 지도로 보정했는데도 반경 밖이면 CORRECTED_FAILED 로 한 번 더 남는다', async () => {
+    setup(); policy.ENFORCE_LOCATION_MATCH = 1;
+    const r = await post(cbody({ location: RAW_1_5KM, accuracyMeters: 50, selfConfirmMismatch: true, confirmedLocation: RAW_1_5KM }));
+    expect(r.body.error.code).toBe('LOCATION_CORRECTION_NOT_AT_TARGET');
+    const calls = blockCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].afterValue).toMatchObject({ kind: 'CLIENT', clientName: '코스콤', phase: 'CORRECTED_FAILED' });
+  });
+  it('[꺼짐=기본] 엄격 모드가 아니면 차단 기록을 남기지 않는다(기존 흐름 그대로)', async () => {
+    setup();
+    await post(cbody({ location: RAW_1_5KM, accuracyMeters: 50 }));
+    expect(blockCalls()).toHaveLength(0);
+  });
+  it('[켜짐] 본사근무가 본사에서 멀어 막히면 kind=HQ 로 남고 고객사명은 비어 있다', async () => {
+    setup(); policy.ENFORCE_LOCATION_MATCH = 1; policy.HQ_LATITUDE = '37.4'; policy.HQ_LONGITUDE = '127.1';
+    const hqEffort = { clientName: '본사업무', workType: '기술지원', startTime: '10:00', description: '내부 지원 업무 정리', workReason: '정기 업무' };
+    const r = await post({ status: 'HQ_WORKING', locationStatus: 'OK', effort: hqEffort, location: { lat: 37.4135, lng: 127.1 }, accuracyMeters: 50 });
+    expect(r.body.error.code).toBe('LOCATION_MISMATCH_BLOCKED');
+    const calls = blockCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].afterValue).toMatchObject({ kind: 'HQ', clientName: null, phase: 'FIRST' });
+  });
+  it('감사로그 기록이 실패해도 사용자 응답(차단 안내)은 그대로 나간다', async () => {
+    setup(); policy.ENFORCE_LOCATION_MATCH = 1;
+    recordAuditLog.mockRejectedValueOnce(new Error('db down'));
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const r = await post(cbody({ location: RAW_1_5KM, accuracyMeters: 50 }));
+    errSpy.mockRestore();
+    expect(r.status).toBe(400);
+    expect(r.body.error.code).toBe('LOCATION_MISMATCH_BLOCKED');
+  });
+});

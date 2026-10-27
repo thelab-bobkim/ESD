@@ -3,6 +3,8 @@ import { useRouter } from 'next/router';
 import { apiFetch, isAuthExpiredError } from '@/lib/api';
 import MapPickerModal from '@/components/MapPickerModal';
 import AdminHeader from '@/components/AdminHeader';
+import DuplicateClientsCard from '@/components/DuplicateClientsCard';
+import LocationProposalsCard from '@/components/LocationProposalsCard';
 
 interface ClientRow {
   id: string; name: string; address: string; latitude: number | null; longitude: number | null; hasCoordinates: boolean;
@@ -284,6 +286,9 @@ export default function AdminClientsPage() {
           </div>
         </div>
       )}
+
+      <LocationProposalsCard onChanged={load} />
+      <DuplicateClientsCard onMerged={load} />
 
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch, isAuthExpiredError } from '@/lib/api';
 import AdminHeader from '@/components/AdminHeader';
+import LocationHotspotsPanel from '@/components/LocationHotspotsPanel';
+import WorkLogQualityPanel from '@/components/WorkLogQualityPanel';
 
 /**
  * 현장 기록 점검 (2026-10-11).
@@ -12,14 +14,15 @@ import AdminHeader from '@/components/AdminHeader';
  *  - 자동 마무리: 직원이 끝내지 않아 시스템/관리자가 종료시각을 채운 건
  *  - 입력 누락: 작업내용/담당자가 비어 있는 건
  *  - 미종료 작업: 종료시각 없이 남은 과거 작업(추정 종료시각 미리보기 → 적용). 10시간을 넘는 건은 자동 적용하지 않는다.
+ *  - 방문지 점검(2026-10-13): 같은 곳에서 여러 명이 반복해서 위치 불일치가 나는지(미등록 방문지 후보/고객사 좌표 어긋남) — 관리자 전용, 별도 컴포넌트.
  *  - 퇴근·일지 점검(2026-10-12): 퇴근 기록이 비어 있는 지난 근무일(+정정 신청 상태)과, 퇴근은 됐는데 업무일지가 없는 날. 조회 전용.
  * 좌표는 화면에도 서버 응답에도 없다(거리·정확도·사유만).
  */
 
-type Tab = 'location' | 'clockout' | 'auto' | 'incomplete' | 'open' | 'gaps';
+type Tab = 'location' | 'clockout' | 'auto' | 'incomplete' | 'open' | 'gaps' | 'worklog' | 'hotspots';
 
 interface LocationRow { id: string; userName: string; status: string; changedAt: string; note: string | null; locationMatch: boolean | null; distanceMeters: number | null; accuracyMeters: number | null; siteType: string | null }
-interface ClockOutRow { id: string; userName: string; workDate: string; clockOutAt: string | null; place: string | null; locationMatch: boolean | null; distanceMeters: number | null; note: string | null }
+interface ClockOutRow { id: string; userName: string; workDate: string; clockOutAt: string | null; place: string | null; area?: string | null; locationMatch: boolean | null; distanceMeters: number | null; note: string | null }
 interface AutoRow { id: string; userName: string; workDate: string; clientName: string | null; startTime: string; endTime: string | null; minutes: number | null; closedBy: string | null }
 interface IncompleteRow { id: string; userName: string; workDate: string; clientName: string | null; status: string | null; missingDescription: boolean; missingContact: boolean }
 interface ExceptionsData { locationExceptions: LocationRow[]; clockOutExceptions: ClockOutRow[]; autoClosed: AutoRow[]; incomplete: IncompleteRow[]; capped: boolean }
@@ -137,6 +140,8 @@ export default function AdminFieldCheckPage() {
     incomplete: data?.incomplete.length ?? 0,
     open: openData?.items.length ?? 0,
     gaps: (gapsData?.unclosed.length ?? 0) + (gapsData?.noLog.length ?? 0),
+    worklog: -1,
+    hotspots: -1,
   };
   const TABS: { key: Tab; label: string }[] = [
     { key: 'location', label: '위치 예외' },
@@ -145,6 +150,8 @@ export default function AdminFieldCheckPage() {
     { key: 'incomplete', label: '입력 누락' },
     { key: 'open', label: '미종료 작업' },
     { key: 'gaps', label: '퇴근·일지 점검' },
+    { key: 'worklog', label: '업무일지 점검' },
+    { key: 'hotspots', label: '방문지 점검' },
   ];
 
   return (
@@ -167,7 +174,7 @@ export default function AdminFieldCheckPage() {
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             {TABS.map((t) => (
               <button key={t.key} type="button" className={tab === t.key ? undefined : 'secondary'} style={{ width: 'auto', margin: 0 }} onClick={() => setTab(t.key)}>
-                {t.label} ({counts[t.key]})
+                {t.label}{counts[t.key] >= 0 ? ` (${counts[t.key]})` : ''}
               </button>
             ))}
           </div>
@@ -215,7 +222,7 @@ export default function AdminFieldCheckPage() {
                       <td style={{ whiteSpace: 'nowrap' }}>{r.workDate}</td>
                       <td style={{ whiteSpace: 'nowrap' }}>{r.userName}</td>
                       <td style={{ whiteSpace: 'nowrap' }}>{kstTime(r.clockOutAt)}</td>
-                      <td style={{ whiteSpace: 'nowrap' }}>{r.place ? PLACE_LABEL[r.place] ?? r.place : '확인 안 됨'}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{`${r.place ? PLACE_LABEL[r.place] ?? r.place : '확인 안 됨'}${r.area ? ` · ${r.area}` : ''}`}</td>
                       <td style={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>
                         {r.locationMatch === false ? `기대 장소와 다름${r.distanceMeters != null ? ` (약 ${r.distanceMeters}m)` : ''}` : ''}
                         {r.note ? `${r.locationMatch === false ? ' · ' : ''}${r.note}` : ''}
@@ -342,6 +349,10 @@ export default function AdminFieldCheckPage() {
           {gapsData?.capped && <div className="notice-inline-orange">⚠️ 일부 목록이 잘렸어요. 기간을 줄여서 보세요.</div>}
         </>
       )}
+
+      {tab === 'worklog' && <WorkLogQualityPanel from={from} to={to} onAuthExpired={() => router.push('/login')} />}
+
+      {tab === 'hotspots' && <LocationHotspotsPanel onAuthExpired={() => router.push('/login')} />}
 
       {tab === 'open' && (
         <div className="card">

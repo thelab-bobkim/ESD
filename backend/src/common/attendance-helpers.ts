@@ -76,6 +76,28 @@ export function todayDateOnly(): Date {
 }
 
 /**
+ * 사용자 기준 "오늘" workDate. 보통은 todayDateOnly()와 같다. 다만 야간작업으로 새벽 3시를 넘겼는데
+ * 아직 퇴근하지 않은 어제 출근 기록이 있으면(KST 새벽~아침 9시 사이, 출근 후 20시간 이내) 그 기록을
+ * 계속 "오늘"로 본다. 시간 상한을 두지 않고, 퇴근 때의 위치 확인과 본인이 입력한 사유를 근거로 삼는다.
+ */
+export async function resolveWorkDateForUser(userId: string): Promise<Date> {
+  const today = todayDateOnly();
+  try {
+    const kstHour = new Date(Date.now() + 9 * 60 * 60 * 1000).getUTCHours();
+    if (kstHour >= 9) return today;
+    const todayRec = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate: today } }, select: { clockInAt: true } });
+    if (todayRec?.clockInAt) return today;
+    const prev = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    const prevRec = await prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate: prev } }, select: { clockInAt: true, clockOutAt: true } });
+    if (prevRec?.clockInAt && !prevRec.clockOutAt && Date.now() - prevRec.clockInAt.getTime() <= 20 * 60 * 60 * 1000) return prev;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[resolveWorkDateForUser] 실패 — 기본 workDate 사용:', err);
+  }
+  return today;
+}
+
+/**
  * workDate 라벨(위 todayDateOnly()가 반환하는, "그 날짜"를 나타내는 UTC자정 Date)이 실제로
  * 가리키는 "진짜 시간 범위"를 계산한다. 하루의 경계가 자정이 아니라 새벽 3시(KST)이므로,
  * workDate로 표시된 날의 실제 범위는 [그 날짜 UTC자정 - 6시간, +18시간) = KST 새벽3시~다음날 새벽3시다.
@@ -123,7 +145,11 @@ export function combineDateTime(workDate: Date, hhmm: string): Date {
  */
 export function resolveEndTime(startTime: Date, endTime: Date): Date {
   if (endTime.getTime() >= startTime.getTime()) return endTime;
-  return new Date(endTime.getTime() + 24 * 60 * 60 * 1000);
+  const nextDay = new Date(endTime.getTime() + 24 * 60 * 60 * 1000);
+  // 24시간을 더했을 때 16시간을 넘으면 야간작업이 아니라 시각 입력 오류(예: 시작 09:47, 종료 09:10)로 보고
+  // 23~31시간짜리 기록이 생기지 않도록 길이를 0으로 둔다(종료=시작).
+  if (nextDay.getTime() - startTime.getTime() > 16 * 60 * 60 * 1000) return startTime;
+  return nextDay;
 }
 
 /**
@@ -276,6 +302,22 @@ export async function applyAttendanceCorrection(
     },
   });
   await client.attendanceCorrectionRequest.update({ where: { id: correction.id }, data: { status: 'APPROVED' } });
+
+  // 2026-10-27: 정정/위치이탈 자기확정으로 퇴근시각이 정해지면, 그날 아직 열려 있는 고객사 작업류 기록도
+  // 같은 시각으로 닫는다. 예전엔 이 경로가 열린 기록을 그대로 둬서, 다음 날 아침 첫 상태 등록 때 "그 순간"에
+  // 닫히며 20시간이 넘는 공수가 생겼다. effort-helpers.ts가 이 파일을 import하므로 순환 참조를 피하려고
+  // 함수 안에서 동적으로 불러온다. 공수 정리가 실패해도 퇴근 정정 자체는 이미 끝났으므로 막지 않는다.
+  try {
+    const { closeEffortAt, AUTO_CLOSE_SOURCE_STATUSES } = await import('./effort-helpers');
+    const openEfforts = await prisma.effortLog.findMany({
+      where: { userId: targetRecord.userId, workDate: targetRecord.workDate, endTime: null, sourceStatus: { in: AUTO_CLOSE_SOURCE_STATUSES } },
+    });
+    for (const e of openEfforts) {
+      await closeEffortAt(e.id, e.startTime, proposedClockOutAt, 'AUTO_CLOCKOUT');
+    }
+  } catch (err) {
+    console.error('[applyAttendanceCorrection] 열린 공수 정리 실패(정정 자체는 완료됨):', err);
+  }
 
   return { updatedRecord, totalWorkedMinutes: totalWorkedMinutes as number | null, correction };
 }

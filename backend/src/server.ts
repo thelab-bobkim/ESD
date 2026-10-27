@@ -4,6 +4,7 @@ import { startDauofficeScheduler } from './modules/dauoffice/dauoffice-scheduler
 import { startLeaveScrapeScheduler } from './modules/dauoffice/leave-scrape-scheduler';
 import { startClockInReminderScheduler } from './modules/push/reminder-scheduler';
 import { startMismatchCoordPurgeScheduler } from './modules/push/mismatch-coord-purge-scheduler';
+import { startClientDuplicateNotifier } from './modules/clients/client-duplicate-notifier';
 import { ensureAuditorRole } from './common/ensure-roles';
 import { ensureDbConstraints } from './common/ensure-db-constraints';
 import { dauofficeSchedulersEnabled } from './common/feature-flags';
@@ -50,3 +51,5 @@ if (dauofficeSchedulersEnabled()) {
 }
 startClockInReminderScheduler();
 startMismatchCoordPurgeScheduler();
+// 2026-10-13: 매일 오전 8시 같은 주소 중복 고객사 점검 → 관리자 푸시(자동 삭제 없음).
+startClientDuplicateNotifier();

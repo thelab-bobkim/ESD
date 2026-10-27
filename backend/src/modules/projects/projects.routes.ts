@@ -344,6 +344,163 @@ projectsRouter.get('/me/performance', async (req, res) => {
   });
 });
 
+/**
+ * 2026-10-20 추가: 직원 본인이 "내가 어떤 일을 했고 어떤 고객사를 얼마나 지원했는지" 스스로 확인하는
+ * API. /me/performance와 같은 원칙(본인 데이터만, 점수·순위 없음, 별도 권한 불필요)이며
+ * 공수 기록(effort_logs) 원본을 고객사별로 합산한다. 시간은 실공수(actualMinutes)를 우선 쓰고 없으면 원본(minutes).
+ */
+projectsRouter.get('/me/activity', async (req, res) => {
+  const userId = req.authUser!.userId;
+  const query = z.object({ from: z.string().optional(), to: z.string().optional() }).safeParse(req.query);
+  if (!query.success) return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '기간을 확인하세요.' } });
+  const now = new Date();
+  const from = query.data.from ? asDate(query.data.from)! : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const toBase = query.data.to ? asDate(query.data.to)! : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0));
+  const toExclusive = new Date(toBase.getTime() + 24 * 60 * 60 * 1000);
+
+  const logs = await prisma.effortLog.findMany({
+    where: { userId, workDate: { gte: from, lt: toExclusive } },
+    orderBy: [{ workDate: 'desc' }, { startTime: 'desc' }],
+    select: { id: true, workDate: true, clientName: true, projectName: true, workType: true, minutes: true, actualMinutes: true, description: true, startTime: true, endTime: true, sourceStatus: true },
+    take: 1000,
+  });
+
+  const byClient = new Map<string, { clientName: string; days: Set<string>; entries: number; minutes: number }>();
+  let totalMinutes = 0;
+  for (const l of logs) {
+    const name = (l.clientName ?? '').trim() || '(고객사 미지정)';
+    const m = l.actualMinutes ?? l.minutes ?? 0;
+    totalMinutes += m;
+    const cur = byClient.get(name) ?? { clientName: name, days: new Set<string>(), entries: 0, minutes: 0 };
+    cur.days.add(String(dateOnly(l.workDate)));
+    cur.entries += 1;
+    cur.minutes += m;
+    byClient.set(name, cur);
+  }
+
+  // ── 날짜별 타임라인(days): 상태 흐름 + 출퇴근 + 일지 + 작업 기록을 하루 단위로 묶는다 ──
+  const KST_MS = 9 * 60 * 60 * 1000;
+  const SIX_H = 6 * 60 * 60 * 1000;
+  const hm = (d: Date) => new Date(d.getTime() + KST_MS).toISOString().slice(11, 16);
+  // 하루의 경계는 KST 새벽 3시(= todayDateOnly와 동일한 규칙).
+  const dayKeyOfInstant = (d: Date) => new Date(d.getTime() + SIX_H).toISOString().slice(0, 10);
+  const todayKey = dayKeyOfInstant(new Date());
+  const STATUS_LABEL: Record<string, string> = {
+    HQ_WORKING: '본사근무', RESIDENT_ONSITE: '고객사상주', OFFSITE: '외근', MEETING: '회의', MOVING: '이동중',
+    REMOTE: '재택', NIGHT_WORK: '야간작업', ALT_DAY_OFF: '대체휴무', ON_LEAVE: '휴가',
+    CLIENT_MEETING: '고객사미팅', CLIENT_WORK: '고객사작업', BUSINESS_TRIP: '출장', WEEKEND_WORK: '주말작업',
+  };
+  const listText = (v: string | null | undefined): string => {
+    const t = (v ?? '').trim();
+    if (!t) return '';
+    if (t.startsWith('[')) {
+      try {
+        const arr = JSON.parse(t);
+        if (Array.isArray(arr)) return arr.map((x) => String(x)).filter(Boolean).join(', ');
+      } catch { /* 문자열 그대로 사용 */ }
+    }
+    return t;
+  };
+  const rangeStart = new Date(from.getTime() - SIX_H);
+  const rangeEnd = new Date(toExclusive.getTime() - SIX_H);
+  const [statusLogs, workLogs, attendances] = await Promise.all([
+    prisma.statusChangeLog.findMany({
+      where: { userId, changedAt: { gte: rangeStart, lt: rangeEnd } },
+      orderBy: { changedAt: 'asc' },
+      select: { status: true, changedAt: true },
+      take: 3000,
+    }),
+    prisma.dailyWorkLog.findMany({
+      where: { userId, workDate: { gte: from, lt: toExclusive } },
+      select: { workDate: true, visitedClients: true, workContent: true, issues: true, followUp: true, submittedAt: true },
+    }),
+    prisma.attendanceRecord.findMany({
+      where: { userId, workDate: { gte: from, lt: toExclusive } },
+      select: { workDate: true, clockInAt: true, clockOutAt: true },
+    }),
+  ]);
+  type DayEffort = { sortKey: number; id: string; clientName: string; projectName: string; workType: string; minutes: number; description: string; statusLabel: string; timeLabel: string };
+  type DayRow = {
+    date: string; clockIn: string | null; clockOut: string | null; statuses: { label: string; at: string }[];
+    visitedClients: string; workContent: string; issues: string; followUp: string; submitted: boolean; efforts: DayEffort[];
+  };
+  const dayMap = new Map<string, DayRow>();
+  const getDay = (key: string): DayRow => {
+    let d = dayMap.get(key);
+    if (!d) {
+      d = { date: key, clockIn: null, clockOut: null, statuses: [], visitedClients: '', workContent: '', issues: '', followUp: '', submitted: false, efforts: [] };
+      dayMap.set(key, d);
+    }
+    return d;
+  };
+  for (const sl of statusLogs) {
+    const day = getDay(dayKeyOfInstant(sl.changedAt));
+    const label = STATUS_LABEL[String(sl.status)] ?? String(sl.status);
+    const last = day.statuses[day.statuses.length - 1];
+    if (!last || last.label !== label) day.statuses.push({ label, at: hm(sl.changedAt) });
+  }
+  for (const a of attendances) {
+    const day = getDay(String(dateOnly(a.workDate)));
+    day.clockIn = a.clockInAt ? hm(a.clockInAt) : null;
+    day.clockOut = a.clockOutAt ? hm(a.clockOutAt) : null;
+  }
+  for (const w of workLogs) {
+    const day = getDay(String(dateOnly(w.workDate)));
+    day.visitedClients = listText(w.visitedClients);
+    day.workContent = (w.workContent ?? '').trim().slice(0, 1500);
+    day.issues = (w.issues ?? '').trim().slice(0, 600);
+    day.followUp = (w.followUp ?? '').trim().slice(0, 600);
+    day.submitted = Boolean(w.submittedAt);
+  }
+  for (const l of logs) {
+    const key = String(dateOnly(l.workDate));
+    const day = getDay(key);
+    let timeLabel = '시간 미기록';
+    if (l.startTime && l.endTime) timeLabel = `${hm(l.startTime)}~${hm(l.endTime)}`;
+    else if (l.startTime) timeLabel = key >= todayKey ? `${hm(l.startTime)}~진행중` : `${hm(l.startTime)}~종료 미기록`;
+    day.efforts.push({
+      sortKey: l.startTime ? l.startTime.getTime() : 0,
+      id: l.id,
+      clientName: (l.clientName ?? '').trim() || '(고객사 미지정)',
+      projectName: l.projectName ?? '',
+      workType: l.workType ?? '',
+      minutes: l.actualMinutes ?? l.minutes ?? 0,
+      description: l.description ?? '',
+      statusLabel: STATUS_LABEL[String(l.sourceStatus)] ?? '',
+      timeLabel,
+    });
+  }
+  const days = Array.from(dayMap.values())
+    .filter((d) => d.statuses.length > 0 || d.efforts.length > 0 || d.workContent || d.visitedClients || d.clockIn)
+    .map((d) => ({ ...d, efforts: d.efforts.sort((x, y) => x.sortKey - y.sortKey).map(({ sortKey: _k, ...rest }) => rest) }))
+    .sort((x, y) => (x.date < y.date ? 1 : -1))
+    .slice(0, 62);
+
+  return res.json({
+    success: true,
+    data: {
+      from: dateOnly(from),
+      to: dateOnly(toBase),
+      totalMinutes,
+      entryCount: logs.length,
+      days,
+      clientCount: byClient.size,
+      byClient: Array.from(byClient.values())
+        .map((c) => ({ clientName: c.clientName, days: c.days.size, entries: c.entries, minutes: c.minutes }))
+        .sort((a, c) => c.minutes - a.minutes),
+      entries: logs.slice(0, 300).map((l) => ({
+        id: l.id,
+        workDate: dateOnly(l.workDate),
+        clientName: (l.clientName ?? '').trim() || '(고객사 미지정)',
+        projectName: l.projectName,
+        workType: l.workType,
+        minutes: l.actualMinutes ?? l.minutes ?? 0,
+        description: l.description ?? '',
+      })),
+    },
+  });
+});
+
 /** 관리자/팀장용 전체 직원 성과 요약 — '점수/순위'를 계산하지 않고 원본 근거 수치만 보여준다. */
 projectsRouter.get('/performance/summary', requireRole(...adminRoles), async (req, res) => {
   const query = z.object({ from: z.string().optional(), to: z.string().optional() }).safeParse(req.query);

@@ -5,7 +5,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../../common/prisma';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST, isWeekendForWorkDate, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
+import { resolveWorkDateForUser, todayDateOnly, ensureClockIn, combineDateTime, resolveEndTime, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, getLunchBreakMinutes, WORK_START_STATUSES, isWeekendKST, isWeekendForWorkDate, PROVISIONAL_HQ_NOTE } from '../../common/attendance-helpers';
 import { recordNightWork, willResumeNightWork } from '../../common/night-work-helpers';
 import { recordEffort, findOpenEffort, willUpdateExistingEffort, findOpenAutoCloseEfforts, closeEffortAt } from '../../common/effort-helpers';
 import {
@@ -20,14 +20,36 @@ import {
 } from './field-rules';
 import { resolveContactForEffort, registerClientContactRoutes } from './client-contacts';
 import { registerFieldCheckRoutes } from './field-check.routes';
+import { LOCATION_BLOCK_AUDIT_TARGET } from './location-block-audit';
+import { locationFailureRecorder } from './location-failure-audit';
+import { registerLocationProposalRoutes } from './location-proposal.routes';
 import { resolveAutoProject } from '../projects/project-autolink';
 import { DEFAULT_EXCLUDED_WORK_TYPES } from '../projects/project-backfill-plan';
 import { checkLocationMatch, HQ_LOCATION_MATCH_RADIUS_METERS, MAX_ACCURACY_ALLOWANCE_METERS, buildMismatchCoords } from '../../common/location';
+import { parseUserAgent, sanitizeDeviceInfo } from '../../common/user-agent';
 import { getPolicyNumber, getPolicyString, getPolicyJSON } from '../../common/policy-engine/policy-engine';
 // 2026-09-30 수정(Critical): 일일업무일지 1단계(퇴근 시 강제 마감)를 /clock-out에서 실제로
 // 저장하기 위해 가져온다 — 이 연결이 없던 동안, 모달이 필수 입력까지 받아 만든 업무일지가
 // 서버에 단 한 건도 저장되지 않았다(daily-work-log.routes.ts의 upsertDailyWorkLog/스키마 재사용).
 import { dailyWorkLogInputSchema, upsertDailyWorkLog, computeUnloggedGapMinutes } from '../daily-work-log/daily-work-log.routes';
+
+/**
+ * 2026-10-13: 엄격 모드로 등록이 막힌 시도를 좌표 없이(고객사명·거리·단계만) 감사로그에 남긴다 — 막힌 기록은 상태 기록으로 저장되지 않아서,
+ * 같은 고객사에서 여러 명이 반복해서 막히는지(=직원 실수가 아니라 등록 좌표 문제일 가능성)를 관리자가 볼 근거가 될 데이터가 없었다.
+ * 기록 실패가 사용자의 응답을 막으면 안 되므로 예외는 삼킨다. actionType은 기존 값(STATUS_CHANGE)을 쓰고 targetType으로 구분한다(DB 변경 없음).
+ */
+async function logLocationBlock(userId: string, kind: 'CLIENT' | 'HQ', clientName: string | null | undefined, distanceMeters: number | null | undefined, phase: 'FIRST' | 'CORRECTED_FAILED', status: string) {
+  try {
+    await recordAuditLog({
+      actorUserId: userId,
+      actionType: 'STATUS_CHANGE',
+      targetType: LOCATION_BLOCK_AUDIT_TARGET,
+      afterValue: { kind, clientName: kind === 'CLIENT' ? (clientName ?? null) : null, distanceMeters: distanceMeters ?? null, phase, status },
+    });
+  } catch (e) {
+    console.error('[location-block] audit log failed', e);
+  }
+}
 
 /** "123.45.67.0/24" 형태의 CIDR 표기를 IPv4 대역으로 해석해 clientIp가 그 안에 속하는지 본다. */
 function ipInCidr(clientIp: string, cidr: string): boolean {
@@ -104,6 +126,8 @@ async function isHqAddressMatch(locationAddress: string | undefined): Promise<bo
 
 export const attendanceRouter = createRouter();
 attendanceRouter.use(requireAuth);
+// 2026-10-15: 위치 문제로 거절된 출근/상태 등록 시도를 좌표 없이 감사로그에 남긴다(관리자 방문지 점검 화면에서 확인).
+attendanceRouter.use(locationFailureRecorder);
 
 // 이 상태로 바뀌면 "실제 업무 시작"으로 보고 출근시각을 자동 인식한다(주52시간제 대응).
 // REMOTE(재택)는 대부분 고객사에 원격 접속해서 작업하는 형태라, 접속 시작~종료를 다른 근무
@@ -423,7 +447,7 @@ const LOCATION_CAPTURE_STATUSES = new Set(['OK', 'NO_CONSENT', 'PERMISSION_DENIE
 /** 퇴근 처리 — 그날의 "실질 근무"를 확정한다(주52시간 집계의 기준이 되는 실근무시간 계산) */
 attendanceRouter.post('/clock-out', async (req, res) => {
   const userId = req.authUser!.userId;
-  const workDate = todayDateOnly();
+  const workDate = await resolveWorkDateForUser(userId);
   // 좌표는 절대 안 받고, 클라이언트에서 역지오코딩한 "주소 텍스트"만 받는다(직원 동의된 경우에만 전송됨).
   const clockOutLocation = typeof req.body?.locationAddress === 'string' ? req.body.locationAddress.slice(0, 200) : undefined;
   // 위치가 없을 때 "왜" 없는지(권한거부/타임아웃/미동의 등) — 상황판에서 빈 값과 구분해서 보여주기 위함.
@@ -809,6 +833,11 @@ async function isStrictLocationEnabled(): Promise<boolean> {
   return (await getPolicyNumber('ENFORCE_LOCATION_MATCH', 0)) === 1;
 }
 
+/** 2026-10-27(대표 승인): 위치를 "못 구한" 경우에 한해 엄격 모드에서도 사유로 등록 허용(정책값 0이면 완전 차단). */
+async function failureReasonAllowedInStrict(): Promise<boolean> {
+  return (await getPolicyNumber('LOCATION_FAILURE_REASON_ALLOWED_IN_STRICT', 1)) === 1;
+}
+
 /** 2026-10-11: 정책값 GPS_LOW_ACCURACY_RECHECK(기본 1=사용, 0이면 예전처럼 오차 1km 초과는 바로 통과). strict=true면 항상 재측정을 요구한다. */
 async function lowAccuracyGate(accuracyMeters: number | null | undefined, recheckCount: number, strict = false) {
   const enabled = (await getPolicyNumber('GPS_LOW_ACCURACY_RECHECK', 1)) === 1;
@@ -869,7 +898,19 @@ async function autoCloseOtherOpenEfforts(userId: string, keep: { id: string; sou
   const now = new Date();
   for (const e of open) {
     const superseded = Boolean(keep && e.sourceStatus === keep.sourceStatus && e.clientName === keep.clientName);
-    const end = superseded ? e.startTime : resolveAutoCloseEnd({ reason: 'STATUS_CHANGE', startTime: e.startTime, now });
+    let end = superseded ? e.startTime : resolveAutoCloseEnd({ reason: 'STATUS_CHANGE', startTime: e.startTime, now });
+    // 2026-10-27: 그 근무일의 퇴근이 이미 기록돼 있으면(퇴근 정정 등) 종료시각이 그 퇴근시각을 넘지 않게 제한한다.
+    // 다음 날 아침 첫 상태 등록 시각으로 닫혀 전날 공수가 20시간 넘게 부풀던 문제를 막는다.
+    // 퇴근시각이 작업 시작보다 앞서는 경우(퇴근 후 이어진 작업)는 건드리지 않는다.
+    if (!superseded) {
+      const dayRecord = await prisma.attendanceRecord.findUnique({
+        where: { userId_workDate: { userId, workDate: e.workDate } },
+        select: { clockOutAt: true },
+      });
+      if (dayRecord?.clockOutAt && dayRecord.clockOutAt.getTime() > e.startTime.getTime() && end.getTime() > dayRecord.clockOutAt.getTime()) {
+        end = dayRecord.clockOutAt;
+      }
+    }
     const closedBy = superseded ? 'SUPERSEDED' : closedByFor('STATUS_CHANGE');
     const closed = await closeEffortAt(e.id, e.startTime, end, closedBy);
     await recordAuditLog({
@@ -969,6 +1010,11 @@ attendanceRouter.post('/status', async (req, res) => {
   // 2026-10-12: 위치 일치 강제(ENFORCE_LOCATION_MATCH) — 본사근무/고객사작업/고객사미팅에만 적용된다.
   const strictHere = isStrictLocationStatus(status, await isStrictLocationEnabled());
   let strictMapCorrected = false;
+  // 2026-10-27(대표 승인): 엄격 모드에서도 GPS·기지국 오차로 위치를 못 맞추는 엔지니어가 "내 현재 위치로 등록"하면(사유 5자 이상)
+  // 등록은 되게 하고, 엔지니어가 측정한 위치로 기록하며 관리자 확인·분석 대상으로 남긴다. 정책값 LOCATION_EXCEPTION_REGISTER_ENABLED=0이면 끈다.
+  const exceptionRegisterEnabled = (await getPolicyNumber('LOCATION_EXCEPTION_REGISTER_ENABLED', 1)) === 1;
+  const exceptionReasonText = typeof req.body?.locationFailureReason === 'string' ? req.body.locationFailureReason.trim().slice(0, 200) : '';
+  const exceptionRegister = exceptionRegisterEnabled && req.body?.registerCurrentLocation === true && exceptionReasonText.length >= MIN_LOCATION_FAILURE_REASON_LENGTH;
 
   // 주말(토/일, KST) 게이트(2026-09-06 요청): 주말엔 "주말작업"만 등록할 수 있고 나머지 상태는
   // 막는다 — 반대로 평일엔 "주말작업"을 등록할 수 없다. 관리자 계정도 예외 없이 적용한다(프론트
@@ -1149,10 +1195,10 @@ attendanceRouter.post('/status', async (req, res) => {
       // 처리되며(hqVerifiedByAlternateMeans), 위치 자체가 순간이동급으로 튄 경우는 프론트에서
       // 별도로 차단한다(jumpDetected).
       // 2026-10-12: 엄격 모드 — 오차범위가 1km를 넘는 측정으로는 불일치인 채로 어떤 경로로도 등록하지 않는다.
-      if (strictHere && hqLocationResult && !hqLocationResult.locationMatch && isMismatchAccuracyExempt(accuracyMeters)) {
+      if (strictHere && !exceptionRegister && hqLocationResult && !hqLocationResult.locationMatch && isMismatchAccuracyExempt(accuracyMeters)) {
         return res.status(400).json(lowAccuracyErrorBody(accuracyMeters, true));
       }
-      if (hqLocationResult && !hqLocationResult.locationMatch && isMismatchAccuracyExempt(accuracyMeters) && !selfConfirmMismatch) {
+      if (!exceptionRegister && hqLocationResult && !hqLocationResult.locationMatch && isMismatchAccuracyExempt(accuracyMeters) && !selfConfirmMismatch) {
         // 2026-10-11: 예전엔 GPS 오차가 1km를 넘으면 불일치여도 무조건 통과시켰다. 이제 먼저 건물 밖에서
         // 다시 측정하도록 안내하고, 재측정 후에도 부정확하면 등록은 허용하되 관리자 확인 대상으로 남긴다.
         if ((await lowAccuracyGate(accuracyMeters, outdoorRecheckCount)) === 'NEED_RECHECK') {
@@ -1160,8 +1206,9 @@ attendanceRouter.post('/status', async (req, res) => {
         }
         lowAccuracyPassed = true;
       }
-      if (hqLocationResult && !hqLocationResult.locationMatch && !isMismatchAccuracyExempt(accuracyMeters)) {
+      if (!exceptionRegister && hqLocationResult && !hqLocationResult.locationMatch && !isMismatchAccuracyExempt(accuracyMeters)) {
         if (!selfConfirmMismatch) {
+          if (strictHere) await logLocationBlock(userId, 'HQ', null, hqLocationResult.locationDistanceMeters, 'FIRST', status);
           return res.status(400).json({
             success: false,
             error: {
@@ -1188,6 +1235,7 @@ attendanceRouter.post('/status', async (req, res) => {
         if (strictHere) {
           const hqCorrectedCheck = checkLocationMatch(confirmedLocation, { latitude: Number(hqLat), longitude: Number(hqLng) }, HQ_LOCATION_MATCH_RADIUS_METERS);
           if (!hqCorrectedCheck || !hqCorrectedCheck.locationMatch) {
+            await logLocationBlock(userId, 'HQ', null, hqCorrectedCheck?.locationDistanceMeters, 'CORRECTED_FAILED', status);
             return res.status(400).json({
               success: false,
               error: {
@@ -1220,9 +1268,10 @@ attendanceRouter.post('/status', async (req, res) => {
         });
         // 2026-10-11: "무조건 위치 확인" 원칙 — 정책값 LOCATION_FAILURE_GRACE_COUNT(기본 0)만큼만 봐주고,
         // 그 뒤에는 사유를 직접 적어야 등록된다(관리자 확인 대상).
-        const hqFailureDecision = await locationFailureGate(priorHqLocationFailures, locationFailureReason, strictHere);
+        const strictHqFail = strictHere && !exceptionRegister && !(await failureReasonAllowedInStrict());
+        const hqFailureDecision = await locationFailureGate(priorHqLocationFailures, locationFailureReason, strictHqFail);
         if (hqFailureDecision === 'BLOCK') {
-          return res.status(400).json(locationFailureErrorBody('본사근무를 등록하려면', strictHere));
+          return res.status(400).json(locationFailureErrorBody('본사근무를 등록하려면', strictHqFail));
         }
         if (hqFailureDecision === 'ALLOW_WITH_REASON') locationFailureNote = (locationFailureReason ?? '').trim();
       }
@@ -1278,11 +1327,12 @@ attendanceRouter.post('/status', async (req, res) => {
   if (LOCATION_CHECK_ELIGIBLE_STATUSES.has(status) && matchedClientForLocation?.latitude != null && matchedClientForLocation?.longitude != null) {
     if (locationResult && !locationResult.locationMatch) {
       // 2026-10-12: 엄격 모드 — 오차범위가 1km를 넘는 측정으로는 불일치인 채로 어떤 경로로도 등록하지 않는다.
-      if (strictHere && isMismatchAccuracyExempt(accuracyMeters)) {
+      if (strictHere && !exceptionRegister && isMismatchAccuracyExempt(accuracyMeters)) {
         return res.status(400).json(lowAccuracyErrorBody(accuracyMeters, true));
       }
-      if (!isMismatchAccuracyExempt(accuracyMeters)) {
+      if (!exceptionRegister && !isMismatchAccuracyExempt(accuracyMeters)) {
         if (!selfConfirmMismatch) {
+          if (strictHere) await logLocationBlock(userId, 'CLIENT', effort?.clientName, locationResult.locationDistanceMeters, 'FIRST', status);
           return res.status(400).json({
             success: false,
             error: {
@@ -1309,6 +1359,7 @@ attendanceRouter.post('/status', async (req, res) => {
         if (strictHere) {
           const clientCorrectedCheck = checkLocationMatch(confirmedLocation, matchedClientForLocation);
           if (!clientCorrectedCheck || !clientCorrectedCheck.locationMatch) {
+            await logLocationBlock(userId, 'CLIENT', effort?.clientName, clientCorrectedCheck?.locationDistanceMeters, 'CORRECTED_FAILED', status);
             return res.status(400).json({
               success: false,
               error: {
@@ -1321,7 +1372,7 @@ attendanceRouter.post('/status', async (req, res) => {
           strictMapCorrected = true;
         }
       }
-      if (isMismatchAccuracyExempt(accuracyMeters) && !selfConfirmMismatch) {
+      if (!exceptionRegister && isMismatchAccuracyExempt(accuracyMeters) && !selfConfirmMismatch) {
         // 2026-10-11: 고객사 도착 확인도 본사와 같은 원칙 — GPS 오차가 1km를 넘으면 건물 밖에서 다시 측정한 뒤에만 통과.
         if ((await lowAccuracyGate(accuracyMeters, outdoorRecheckCount)) === 'NEED_RECHECK') {
           return res.status(400).json(lowAccuracyErrorBody(accuracyMeters));
@@ -1351,9 +1402,10 @@ attendanceRouter.post('/status', async (req, res) => {
         },
       });
       // 2026-10-11: 본사근무와 동일 — 위치를 못 구한 날의 봐주기는 정책값(기본 0회)만큼만, 이후엔 사유 입력으로만 통과.
-      const clientFailureDecision = await locationFailureGate(priorLocationFailures, locationFailureReason, strictHere);
+      const strictClientFail = strictHere && !exceptionRegister && !(await failureReasonAllowedInStrict());
+      const clientFailureDecision = await locationFailureGate(priorLocationFailures, locationFailureReason, strictClientFail);
       if (clientFailureDecision === 'BLOCK') {
-        return res.status(400).json(locationFailureErrorBody('고객사 현장 도착을 등록하려면', strictHere));
+        return res.status(400).json(locationFailureErrorBody('고객사 현장 도착을 등록하려면', strictClientFail));
       }
       if (clientFailureDecision === 'ALLOW_WITH_REASON') locationFailureNote = (locationFailureReason ?? '').trim();
     }
@@ -1375,13 +1427,15 @@ attendanceRouter.post('/status', async (req, res) => {
     const alreadyClockedIn = Boolean(existingRecordForLocationGate?.clockInAt);
     const exemptByAlternateMeans = status === 'HQ_WORKING' && hqVerifiedByAlternateMeans;
     if (!alreadyClockedIn && !exemptByAlternateMeans && locationCaptureStatus !== 'OK') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'LOCATION_REQUIRED_FOR_WORK_START',
-          message: '오늘 첫 상태 등록(출근)은 위치 확인이 필수입니다. 위치 접근을 허용한 뒤 다시 시도해주세요.',
-        },
-      });
+      // 2026-10-27: 위치를 정말 못 구한 경우(권한거부/시간초과/기기 문제)엔 본인 사유(5자 이상)를 적으면 등록을 허용하고
+      // 관리자 확인 대상으로 남긴다. 위치가 잡히는 경우의 위치 대조 원칙은 그대로다. 엄격 모드면 사유로 대체할 수 없다.
+      const strictForWorkStart = (await isStrictLocationEnabled()) && !exceptionRegister && !(await failureReasonAllowedInStrict());
+      const reasonForWorkStart = (locationFailureReason ?? '').trim();
+      if (!strictForWorkStart && reasonForWorkStart.length >= MIN_LOCATION_FAILURE_REASON_LENGTH) {
+        if (!locationFailureNote) locationFailureNote = reasonForWorkStart;
+      } else {
+        return res.status(400).json(locationFailureErrorBody('오늘 첫 상태 등록(출근)을', strictForWorkStart));
+      }
     }
   }
 
@@ -1500,6 +1554,43 @@ attendanceRouter.post('/status', async (req, res) => {
   );
   const noteTags: string[] = [];
   if (anyLocationMismatch && selfConfirmMismatch) noteTags.push('[위치 불일치 — 직원이 실제 위치를 직접 확인하고 등록함]');
+  if (exceptionRegister) {
+    noteTags.push('[내 현재 위치로 등록 — 위치 오차/확인 불가, 관리자 확인 필요]');
+    locationMismatchException = true;
+    if (!locationFailureNote) locationFailureNote = exceptionReasonText;
+    try {
+      const uaText = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : '';
+      const pua = parseUserAgent(uaText);
+      const di = sanitizeDeviceInfo(req.body?.deviceInfo);
+      const distRaw = locationResult?.locationDistanceMeters ?? hqLocationResult?.locationDistanceMeters;
+      await prisma.locationException.create({
+        data: {
+          userId,
+          workDate: todayDateOnly(),
+          status: String(status),
+          clientName: effort?.clientName ? String(effort.clientName).slice(0, 100) : null,
+          distanceMeters: typeof distRaw === 'number' ? Math.round(distRaw) : null,
+          accuracyMeters: typeof accuracyMeters === 'number' ? Math.round(accuracyMeters) : null,
+          latitude: location?.lat ?? null,
+          longitude: location?.lng ?? null,
+          address: typeof locationAddress === 'string' ? locationAddress.slice(0, 200) : null,
+          reason: exceptionReasonText,
+          captureStatus: locationCaptureStatus ? String(locationCaptureStatus) : null,
+          userAgent: uaText.slice(0, 300) || null,
+          os: pua.os,
+          osVersion: pua.osVersion || null,
+          browser: pua.browser,
+          deviceModel: di.uaModel || pua.model || null,
+          connectionType: di.connectionType || null,
+          downlinkMbps: di.downlinkMbps,
+          screenSize: di.screen || null,
+        },
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[location-exception] 기록 실패(등록은 계속 진행)', e);
+    }
+  }
   if (lowAccuracyPassed) noteTags.push('[GPS 정확도 낮음 — 건물 밖 재측정 후 등록]');
   if (strictMapCorrected) noteTags.push('[GPS 위치 보정 — 직원이 지도에서 직접 확인함]');
   if (locationFailureNote) noteTags.push(`[위치 확인 불가 — 사유: ${locationFailureNote}]`);
@@ -2061,7 +2152,7 @@ attendanceRouter.post('/effort-presence', async (req, res) => {
 /** 본인 오늘 근태 조회 (상태는 "오늘" 것만 — 며칠 지난 상태를 현재처럼 보여주지 않는다) */
 attendanceRouter.get('/me', async (req, res) => {
   const userId = req.authUser!.userId;
-  const workDate = todayDateOnly();
+  const workDate = await resolveWorkDateForUser(userId);
   const { start: dayStartReal, end: dayEndReal } = realDayWindow(workDate);
   const record = await prisma.attendanceRecord.findUnique({
     where: { userId_workDate: { userId, workDate } },
@@ -2266,6 +2357,8 @@ attendanceRouter.post('/clients', async (req, res) => {
 registerClientContactRoutes(attendanceRouter);
 // 2026-10-11: 관리자 "현장 기록 점검"(위치 예외·퇴근 위치·자동 마무리·입력 누락 + 과거 미종료 작업 추정 마무리)
 registerFieldCheckRoutes(attendanceRouter);
+// 2026-10-13: 직원의 "등록된 고객사 위치가 실제와 달라요" 신청(관리자 승인 후 반영)
+registerLocationProposalRoutes(attendanceRouter);
 
 /**
  * (관리자 리포트와 달리 본인 것만, 아무 권한이나 조회 가능)

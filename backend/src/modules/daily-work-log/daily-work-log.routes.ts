@@ -6,9 +6,22 @@ import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
-import { todayDateOnly, realDayWindow } from '../../common/attendance-helpers';
+import { resolveWorkDateForUser, todayDateOnly, realDayWindow } from '../../common/attendance-helpers';
 import { getPolicyNumber } from '../../common/policy-engine/policy-engine';
 import { isMeaningfulPlan, PLAN_RULE_MESSAGE } from './work-log-rules';
+import { isAiAssistEnabled, aiModel, aiDailyLimit, aiUsageLimiter, buildPolishRequest, buildVoiceRequest, callClaude, parseAiJson, sanitizeResult, AiError, MAX_FIELD_CHARS, MAX_TRANSCRIPT_CHARS, type AiFields } from './ai-assist';
+import { formatWorkContent, buildSuggestions, type DraftEffort, type DraftMailReport, type DraftOpenTask } from './work-log-draft';
+import { aiPilotDepts } from './ai-assist';
+
+/** AI 보조를 이 직원에게 열어도 되는지 — 기능이 켜져 있고, 시범 팀 제한이 있으면 그 팀 소속일 때만 true. */
+async function isAiAllowedForUser(userId: string): Promise<boolean> {
+  if (!isAiAssistEnabled()) return false;
+  const depts = aiPilotDepts();
+  if (depts.length === 0) return true;
+  const u = await prisma.user.findUnique({ where: { id: userId }, select: { department: { select: { name: true } } } });
+  const name = u?.department?.name;
+  return !!name && depts.includes(name);
+}
 
 /**
  * 일일업무일지 모듈 (2026-09-26, 김형태 대표이사 요청 — "매일 업무 마감을 일일업무일지로").
@@ -168,10 +181,10 @@ dailyWorkLogRouter.use(requireAuth);
 /** 2단계: 오늘치 자동초안 — StatusChangeLog/EffortLog/NightWorkMailReport를 모아 9개 표준 필드를 채워준다. */
 dailyWorkLogRouter.get('/draft', async (req, res) => {
   const userId = req.authUser!.userId;
-  const workDate = parseWorkDateParam(req.query.workDate);
+  const workDate = typeof req.query.workDate === 'string' && req.query.workDate ? parseWorkDateParam(req.query.workDate) : await resolveWorkDateForUser(userId);
   const { start, end } = realDayWindow(workDate);
 
-  const [statuses, effortLogs, attendanceRecord, existing, me, unloggedGap] = await Promise.all([
+  const [statuses, effortLogs, attendanceRecord, existing, me, unloggedGap, openTaskRows] = await Promise.all([
     prisma.statusChangeLog.findMany({ where: { userId, changedAt: { gte: start, lt: end } }, orderBy: { changedAt: 'asc' } }),
     prisma.effortLog.findMany({ where: { userId, workDate }, orderBy: { startTime: 'asc' } }),
     prisma.attendanceRecord.findUnique({ where: { userId_workDate: { userId, workDate } } }),
@@ -180,6 +193,13 @@ dailyWorkLogRouter.get('/draft', async (req, res) => {
     // 퇴근 전에 미리 보여주기 위한 "지금 시점 기준" 공백 판정 — 실제 퇴근 시점엔 attendance.routes.ts
     // /clock-out이 그때의 clockOutAt 기준으로 다시 한번 독립적으로 계산해서 최종 검증한다.
     computeUnloggedGapMinutes(userId, workDate, new Date()),
+    // 2026-10-15: "내일 예정 업무" 제안 근거 — 나에게 배정된 미완료 Task(진행중 먼저, 기한 임박 순은 buildSuggestions가 정렬).
+    prisma.projectTask.findMany({
+      where: { assigneeId: userId, status: { in: ['TODO', 'IN_PROGRESS'] }, project: { status: { in: ['PLANNED', 'ACTIVE'] } } },
+      orderBy: [{ dueDate: 'asc' }],
+      take: 20,
+      select: { id: true, title: true, status: true, dueDate: true, project: { select: { name: true } } },
+    }),
   ]);
 
   const mailReports = me?.email
@@ -193,18 +213,69 @@ dailyWorkLogRouter.get('/draft', async (req, res) => {
   effortLogs.forEach((e) => { if (e.clientName) visitedClientsSet.add(e.clientName); });
   mailReports.forEach((m) => { if (m.clientNameRaw) visitedClientsSet.add(m.clientNameRaw); });
 
-  const workContentLines: string[] = [];
-  effortLogs.forEach((e) => {
-    const timeLabel = e.endTime ? `${hhmmLabel(e.startTime)}~${hhmmLabel(e.endTime)}` : `${hhmmLabel(e.startTime)}~진행중`;
-    const label = [e.clientName, e.projectName].filter(Boolean).join(' · ') || '작업';
-    workContentLines.push(`- [${label}] ${timeLabel}${e.description ? ' — ' + e.description : ''}`.trim());
-  });
-  mailReports.forEach((m) => {
-    workContentLines.push(`- (${m.kind === 'NIGHT' ? '야간작업' : '주말작업'} 메일보고) [${m.clientNameRaw}] ${m.workContent || ''}`.trim());
-  });
+  // 2026-10-15: 작업내용을 고객사별 표준 형식으로 정리하고, 이슈/후속조치/내일 예정 업무 제안(칩)을 함께 내려준다(work-log-draft.ts).
+  const draftEfforts: DraftEffort[] = effortLogs.map((e) => ({
+    clientName: e.clientName, projectName: e.projectName, workType: e.workType, startTime: e.startTime, endTime: e.endTime,
+    minutes: e.minutes, actualMinutes: e.actualMinutes, description: e.description, contactName: e.contactName, taskId: e.taskId,
+  }));
+  const draftMails: DraftMailReport[] = mailReports.map((m) => ({ kind: m.kind, clientNameRaw: m.clientNameRaw, workContent: m.workContent }));
+  const openTasks: DraftOpenTask[] = (openTaskRows as any[]).map((t) => ({
+    id: t.id, title: t.title, status: t.status, dueDate: t.dueDate, projectName: t.project?.name ?? '',
+  }));
+  const formatted = formatWorkContent(draftEfforts, draftMails);
+  const suggestions = buildSuggestions(draftEfforts, openTasks);
 
   const actualEffortMinutes = effortLogs.reduce((sum, e) => sum + (e.actualMinutes ?? e.minutes ?? 0), 0);
   const lastStatus = statuses[statuses.length - 1];
+
+  // 2026-10-21: 이어쓰기 도우미 — 본인의 과거 기록만으로 만든 안내(외부 전송 없음, 다른 직원 기록은 사용하지 않는다).
+  const FRIDAY_PLAN_PLACEHOLDER = '금요일 마감 (주말 휴무)';
+  const dayStr = (d: Date) => d.toISOString().slice(0, 10);
+  const todayClients = [...visitedClientsSet];
+  const [recentLogs, pastEfforts] = await Promise.all([
+    prisma.dailyWorkLog.findMany({
+      where: { userId, workDate: { lt: workDate, gte: new Date(workDate.getTime() - 14 * 24 * 60 * 60 * 1000) } },
+      orderBy: { workDate: 'desc' },
+      take: 14,
+      select: { workDate: true, tomorrowPlan: true, followUp: true, visitedClients: true },
+    }),
+    todayClients.length
+      ? prisma.effortLog.findMany({
+          where: { userId, workDate: { lt: workDate }, clientName: { in: todayClients } },
+          orderBy: [{ workDate: 'desc' }, { startTime: 'desc' }],
+          take: 40,
+          select: { workDate: true, clientName: true, workType: true, description: true },
+        })
+      : Promise.resolve([] as { workDate: Date; clientName: string; workType: string; description: string | null }[]),
+  ]);
+  const prevLog = recentLogs[0];
+  const previousPlan =
+    prevLog &&
+    workDate.getTime() - prevLog.workDate.getTime() <= 4 * 24 * 60 * 60 * 1000 &&
+    prevLog.tomorrowPlan &&
+    prevLog.tomorrowPlan.trim() !== FRIDAY_PLAN_PLACEHOLDER &&
+    isMeaningfulPlan(prevLog.tomorrowPlan)
+      ? { workDate: dayStr(prevLog.workDate), text: prevLog.tomorrowPlan.trim() }
+      : null;
+  const clientSet = new Set(todayClients);
+  const followUps = recentLogs
+    .filter((l) => l.followUp && isMeaningfulPlan(l.followUp))
+    .map((l) => ({
+      workDate: dayStr(l.workDate),
+      text: l.followUp!.trim().slice(0, 200),
+      sameClient: (l.visitedClients ?? '').split(',').map((s) => s.trim()).some((c) => c && clientSet.has(c)),
+    }))
+    .sort((a, b) => Number(b.sameClient) - Number(a.sameClient))
+    .slice(0, 3);
+  const lastVisits: { clientName: string; workDate: string; workType: string; description: string }[] = [];
+  const seenClients = new Set<string>();
+  for (const e of pastEfforts) {
+    if (seenClients.has(e.clientName)) continue;
+    seenClients.add(e.clientName);
+    lastVisits.push({ clientName: e.clientName, workDate: dayStr(e.workDate), workType: e.workType, description: (e.description ?? '').trim().slice(0, 150) });
+    if (lastVisits.length >= 5) break;
+  }
+  const history = { previousPlan, followUps, lastVisits };
 
   return res.json({
     success: true,
@@ -213,7 +284,14 @@ dailyWorkLogRouter.get('/draft', async (req, res) => {
       formType,
       workTypeSnapshot: lastStatus ? (STATUS_LABELS[lastStatus.status] ?? lastStatus.status) : null,
       visitedClients: [...visitedClientsSet].join(', ') || null,
-      workContent: workContentLines.join('\n') || null,
+      workContent: formatted.text,
+      // 작업 설명(description)이 비어 있는 작업 기록 수 — 화면에서 "설명을 적어주세요" 안내에 쓴다.
+      missingDescriptionCount: formatted.missingDescriptionCount,
+      // 이슈/후속조치/내일 예정 업무 제안 문구(직원이 눌러서 넣고 고쳐 쓴다 — 서버가 대신 저장하지 않는다).
+      suggestions,
+      // 2026-10-15: AI 보조(문장 다듬기·말/메모로 채우기) 사용 가능 여부 — 꺼져 있으면 화면에 버튼이 나오지 않는다.
+      aiAssistEnabled: await isAiAllowedForUser(req.authUser!.userId),
+      history,
       totalWorkedMinutes: attendanceRecord?.totalWorkedMinutes ?? null,
       actualEffortMinutes: actualEffortMinutes || null,
       // 미등록 공백시간 — 있으면 프론트가 퇴근 전에 미리 사유 입력창을 보여준다.
@@ -245,6 +323,78 @@ dailyWorkLogRouter.get('/me', async (req, res) => {
   return res.json({ success: true, data: row });
 });
 
+const aiAssistSchema = z.object({
+  mode: z.enum(['polish', 'voice']),
+  issues: z.string().max(MAX_FIELD_CHARS).optional(),
+  followUp: z.string().max(MAX_FIELD_CHARS).optional(),
+  tomorrowPlan: z.string().max(MAX_FIELD_CHARS).optional(),
+  transcript: z.string().max(MAX_TRANSCRIPT_CHARS).optional(),
+});
+
+/**
+ * 2026-10-15: 업무일지 AI 보조 — mode=polish(적은 문장 다듬기) / mode=voice(말·메모를 이슈/후속조치/내일 예정으로 나눠 정리).
+ * 결과는 저장하지 않고 "제안"으로만 돌려준다(직원이 확인·적용해야 입력칸에 들어감). 기본 꺼짐(ai-assist.ts 참고).
+ */
+dailyWorkLogRouter.post('/ai-assist', async (req, res) => {
+  if (!(await isAiAllowedForUser(req.authUser!.userId))) {
+    return res.status(503).json({ success: false, error: { code: 'AI_DISABLED', message: 'AI 보조 기능이 아직 켜져 있지 않아요. 직접 입력해주세요.' } });
+  }
+  const parsed = aiAssistSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '입력 내용을 확인하세요.' } });
+  }
+  const { mode, transcript, ...fields } = parsed.data;
+  const original: AiFields = { issues: fields.issues ?? '', followUp: fields.followUp ?? '', tomorrowPlan: fields.tomorrowPlan ?? '' };
+  const textLen = (s: string | undefined) => (s ?? '').replace(/\s+/g, '').length;
+  if (mode === 'polish' && textLen(original.issues) + textLen(original.followUp) + textLen(original.tomorrowPlan) < 2) {
+    return res.status(400).json({ success: false, error: { code: 'NOTHING_TO_POLISH', message: '다듬을 내용을 먼저 적어주세요.' } });
+  }
+  if (mode === 'voice' && textLen(transcript) < 5) {
+    return res.status(400).json({ success: false, error: { code: 'NOTHING_TO_POLISH', message: '말하거나 적은 내용이 너무 짧아요.' } });
+  }
+
+  const userId = req.authUser!.userId;
+  const limited = aiUsageLimiter.check(userId, aiDailyLimit());
+  if (limited === 'TOO_FAST') {
+    return res.status(429).json({ success: false, error: { code: 'AI_TOO_FAST', message: '잠시 후 다시 눌러주세요.' } });
+  }
+  if (limited === 'LIMIT') {
+    return res.status(429).json({ success: false, error: { code: 'AI_LIMIT', message: '오늘 AI 보조 사용 횟수를 다 썼어요. 직접 입력해주세요.' } });
+  }
+  aiUsageLimiter.record(userId);
+
+  let request: { system: string; user: string };
+  if (mode === 'polish') {
+    request = buildPolishRequest(original);
+  } else {
+    // 오늘 방문 고객사명만 참고로 전달한다(직원 이름·좌표는 보내지 않는다).
+    let clients: string[] = [];
+    try {
+      const rows = await prisma.effortLog.findMany({ where: { userId, workDate: todayDateOnly() }, select: { clientName: true }, take: 30 });
+      clients = [...new Set((rows as any[]).map((r) => String(r.clientName ?? '').trim()).filter(Boolean))];
+    } catch { /* 참고용이라 실패해도 계속 */ }
+    request = buildVoiceRequest(transcript ?? '', clients);
+  }
+
+  let ok = false;
+  let status: number | undefined;
+  try {
+    const text = await callClaude({ apiKey: String(process.env.ANTHROPIC_API_KEY), model: aiModel(), system: request.system, user: request.user });
+    const result = parseAiJson(text);
+    if (!result) throw new AiError('AI_BAD_RESPONSE');
+    const suggestions = sanitizeResult(result, mode, mode === 'polish' ? original : { issues: '', followUp: '', tomorrowPlan: '' });
+    ok = true;
+    return res.json({ success: true, data: { mode, suggestions, changed: Object.keys(suggestions).length } });
+  } catch (e) {
+    status = e instanceof AiError ? e.httpStatus : undefined;
+    const code = e instanceof AiError ? e.code : 'AI_UNAVAILABLE';
+    return res.status(502).json({ success: false, error: { code, message: 'AI가 지금 응답하지 못했어요. 직접 입력하셔도 퇴근은 그대로 할 수 있어요.' } });
+  } finally {
+    // 내용은 남기지 않고 사용 사실(모드·성공 여부)만 감사로그에 남긴다.
+    recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'ai_assist', afterValue: { mode, ok, ...(status ? { status } : {}) } }).catch(() => undefined);
+  }
+});
+
 /** 1단계/2단계 공용 제출 엔드포인트 — 퇴근 흐름 밖에서(정정 등) 직접 저장/수정할 때 쓴다. */
 dailyWorkLogRouter.post('/', async (req, res) => {
   const parsed = dailyWorkLogInputSchema.safeParse(req.body);
@@ -255,7 +405,7 @@ dailyWorkLogRouter.post('/', async (req, res) => {
     });
   }
   const userId = req.authUser!.userId;
-  const workDate = parsed.data.workDate ? parseWorkDateParam(parsed.data.workDate) : todayDateOnly();
+  const workDate = parsed.data.workDate ? parseWorkDateParam(parsed.data.workDate) : await resolveWorkDateForUser(userId);
   const row = await upsertDailyWorkLog(userId, workDate, parsed.data);
   await recordAuditLog({ actorUserId: userId, actionType: 'STATUS_CHANGE', targetType: 'daily_work_log', targetId: row.id, afterValue: { workDate: row.workDate, formType: row.formType } });
   return res.json({ success: true, data: row });

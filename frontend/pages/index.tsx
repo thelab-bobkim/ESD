@@ -1,14 +1,19 @@
+import { collectDeviceInfo } from '@/lib/device-info';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import Head from 'next/head';
 import { apiFetch, clearToken } from '@/lib/api';
 import { isPushSubscribed, subscribeToPush, unsubscribeFromPush, isIOSDevice, isStandalonePWA } from '@/lib/push';
+import { detectDesktopBrowser, shouldShowPcGuide, readPcGuideDismissedAt, writePcGuideDismissedAt, appendPcLocationHint, PC_FAILURE_HINT, PC_GUIDE_STEPS } from '@/lib/pc-location-guide';
+import PcLocationGuideCard from '@/components/PcLocationGuideCard';
 import { getCurrentLocationWithStatus, distanceMeters, reverseGeocode, isLowAccuracy, accuracyWarningLabel, LOCATION_JUMP_WARNING } from '@/lib/geolocation';
 import { findNearbyOtherClients, distanceToNamedClient, formatDistance, applyClientSwitchToBody } from '@/lib/client-switch';
 import { heroGreeting, clockOutGreeting, type WeatherInfo } from '@/lib/greetings';
 import MandatoryConsentGate from '@/components/MandatoryConsentGate';
+import UpdateNoticeModal from '@/components/UpdateNoticeModal';
 import ClockOutConfirmModal from '@/components/ClockOutConfirmModal';
 import MapPickerModal from '@/components/MapPickerModal';
+import { shouldOfferRemote, applyRemoteToBody, shouldOfferResident } from '@/lib/remote-offer';
 import SlideToConfirm from '@/components/SlideToConfirm';
 import PastDayCorrectionCard, { type PendingCorrectionRow } from '@/components/PastDayCorrectionCard';
 import CancelClockOutCard, { type CancelClockOutStatus } from '@/components/CancelClockOutCard';
@@ -120,12 +125,15 @@ const NEW_CONTACT_VALUE = '__new__';
 interface ContactOption { id: string; name: string; phone: string | null; department?: string | null }
 // 위치 안내창: GPS 오차가 큼(건물 밖에서 재측정) / 위치를 못 구함(재측정 또는 사유 입력) / 첫 출근 등록은 재측정만.
 type LocationPromptState = { kind: 'GPS_LOW' | 'NO_LOCATION' | 'NO_LOCATION_START'; message: string };
-type LocationPromptAnswer = { action: 'RETRY' } | { action: 'REASON'; reason: string } | { action: 'CANCEL' };
+type LocationPromptAnswer = { action: 'RETRY' } | { action: 'REASON'; reason: string; exception?: boolean } | { action: 'CANCEL' };
 // 2026-10-12: 위치가 선택한 고객사와 맞지 않는데 가까운 곳에 다른 지점이 등록돼 있을 때, 정중하게 바꿔 등록할지 묻는 안내창.
 type ClientSwitchAnswer =
   | { action: 'SWITCH'; name: string; clientId?: string; contact?: { contactId?: string; contactName?: string; contactPhone?: string } }
   | { action: 'MAP' }
   | { action: 'CANCEL' };
+// 2026-10-13: 본사에서 작업 중인데 '현장'으로 등록하려다 위치가 맞지 않을 때 "원격으로 등록할까요?" 묻는 안내창.
+type RemoteOfferAnswer = { action: 'REMOTE' } | { action: 'MAP' } | { action: 'CANCEL' };
+type ResidentOfferAnswer = { action: 'RESIDENT' } | { action: 'MAP' } | { action: 'CANCEL' };
 interface ClientSwitchPromptState {
   selected: string;
   selectedDistanceMeters: number | null;
@@ -360,7 +368,8 @@ function findClientCoords(
 ): { latitude: number; longitude: number } | null {
   const trimmed = name?.trim();
   if (!trimmed) return null;
-  return clientLocations.find((c) => c.name.includes(trimmed) || trimmed.includes(c.name)) ?? null;
+  // 2026-10-13: 이름이 정확히 같은 고객사를 먼저 찾는다('농협은행' 과 'NH농협은행 의왕데이터센터' 처럼 서로 포함되는 이름이 있어도 엉뚱한 곳이 잡히지 않게).
+  return clientLocations.find((c) => c.name === trimmed) ?? clientLocations.find((c) => c.name.includes(trimmed) || trimmed.includes(c.name)) ?? null;
 }
 
 function hoursLabel(minutes: number): string {
@@ -593,9 +602,21 @@ export default function EmployeeHome() {
   // 2026-10-11: GPS 재측정/위치 사유 안내창
   const [locationPrompt, setLocationPrompt] = useState<LocationPromptState | null>(null);
   const [locationPromptReason, setLocationPromptReason] = useState('');
+  const [locationPromptPlace, setLocationPromptPlace] = useState('');
+  const [locationPromptClient, setLocationPromptClient] = useState('');
   const locationPromptResolverRef = useRef<((a: LocationPromptAnswer) => void) | null>(null);
   const [clientSwitchPrompt, setClientSwitchPrompt] = useState<ClientSwitchPromptState | null>(null);
   const clientSwitchResolverRef = useRef<((a: ClientSwitchAnswer) => void) | null>(null);
+  const [remoteOffer, setRemoteOffer] = useState<{ hqDistanceMeters: number | null; clientName: string } | null>(null);
+  const remoteOfferResolverRef = useRef<((a: RemoteOfferAnswer) => void) | null>(null);
+  // 2026-10-13: 상주 직원이 상주지에서 "본사근무"를 눌러 막혔을 때 "고객사상주로 등록할까요?" 안내창.
+  const [residentOffer, setResidentOffer] = useState<{ clientName: string; distanceMeters: number | null } | null>(null);
+  const residentOfferResolverRef = useRef<((a: ResidentOfferAnswer) => void) | null>(null);
+  // 2026-10-13: 위치 불일치로 막힌 직원이 "지금 이 위치가 그 고객사의 실제 위치"라고 관리자에게 수정 신청하는 안내창.
+  const [siteRequest, setSiteRequest] = useState<{ clientName: string; clientId?: string; status: string; gps: { lat: number; lng: number }; pin: { lat: number; lng: number }; accuracyMeters?: number } | null>(null);
+  const [siteRequestNote, setSiteRequestNote] = useState('');
+  const [siteRequestBusy, setSiteRequestBusy] = useState(false);
+  const [siteRequestError, setSiteRequestError] = useState<string | null>(null);
   const [progressStage, setProgressStage] = useState('');
   // 2026-09-14: 고객사미팅/고객사작업 폼 입력항목이 너무 많다는 의견 — 필수가 아닌 항목
   // (프로젝트명/완료시간/작업인원)은 기본으로 접어두고, 필요할 때만 펼쳐서 입력하게 한다.
@@ -732,6 +753,18 @@ export default function EmployeeHome() {
   // 시도하고, 끄는 것만 사용자가 직접 선택하게 한다. iOS(사파리)는 홈 화면에 추가한 앱이 아니면
   // 애초에 PushManager 자체가 없어서 자동으로 켤 수 없으므로, 그 경우에만 설치 안내 배너를 남긴다.
   const [showIosInstallPrompt, setShowIosInstallPrompt] = useState(false);
+  // 2026-10-15: PC 접속자 위치 안내 — SSR/하이드레이션 불일치를 피하려고 마운트 뒤에 판단한다.
+  const [isDesktop, setIsDesktop] = useState(false);
+  const [showPcGuide, setShowPcGuide] = useState(false);
+  useEffect(() => {
+    const desktop = detectDesktopBrowser();
+    setIsDesktop(desktop);
+    setShowPcGuide(desktop && shouldShowPcGuide(readPcGuideDismissedAt(), Date.now()));
+  }, []);
+  function dismissPcGuide() {
+    setShowPcGuide(false);
+    writePcGuideDismissedAt(Date.now());
+  }
   // 2026-09-04: 아이폰 사파리는 홈 화면에 추가한 앱(standalone)에서만 알림을 지원한다(iOS 정책).
   // 이 경우 알림 켜기 버튼을 눌러도 항상 실패하므로, 미리 감지해서 버튼 문구/동작을 안내로 바꾼다.
   const [iosNeedsInstall, setIosNeedsInstall] = useState(false);
@@ -1047,7 +1080,7 @@ export default function EmployeeHome() {
       // "카카오맵으로 실제 위치 확인" 모달을 띄우는 등 처리를 끝냈다는 뜻으로 이 표식(silent)을
       // 남기고 다시 던진다 — 여기서 또 오류 문구로 화면을 덮어쓰지 않는다.
       if ((err as Error & { silent?: boolean } | undefined)?.silent) return;
-      setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+      setMessage(err instanceof Error ? appendPcLocationHint(err.message, (err as Error & { code?: string }).code, isDesktop) : '오류가 발생했습니다.');
       setMessageIsError(true);
     }
   }
@@ -1064,6 +1097,8 @@ export default function EmployeeHome() {
   async function withMismatchConfirm<T>(code: string, body: Record<string, unknown>, submit: () => Promise<T>): Promise<T> {
     // 2026-10-11: 위치 관련 서버 응답(GPS 오차 큼 / 위치 없음)은 안내창으로 풀고 같은 요청을 다시 보낸다(최대 5회).
     let clientSwitchAsked = 0;
+    let remoteOfferAsked = false;
+    let residentOfferAsked = false;
     for (let attempt = 0; ; attempt++) {
       try {
         return await submit();
@@ -1080,6 +1115,50 @@ export default function EmployeeHome() {
           // 2026-10-12: 지금 계신 곳 근처에 "다른 지점"이 등록돼 있으면(예: 코스콤 ↔ 코스콤 부산센터) 작은 화면에서
           // 비슷한 이름을 잘못 누른 경우일 수 있으니, 지도부터 띄우지 않고 먼저 정중하게 바꿔 등록할지 묻는다.
           const effortForSwitch = body.effort as Record<string, unknown> | undefined;
+          // 2026-10-13: 고객사에 상주하는 직원이 상주지 근처에서 '본사근무'를 눌렀다면 '고객사상주'가 맞을 가능성이 높아 먼저 묻는다.
+          if (!residentOfferAsked && me?.assignedClient) {
+            const assignedCoords = findClientCoords(clientLocations, me.assignedClient);
+            const ro = shouldOfferResident({ status: String(body.status ?? code), loc, assigned: assignedCoords });
+            if (ro.offer) {
+              residentOfferAsked = true;
+              const rAnswer = await askResidentOffer({ clientName: me.assignedClient, distanceMeters: ro.distanceMeters });
+              if (rAnswer.action === 'RESIDENT') {
+                openDetailForm('RESIDENT_ONSITE');
+                setMessage(`🏬 '${me.assignedClient}' 상주 근무로 등록해 주세요. 아래 입력창에서 등록하시면 돼요.`);
+                setMessageIsError(false);
+                throw makeSilent();
+              }
+              if (rAnswer.action === 'CANCEL') {
+                setMessage('등록하지 않았어요. 근무 형태를 확인한 뒤 다시 등록해 주세요.');
+                setMessageIsError(true);
+                throw makeSilent();
+              }
+              // MAP: 아래의 기존 흐름(지도 확인)을 그대로 이어간다.
+            }
+          }
+          // 2026-10-13: 지금 계신 곳이 본사 근처인데 '현장'으로 등록하려는 경우 — 본사에서 원격으로 작업 중일 수 있어 먼저 묻는다.
+          if (!remoteOfferAsked) {
+            const offer = shouldOfferRemote({ status: String(body.status ?? code), siteType: body.siteType, loc, hq: hqLocation });
+            if (offer.offer) {
+              remoteOfferAsked = true;
+              const rAnswer = await askRemoteOffer({
+                hqDistanceMeters: offer.hqDistanceMeters,
+                clientName: typeof effortForSwitch?.clientName === 'string' ? effortForSwitch.clientName.trim() : '',
+              });
+              if (rAnswer.action === 'REMOTE') {
+                applyRemoteToBody(body);
+                setMessage('🏠 본사에서 원격으로 작업하시는 것으로 바꿔서 다시 등록하고 있어요. 잠시만 기다려주세요...');
+                setMessageIsError(false);
+                continue;
+              }
+              if (rAnswer.action === 'CANCEL') {
+                setMessage('등록하지 않았어요. 작업 위치를 확인한 뒤 다시 등록해 주세요.');
+                setMessageIsError(true);
+                throw makeSilent();
+              }
+              // MAP: 아래의 기존 흐름(근처 다른 지점 제안 → 지도 확인)을 그대로 이어간다.
+            }
+          }
           const selectedClient = typeof effortForSwitch?.clientName === 'string' ? effortForSwitch.clientName.trim() : '';
           if (loc && selectedClient && clientSwitchAsked < 2) {
             const nearby = findNearbyOtherClients(loc, selectedClient, clientLocations);
@@ -1131,6 +1210,10 @@ export default function EmployeeHome() {
         }
         if (answer.action === 'REASON') {
           body.locationFailureReason = answer.reason;
+          if (answer.exception) {
+            body.registerCurrentLocation = true;
+            body.deviceInfo = await collectDeviceInfo();
+          }
           continue;
         }
         if (errCode === 'GPS_ACCURACY_LOW') body.outdoorRecheckCount = (Number(body.outdoorRecheckCount) || 0) + 1;
@@ -1144,6 +1227,8 @@ export default function EmployeeHome() {
   /** 위치 안내창을 띄우고 직원의 선택(다시 측정 / 사유 입력 / 취소)을 기다린다. */
   function askLocationPrompt(p: LocationPromptState): Promise<LocationPromptAnswer> {
     setLocationPromptReason('');
+    setLocationPromptPlace('');
+    setLocationPromptClient('');
     setLocationPrompt(p);
     return new Promise((resolve) => { locationPromptResolverRef.current = resolve; });
   }
@@ -1151,6 +1236,29 @@ export default function EmployeeHome() {
     const resolver = locationPromptResolverRef.current;
     locationPromptResolverRef.current = null;
     setLocationPrompt(null);
+    resolver?.(a);
+  }
+
+  function askResidentOffer(p: { clientName: string; distanceMeters: number | null }): Promise<ResidentOfferAnswer> {
+    setResidentOffer(p);
+    return new Promise((resolve) => { residentOfferResolverRef.current = resolve; });
+  }
+  function answerResidentOffer(a: ResidentOfferAnswer) {
+    const resolver = residentOfferResolverRef.current;
+    residentOfferResolverRef.current = null;
+    setResidentOffer(null);
+    resolver?.(a);
+  }
+
+  /** 본사 근처에서 '현장'으로 등록하려 할 때 "원격으로 등록할까요?" 안내창을 띄우고 직원의 선택을 기다린다. */
+  function askRemoteOffer(p: { hqDistanceMeters: number | null; clientName: string }): Promise<RemoteOfferAnswer> {
+    setRemoteOffer(p);
+    return new Promise((resolve) => { remoteOfferResolverRef.current = resolve; });
+  }
+  function answerRemoteOffer(a: RemoteOfferAnswer) {
+    const resolver = remoteOfferResolverRef.current;
+    remoteOfferResolverRef.current = null;
+    setRemoteOffer(null);
     resolver?.(a);
   }
 
@@ -2032,6 +2140,55 @@ export default function EmployeeHome() {
     }
   }
 
+  /** 지도 확인 모달에서 "이 위치가 고객사의 실제 위치예요"를 누르면 신청 안내창을 연다(고객사 작업/미팅 등록이 막힌 경우만). */
+  function openSiteRequest(pinLat: number, pinLng: number) {
+    const lc = locationCorrection;
+    if (!lc || lc.clockIn) return;
+    const effort = lc.body.effort as Record<string, unknown> | undefined;
+    const clientName = typeof effort?.clientName === 'string' ? effort.clientName.trim() : '';
+    const gps = lc.body.location as { lat: number; lng: number } | undefined;
+    if (!clientName || !gps) return;
+    setSiteRequestNote('');
+    setSiteRequestError(null);
+    setSiteRequest({
+      clientName,
+      clientId: typeof effort?.clientId === 'string' ? effort.clientId : undefined,
+      status: String(lc.body.status ?? lc.code),
+      gps,
+      pin: { lat: pinLat, lng: pinLng },
+      accuracyMeters: typeof lc.body.accuracyMeters === 'number' ? lc.body.accuracyMeters : undefined,
+    });
+  }
+
+  async function submitSiteRequest() {
+    if (!siteRequest || siteRequestBusy) return;
+    setSiteRequestBusy(true);
+    setSiteRequestError(null);
+    try {
+      await apiFetch('/attendance/location-proposals', {
+        method: 'POST',
+        body: JSON.stringify({
+          clientName: siteRequest.clientName,
+          clientId: siteRequest.clientId,
+          status: siteRequest.status,
+          location: siteRequest.gps,
+          confirmedLocation: siteRequest.pin,
+          accuracyMeters: siteRequest.accuracyMeters,
+          note: siteRequestNote.trim() || undefined,
+        }),
+      });
+      setSiteRequest(null);
+      setLocationCorrection(null);
+      setLocationCorrectionError(null);
+      setMessage(`📨 '${siteRequest.clientName}' 위치 수정을 관리자에게 신청했어요. 확인되면 알림을 드리니, 그때 다시 등록해 주세요. (승인 전에는 이 위치로 등록되지 않아요)`);
+      setMessageIsError(false);
+    } catch (err) {
+      setSiteRequestError(err instanceof Error ? err.message : '신청에 실패했습니다.');
+    } finally {
+      setSiteRequestBusy(false);
+    }
+  }
+
   function logout() {
     clearToken();
     router.push('/login');
@@ -2117,14 +2274,14 @@ export default function EmployeeHome() {
   // 좌우 여백)까지 어둡게 보이도록 body에도 클래스를 붙인다(다른 화면엔 영향 없음 — 이 페이지가
   // 언마운트되면 바로 제거).
   useEffect(() => {
-    document.body.classList.add('tsb-dark-body');
+    document.body.classList.remove('tsb-dark-body');
     return () => document.body.classList.remove('tsb-dark-body');
   }, []);
 
-  if (!me) return <div className="page tsb-dark" style={{ minHeight: '100vh' }}>불러오는 중...</div>;
+  if (!me) return <div className="page" style={{ minHeight: '100vh' }}>불러오는 중...</div>;
 
   return (
-    <div className="employee-shell tsb-dark">
+    <div className="employee-shell">
       <Head>
         <title>기술부 현황 등록</title>
       </Head>
@@ -2136,6 +2293,8 @@ export default function EmployeeHome() {
           onComplete={() => setMe((prev) => (prev ? { ...prev, privacyConsentGiven: true, locationConsentGiven: true } : prev))}
         />
       )}
+
+      {me.privacyConsentGiven && me.locationConsentGiven && <UpdateNoticeModal />}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
@@ -2212,6 +2371,8 @@ export default function EmployeeHome() {
 
       <PastDayCorrectionCard rows={pendingCorrections} onSubmitted={refreshMyStatus} />
 
+      {showPcGuide && <PcLocationGuideCard onDismiss={dismissPcGuide} />}
+
       {showIosInstallPrompt && (
         // 2026-09-04: 아이폰 사파리는 홈 화면에 추가한 앱에서만 알림이 되므로(애플 정책), 여기서는
         // 알림을 "켜는" 버튼 대신 설치 방법만 안내한다 — 버튼을 눌러도 실패할 게 뻔한데 누르게
@@ -2233,6 +2394,17 @@ export default function EmployeeHome() {
           <div className="card quick-confirm-sheet" style={{ border: '1px solid #ffa94d' }} onClick={(e) => e.stopPropagation()}>
             📍 {locationPrompt.kind === 'GPS_LOW' ? '위치 정확도가 낮아요' : '위치를 확인하지 못했어요'}
             <div className="board-empty" style={{ marginTop: 6, marginBottom: 0 }}>{locationPrompt.message}</div>
+            {isDesktop && (
+              // 2026-10-15: PC(GPS 없음)로 위치 확인에 실패한 경우 — 원인과 대처를 바로 보여준다.
+              <div className="board-empty" style={{ marginTop: 8, marginBottom: 0, lineHeight: 1.6 }} data-testid="pc-location-tips">
+                {PC_FAILURE_HINT}
+                <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                  {PC_GUIDE_STEPS.slice(0, 4).map((st) => (
+                    <li key={st.title}>{st.title}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
               <button style={{ width: 'auto', margin: 0 }} onClick={() => answerLocationPrompt({ action: 'RETRY' })}>
                 📍 다시 측정
@@ -2241,24 +2413,106 @@ export default function EmployeeHome() {
                 취소
               </button>
             </div>
-            {locationPrompt.kind === 'NO_LOCATION' && (
-              <div style={{ marginTop: 10 }}>
-                <input
-                  value={locationPromptReason}
-                  onChange={(e) => setLocationPromptReason(e.target.value)}
-                  placeholder="정말 위치를 확인할 수 없다면 사유를 적어주세요(5자 이상)"
-                  maxLength={200}
-                />
-                <button
-                  className="secondary"
-                  style={{ width: 'auto', margin: '6px 0 0' }}
-                  disabled={locationPromptReason.trim().length < 5}
-                  onClick={() => answerLocationPrompt({ action: 'REASON', reason: locationPromptReason.trim() })}
-                >
-                  사유 입력하고 등록
-                </button>
+            <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid #d5dbe6' }}>
+              <div style={{ fontSize: 13, fontWeight: 700 }}>그래도 위치가 안 잡히면 — 내 현재 위치로 등록</div>
+              <div className="board-empty" style={{ margin: '4px 0 8px', lineHeight: 1.5 }}>
+                GPS·기지국 오차로 위치가 맞지 않을 때, 아래를 적고 등록하면 등록이 완료되고 관리자가 확인합니다.
               </div>
-            )}
+              <input value={locationPromptReason} onChange={(e) => setLocationPromptReason(e.target.value)} placeholder="사유 (예: 휴대폰 위치 오차, 5자 이상)" maxLength={70} />
+              <input value={locationPromptPlace} onChange={(e) => setLocationPromptPlace(e.target.value)} placeholder="현재 위치 (예: ○○빌딩 3층, 주소)" maxLength={60} style={{ marginTop: 6 }} />
+              <input value={locationPromptClient} onChange={(e) => setLocationPromptClient(e.target.value)} placeholder="고객사 이름 (방문이 아니면 비워두세요)" maxLength={40} style={{ marginTop: 6 }} />
+              <button
+                className="secondary"
+                style={{ width: 'auto', margin: '8px 0 0' }}
+                disabled={locationPromptReason.trim().length < 5 || locationPromptPlace.trim().length < 2}
+                onClick={() => answerLocationPrompt({
+                  action: 'REASON',
+                  exception: true,
+                  reason: [locationPromptReason.trim(), `현재위치: ${locationPromptPlace.trim()}`, locationPromptClient.trim() ? `고객사: ${locationPromptClient.trim()}` : ''].filter(Boolean).join(' / '),
+                })}
+              >
+                📍 내 현재 위치로 등록
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {residentOffer && (
+        // 2026-10-13: 상주 직원이 상주지 근처에서 본사근무를 눌렀을 때 — 고객사상주로 등록하도록 정중히 안내한다.
+        <div className="quick-confirm-backdrop">
+          <div className="card quick-confirm-sheet" style={{ border: '1px solid #4dabf7', maxHeight: '88vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            🏬 지금 &apos;{residentOffer.clientName}&apos; 근처에 계신 것으로 확인돼요
+            <div className="board-empty" style={{ marginTop: 6, marginBottom: 0, lineHeight: 1.6 }}>
+              &apos;본사근무&apos;로 등록하셨는데, 지금 계신 곳은 본사 위치와 맞지 않아요.
+              &apos;{residentOffer.clientName}&apos;에 상주 근무 중이시라면 &apos;고객사상주&apos;로 등록해 주세요.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+              <button style={{ width: '100%', margin: 0, whiteSpace: 'normal' }} onClick={() => answerResidentOffer({ action: 'RESIDENT' })}>
+                ✅ 네, 상주 근무예요 (고객사상주로 등록)
+              </button>
+              <button className="secondary" style={{ width: '100%', margin: 0, whiteSpace: 'normal' }} onClick={() => answerResidentOffer({ action: 'MAP' })}>
+                아니요, 본사에 있어요 (지도에서 위치 확인)
+              </button>
+              <button className="secondary" style={{ width: '100%', margin: 0 }} onClick={() => answerResidentOffer({ action: 'CANCEL' })}>
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {remoteOffer && (
+        // 2026-10-13: 본사에서 작업 중이라 선택한 고객사 위치와 맞지 않을 때 — 원격 작업이면 원격으로 바꿔 등록하게 정중히 안내한다.
+        <div className="quick-confirm-backdrop">
+          <div className="card quick-confirm-sheet" style={{ border: '1px solid #4dabf7', maxHeight: '88vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            🏠 지금 본사 근처에 계신 것으로 확인돼요
+            <div className="board-empty" style={{ marginTop: 6, marginBottom: 0, lineHeight: 1.6 }}>
+              {remoteOffer.clientName ? `'${remoteOffer.clientName}' 작업을 ` : '이 작업을 '}
+              &apos;현장&apos;으로 등록하셨는데, 지금 계신 곳은 해당 고객사 위치와 맞지 않아요.
+              본사에서 원격으로 작업하고 계신 거라면 &apos;원격&apos;으로 바꿔 등록해 드릴게요. 실제로 고객사 현장에 계신 거라면 지도에서 위치를 확인해 주세요.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+              <button style={{ width: '100%', margin: 0, whiteSpace: 'normal' }} onClick={() => answerRemoteOffer({ action: 'REMOTE' })}>
+                ✅ 네, 본사에서 원격으로 작업해요 (원격으로 등록)
+              </button>
+              <button className="secondary" style={{ width: '100%', margin: 0, whiteSpace: 'normal' }} onClick={() => answerRemoteOffer({ action: 'MAP' })}>
+                아니요, 현장이에요 (지도에서 위치 확인)
+              </button>
+              <button className="secondary" style={{ width: '100%', margin: 0 }} onClick={() => answerRemoteOffer({ action: 'CANCEL' })}>
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {siteRequest && (
+        // 2026-10-13: 등록된 고객사 위치와 실제 현장이 달라 등록이 막힌 직원이, 지금 위치를 관리자에게 알려 고객사 위치를 바로잡도록 신청한다.
+        <div className="quick-confirm-backdrop" style={{ zIndex: 1100 }}>
+          <div className="card quick-confirm-sheet" style={{ border: '1px solid #4dabf7', maxHeight: '88vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            📨 &apos;{siteRequest.clientName}&apos; 위치 수정 신청
+            <div className="board-empty" style={{ marginTop: 6, marginBottom: 0, lineHeight: 1.6 }}>
+              지금 지도에서 고른 위치가 &apos;{siteRequest.clientName}&apos;의 실제 위치라고 관리자에게 알려요.
+              관리자가 확인해 승인하면 고객사 위치가 바뀌고 알림을 드려요. 승인되기 전에는 이 위치로 등록되지 않아요.
+              다른 지점이거나 목록에 없는 곳이라면, 신청 대신 고객사를 새로 등록해 주세요.
+            </div>
+            {siteRequestError && <div className="error" style={{ marginTop: 8 }}>{siteRequestError}</div>}
+            <input
+              style={{ marginTop: 10 }}
+              placeholder="관리자에게 남길 말 (선택, 예: 별관 1층 출입구)"
+              maxLength={200}
+              value={siteRequestNote}
+              onChange={(e) => setSiteRequestNote(e.target.value)}
+            />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+              <button style={{ width: '100%', margin: 0 }} disabled={siteRequestBusy} onClick={submitSiteRequest}>
+                {siteRequestBusy ? '신청 중...' : '네, 위치 수정을 신청합니다'}
+              </button>
+              <button className="secondary" style={{ width: '100%', margin: 0 }} disabled={siteRequestBusy} onClick={() => setSiteRequest(null)}>
+                취소
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2630,8 +2884,8 @@ export default function EmployeeHome() {
 
       <div className="employee-grid">
         {/* 왼쪽 열 */}
-        <div>
-          <div className="card">
+        <div className="employee-left-col">
+          <div className="card clock-card">
             <h2>출퇴근</h2>
             <button
               className={myStatus?.record?.clockInAt ? 'done' : ''}
@@ -2730,7 +2984,7 @@ export default function EmployeeHome() {
                   setMessage((result.locationConfirmed ? '✅ 위치 확인 완료 — 정상출근 처리되었습니다.' : '출근 처리되었습니다.') + accuracySuffix);
                   refreshMyStatus();
                 } catch (err) {
-                  setMessage(err instanceof Error ? err.message : '오류가 발생했습니다.');
+                  setMessage(err instanceof Error ? appendPcLocationHint(err.message, (err as Error & { code?: string }).code, isDesktop) : '오류가 발생했습니다.');
                   setMessageIsError(true);
                 } finally {
                   setClockInSubmitting(false);
@@ -2834,6 +3088,11 @@ export default function EmployeeHome() {
                 }
                 confirmLabel={locationCorrection?.clockIn ? '이 위치로 출근' : locationCorrection?.blocked ? '여기가 맞습니다 · 등록 계속' : '이 위치로 다시 등록'}
                 errorOverride={locationCorrectionError}
+                secondaryAction={
+                  locationCorrection?.blocked && !locationCorrection?.clockIn && (locationCorrection.code === 'CLIENT_WORK' || locationCorrection.code === 'CLIENT_MEETING')
+                    ? { label: '📨 이 위치가 고객사의 실제 위치예요 · 위치 수정 신청', onClick: (lat, lng) => openSiteRequest(lat, lng) }
+                    : undefined
+                }
                 onClose={() => {
                   if (locationCorrectionBusy) return;
                   setLocationCorrection(null);
@@ -2868,7 +3127,7 @@ export default function EmployeeHome() {
             </div>
           </div>
 
-          <div className="card">
+          <div className="card status-card">
             <h2>지금 상태 콕! 눌러주세요. 근무기록은 여러분들에게 더 큰 혜택을 드릴 수 있어요.</h2>
             {clockedOut && (
               <div className="board-empty" style={{ marginBottom: 8, color: '#f08c00', fontWeight: 600 }}>

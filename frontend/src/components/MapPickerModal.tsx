@@ -19,6 +19,8 @@ interface Props {
   // 모달을 닫지 않고 그 사유를 보여줄 수 있게 한다(예: 위치 정정 허용범위 초과) — 이 모달은
   // 전체화면을 덮으므로(zIndex 1000), 바깥 화면의 메시지 배너로는 전달되지 않는다.
   errorOverride?: string | null;
+  // 2026-10-13 추가: 확정 버튼 옆에 보조 동작을 둔다(예: "이 위치가 고객사의 실제 위치예요 · 수정 신청") — 지도에서 위치를 고른 뒤에만 눌 수 있다.
+  secondaryAction?: { label: string; onClick: (lat: number, lng: number, address?: string) => void };
   onSelect: (lat: number, lng: number, address?: string, placeName?: string) => void;
   onClose: () => void;
 }
@@ -39,7 +41,7 @@ function loadKakaoScript(): Promise<void> {
   });
 }
 
-export default function MapPickerModal({ initialAddress, initialCoords, title, helpText, confirmLabel, errorOverride, onSelect, onClose }: Props) {
+export default function MapPickerModal({ initialAddress, initialCoords, title, helpText, confirmLabel, errorOverride, secondaryAction, onSelect, onClose }: Props) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
@@ -164,6 +166,16 @@ export default function MapPickerModal({ initialAddress, initialCoords, title, h
           </button>
           <button className="secondary" onClick={onClose}>취소</button>
         </div>
+        {secondaryAction && (
+          <button
+            className="secondary"
+            style={{ width: '100%', marginTop: 8, whiteSpace: 'normal' }}
+            disabled={!selected}
+            onClick={() => selected && secondaryAction.onClick(selected.lat, selected.lng, selected.address)}
+          >
+            {secondaryAction.label}
+          </button>
+        )}
       </div>
     </div>
   );

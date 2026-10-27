@@ -63,6 +63,12 @@ services:
       # 여기 등록되어 있지 않으면 컨테이너 안으로 전달되지 않는다(위 다우오피스 변수들과 동일한 이유 —
       # 첫 배포 때 이걸 빠뜨려서 /sync가 503(SYNC_NOT_CONFIGURED)을 반환했었다).
       NIGHT_WORK_MAIL_SYNC_KEY: ${NIGHT_WORK_MAIL_SYNC_KEY:-}
+      # 2026-10-15: 업무일지 AI 도우미(기본 꺼짐). 켜려면 .env.prod에 AI_ASSIST_ENABLED=1 과 ANTHROPIC_API_KEY를 넣는다.
+      AI_ASSIST_ENABLED: ${AI_ASSIST_ENABLED:-0}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_ASSIST_MODEL: ${AI_ASSIST_MODEL:-claude-haiku-5-5}
+      AI_ASSIST_DAILY_LIMIT: ${AI_ASSIST_DAILY_LIMIT:-30}
+      AI_ASSIST_PILOT_DEPTS: ${AI_ASSIST_PILOT_DEPTS:-}
 
   frontend:
     build:

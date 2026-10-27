@@ -579,3 +579,7 @@ body.tsb-dark-body { background: #090d18; }
 .att-pill-travel { background: #e6fcf5; color: #0c8599; font-variant-numeric: tabular-nums; }
 .att-travel-est { font-size: 9.5px; font-weight: 800; opacity: 0.75; margin-left: 2px; }
 
+
+/* 직원 화면: 상태 아이콘 카드를 출퇴근 카드 위로 배치 */
+.employee-left-col { display: flex; flex-direction: column; }
+.employee-left-col > .status-card { order: -1; }

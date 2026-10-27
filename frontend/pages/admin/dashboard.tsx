@@ -317,7 +317,7 @@ export default function AdminDashboard() {
   // TSB-Ver2.1: 전사 상황판을 다크 관제형 테마로 바꾸면서, 페이지 바깥(뷰포트 좌우 여백)까지
   // 어둡게 보이도록 body에도 클래스를 붙인다(다른 5개 관리자 화면엔 영향 없음 — 언마운트되면 제거).
   useEffect(() => {
-    document.body.classList.add('tsb-dark-body');
+    document.body.classList.remove('tsb-dark-body');
     return () => document.body.classList.remove('tsb-dark-body');
   }, []);
 
@@ -548,8 +548,8 @@ export default function AdminDashboard() {
   }
 
   return (
-    <div className="admin-shell tsb-dark">
-      <AdminHeader title="전사 상황판" dark />
+    <div className="admin-shell">
+      <AdminHeader title="전사 상황판" />
       {/* 2026-09-14: "다우오피스 직원동기화" 메뉴는 자주 쓰는 기능이 아닌데도 기존엔 화면 상단에
           툴바 한 줄을 통째로 차지하고 있었다 — 부제목 옆에 작은 버튼으로 줄이고 위치도 화면 맨
           위로 옮겼다(요청 반영). */}

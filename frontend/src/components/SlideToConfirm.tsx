@@ -117,8 +117,8 @@ export default function SlideToConfirm({ onConfirm, label = '밀어서 확정', 
     }
   }
 
-  const trackBg = confirmed ? 'rgba(34,197,94,0.18)' : !ready || disabled ? '#151c34' : '#0d1326';
-  const trackBorder = confirmed ? '#1f4a2e' : !ready || disabled ? '#212a45' : '#2f6feb';
+  const trackBg = confirmed ? 'rgba(34,197,94,0.18)' : !ready || disabled ? '#151c34' : '#f5f7fb';
+  const trackBorder = confirmed ? '#1f4a2e' : !ready || disabled ? '#d5dbe6' : '#2f6feb';
   const handleBg = confirmed ? '#2f9e44' : !ready || disabled || busy ? '#374162' : '#2f6feb';
 
   let text = `→ ${label}`;
@@ -148,7 +148,7 @@ export default function SlideToConfirm({ onConfirm, label = '밀어서 확정', 
       <div
         style={{
           position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 13, fontWeight: 600, color: !ready ? '#6b7594' : confirmed ? '#4ade80' : '#9aa5c3',
+          fontSize: 13, fontWeight: 600, color: !ready ? '#8a93a8' : confirmed ? '#16a34a' : '#5b6478',
           pointerEvents: 'none',
         }}
       >

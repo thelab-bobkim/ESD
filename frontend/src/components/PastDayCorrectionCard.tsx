@@ -103,7 +103,7 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
         </div>
       )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8, alignItems: 'center' }}>
-        <label style={{ fontSize: 13, color: '#9aa5c3' }}>
+        <label style={{ fontSize: 13, color: '#5b6478' }}>
           실제 퇴근 시각{' '}
           <input
             type="datetime-local"
@@ -138,8 +138,8 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
       {needsWorkLog && (
         <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px dashed #4a3a12' }}>
           <div style={{ fontSize: 13, color: '#fbbf24', fontWeight: 600 }}>📝 그 날의 업무일지도 함께 남겨주세요</div>
-          <div style={{ fontSize: 12, color: '#9aa5c3', marginTop: 2 }}>정상 퇴근할 때와 같이, 퇴근 정정을 신청할 때도 업무일지가 필요해요.</div>
-          <label style={{ display: 'block', fontSize: 13, color: '#9aa5c3', marginTop: 8 }}>
+          <div style={{ fontSize: 12, color: '#5b6478', marginTop: 2 }}>정상 퇴근할 때와 같이, 퇴근 정정을 신청할 때도 업무일지가 필요해요.</div>
+          <label style={{ display: 'block', fontSize: 13, color: '#5b6478', marginTop: 8 }}>
             이슈/특이사항 <span style={{ color: '#f87171' }}>*</span>
             <textarea
               style={{ width: '100%', marginTop: 4, minHeight: 50 }}
@@ -148,7 +148,7 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
               onChange={(e) => setIssues(e.target.value)}
             />
           </label>
-          <label style={{ display: 'block', fontSize: 13, color: '#9aa5c3', marginTop: 8 }}>
+          <label style={{ display: 'block', fontSize: 13, color: '#5b6478', marginTop: 8 }}>
             내일 예정 업무 <span style={{ color: '#f87171' }}>*</span>
             <textarea
               style={{ width: '100%', marginTop: 4, minHeight: 50 }}
@@ -181,7 +181,7 @@ export default function PastDayCorrectionCard({ rows, onSubmitted }: Props) {
       style={{ background: 'rgba(245,158,11,0.10)', border: '2px solid #4a3a12', marginBottom: 16 }}
     >
       <h2 style={{ margin: 0, color: '#fbbf24' }}>⚠️ 지난 근무일 퇴근이 확인되지 않았어요</h2>
-      <p style={{ fontSize: 13, color: '#9aa5c3', marginTop: 6 }}>
+      <p style={{ fontSize: 13, color: '#5b6478', marginTop: 6 }}>
         아래 날짜는 출근만 기록되고 퇴근 처리가 안 되어 있어요. 실제 퇴근하신 시각을 입력해 정정
         신청해주세요 — 신청하기 전까지는 오늘의 상태 아이콘(재택/본사근무 등)을 등록할 수 없어요.
       </p>
