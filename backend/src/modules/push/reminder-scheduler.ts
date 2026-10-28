@@ -29,6 +29,7 @@ let lastClockOutSentAt = new Map<string, number>();
 // 신고 — 이동중 상태가 너무 오래 지속되면(=도착했는데 상태를 안 바꿨을 가능성) 팝업과 별개로
 // 푸시 알림도 보낸다. 앱을 안 열어놔도 알림이 오므로 "인지를 못 한다"는 문제를 보완한다.
 let lastStaleTransitSentAt = new Map<string, number>();
+let lastAwayNotifiedAt = new Map<string, number>();
 // 2026-09-04: 고객사작업/고객사미팅은 "우선 등록, 세부내용은 나중에" 원칙상 아이콘을 누르는
 // 즉시 상태만 등록되고(note가 비어있음) 그 아래 열리는 입력폼을 따로 제출해야 고객사명·업무내용이
 // 채워진다 — 그리고 이 두 상태는 그 입력폼을 제출하는 순간에야 위치대조(GPS)도 함께 이뤄지므로,
@@ -114,6 +115,7 @@ export function startClockInReminderScheduler() {
         lastClockInSentAt = new Map();
         lastClockOutSentAt = new Map();
         lastStaleTransitSentAt = new Map();
+        lastAwayNotifiedAt = new Map();
         lastPendingDetailSentAt = new Map();
         lastProvisionalSentAt = new Map();
         lastUnclosedPastSentAt = new Map();
@@ -262,6 +264,36 @@ export function startClockInReminderScheduler() {
       if (staleTransitSentCount > 0) {
         // eslint-disable-next-line no-console
         console.log(`[StaleTransitReminder] 이동중 장시간 재알림 ${staleTransitSentCount}명 발송`);
+      }
+
+      // 2026-10-28: 고객사에서 벗어난 것을 서버가 알아챈 시점부터(기본 10분 이상 지속) 직원에게 알린다 —
+      // 폰은 서버에 위치 상태만 조용히 보내고(work_presence_days), 안내는 이 푸시가 맡는다.
+      // 고객사작업/고객사미팅 중이고 아직 상태를 안 바꾼 경우에만, 이후 정책값(기본 60분)마다 반복한다.
+      const awayNotifyMinutes = await getPolicyNumber('PRESENCE_AWAY_NOTIFY_MINUTES', 10);
+      const awayRepeatMinutes = await getPolicyNumber('PRESENCE_AWAY_REPEAT_MINUTES', 60);
+      const awayRows = await prisma.workPresenceDay.findMany({
+        where: { workDate, anchorKind: 'CLIENT', awaySince: { not: null }, lastCheckedAt: { gte: new Date(now.getTime() - 20 * 60 * 1000) } },
+        select: { userId: true, anchorName: true, awaySince: true },
+      });
+      let awaySentCount = 0;
+      for (const row of awayRows) {
+        const latest = latestStatusByUser.get(row.userId);
+        if (!latest || (latest.status !== 'CLIENT_WORK' && latest.status !== 'CLIENT_MEETING')) continue;
+        if (!row.awaySince || now.getTime() - row.awaySince.getTime() < awayNotifyMinutes * 60 * 1000) continue;
+        const lastAway = lastAwayNotifiedAt.get(row.userId);
+        if (lastAway && now.getTime() - lastAway < awayRepeatMinutes * 60 * 1000) continue;
+        lastAwayNotifiedAt.set(row.userId, now.getTime());
+        awaySentCount++;
+        const awayHhmm = row.awaySince.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });
+        await sendPushToUser(row.userId, {
+          title: 'DSTI-TSB',
+          body: `${row.anchorName ?? '고객사'}에서 ${awayHhmm}쯤 벗어나신 것으로 확인돼요. 이동중이나 퇴근으로 상태를 바꿔주세요.`,
+          url: '/',
+        });
+      }
+      if (awaySentCount > 0) {
+        // eslint-disable-next-line no-console
+        console.log(`[PresenceAwayReminder] 근무지 이탈 알림 ${awaySentCount}명 발송`);
       }
 
       // 2026-09-04: 본사근무/고객사작업/고객사미팅으로 등록만 되고 세부내용(고객사·업무내용 등)을

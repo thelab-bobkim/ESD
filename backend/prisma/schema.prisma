@@ -1049,3 +1049,23 @@ model LocationException {
   @@index([createdAt])
   @@map("location_exceptions")
 }
+
+// 2026-10-28: 위치 기반 근무지 체류/이탈 기록 — 직원 1명당 하루 1줄. 좌표는 저장하지 않고 "근무지 이름 + 시각"만 남긴다.
+// 마지막 근무지 체류 시각과 이탈 시작 시각을 퇴근/정정 기록과 대조해 차이를 보는 근거로 쓴다.
+// source: WEB(웹 화면이 열려 있을 때 5분 주기 확인) / APP_GEOFENCE(추후 전용 앱의 지오펜스 출입 이벤트)
+model WorkPresenceDay {
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  workDate      DateTime  @map("work_date") @db.Date
+  anchorKind    String    @map("anchor_kind")
+  anchorName    String?   @map("anchor_name")
+  lastSeenAt    DateTime? @map("last_seen_at")
+  awaySince     DateTime? @map("away_since")
+  lastCheckedAt DateTime  @map("last_checked_at")
+  source        String    @default("WEB")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@unique([userId, workDate])
+  @@index([workDate])
+  @@map("work_presence_days")
+}

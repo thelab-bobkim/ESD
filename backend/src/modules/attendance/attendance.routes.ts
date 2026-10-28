@@ -2149,6 +2149,57 @@ attendanceRouter.post('/effort-presence', async (req, res) => {
   return res.json({ success: true, data: { updated: 1 } });
 });
 
+// 2026-10-28: 위치 기반 근무지 체류/이탈 기록(좌표 저장 없음) — 퇴근/정정 기록과 대조하는 근거.
+const workPresenceSchema = z.object({
+  state: z.enum(['AT', 'AWAY']),
+  anchorKind: z.enum(['HQ', 'CLIENT']),
+  anchorName: z.string().max(100).optional(),
+  awaySince: z.string().optional(),
+});
+
+attendanceRouter.post('/work-presence', async (req, res) => {
+  const parsed = workPresenceSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '요청 형식을 확인하세요.' } });
+  }
+  const userId = req.authUser!.userId;
+  const workDate = await resolveWorkDateForUser(userId);
+  const now = new Date();
+  const { state, anchorKind } = parsed.data;
+  const anchorName = parsed.data.anchorName?.trim() || null;
+  let awaySince: Date | null = null;
+  if (state === 'AWAY') {
+    const t = parsed.data.awaySince ? new Date(parsed.data.awaySince) : now;
+    const ok = !Number.isNaN(t.getTime()) && t.getTime() <= now.getTime() + 60_000 && t.getTime() >= now.getTime() - 12 * 3600_000;
+    awaySince = ok ? t : now;
+  }
+  try {
+    const existing = await prisma.workPresenceDay.findUnique({ where: { userId_workDate: { userId, workDate } } });
+    await prisma.workPresenceDay.upsert({
+      where: { userId_workDate: { userId, workDate } },
+      create: { userId, workDate, anchorKind, anchorName, lastSeenAt: state === 'AT' ? now : null, awaySince, lastCheckedAt: now, source: 'WEB' },
+      update: state === 'AT'
+        ? { anchorKind, anchorName, lastSeenAt: now, awaySince: null, lastCheckedAt: now }
+        : { anchorKind, anchorName, awaySince: existing?.awaySince ?? awaySince, lastCheckedAt: now },
+    });
+  } catch (err) {
+    console.error('work-presence 저장 실패', err);
+    return res.json({ success: true, data: { saved: false } });
+  }
+  return res.json({ success: true, data: { saved: true } });
+});
+
+attendanceRouter.get('/my-presence', async (req, res) => {
+  const userId = req.authUser!.userId;
+  const q = typeof req.query.workDate === 'string' ? req.query.workDate : '';
+  const workDate = /^\d{4}-\d{2}-\d{2}$/.test(q) ? new Date(`${q}T00:00:00.000Z`) : await resolveWorkDateForUser(userId);
+  const row = await prisma.workPresenceDay.findUnique({ where: { userId_workDate: { userId, workDate } } });
+  return res.json({
+    success: true,
+    data: row ? { anchorKind: row.anchorKind, anchorName: row.anchorName, lastSeenAt: row.lastSeenAt, awaySince: row.awaySince, lastCheckedAt: row.lastCheckedAt } : null,
+  });
+});
+
 /** 본인 오늘 근태 조회 (상태는 "오늘" 것만 — 며칠 지난 상태를 현재처럼 보여주지 않는다) */
 attendanceRouter.get('/me', async (req, res) => {
   const userId = req.authUser!.userId;

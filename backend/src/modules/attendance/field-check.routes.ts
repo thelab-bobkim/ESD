@@ -10,6 +10,7 @@ import { parseClientFromNote, clusterMismatchPoints, classifyHotspots, summarize
 import { LOCATION_BLOCK_AUDIT_TARGET } from './location-block-audit';
 import { analyzeWorkLogs, type QualityLogInput, type QualityAttendanceInput, type QualityEffortInput } from '../daily-work-log/work-log-quality';
 import { LOCATION_FAILURE_AUDIT_TARGET, classifyDevice, summarizeLocationFailures, type FailureEvent, type FailureEndpoint } from './location-failure-audit';
+import { buildRecordConsistency } from './record-consistency';
 
 /**
  * 2026-10-11: "현장 기록 점검" — 관리자가 엔지니어의 위치 예외, 퇴근 위치 불일치, 자동 마무리된 작업, 입력 누락을 한 곳에서 보고
@@ -351,6 +352,20 @@ export function registerFieldCheckRoutes(router: any) {
    * 2026-10-15: "위치 확인 실패 기록" — 위치 문제로 거절된 출근/상태 등록 시도(좌표 없음)를 기기(PC/휴대폰)·오류 종류·직원별로 모아 보여준다.
    * "PC로 출근이 여러 번 안 됐다" 같은 신고의 원인(GPS 오차, 위치 권한, 본사에서 떨어짐 등)을 직원이 설명하지 않아도 확인할 수 있게 한다.
    */
+  // 2026-10-28: "기록 불일치 점검" — 퇴근 정정 요청을 위치 기록·마지막 활동·사유 시각과 대조한 확인 대상 목록(판정 아님).
+  router.get('/admin/field-check/record-consistency', requireRole(...writeRoles), async (req: any, res: any) => {
+    const daysRaw = Number(req.query?.days);
+    const days = Number.isFinite(daysRaw) ? Math.min(90, Math.max(1, Math.floor(daysRaw))) : 45;
+    const data = await buildRecordConsistency(days);
+    await recordAuditLog({
+      actorUserId: req.authUser?.userId ?? null,
+      actionType: 'LOCATION_DETAIL_VIEW',
+      targetType: 'record_consistency',
+      afterValue: { days, total: data.summary.total },
+    });
+    return res.json({ success: true, data });
+  });
+
   // 2026-10-27: "내 현재 위치로 등록"한 엔지니어 분석 — 어떤 직원·기기·OS·통신 환경에서 위치 오차가 반복되는지 본다. 좌표는 내려주지 않는다.
   router.get('/admin/field-check/location-exceptions', requireRole(...writeRoles), async (req: any, res: any) => {
     const daysRaw = Number(req.query?.days);

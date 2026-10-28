@@ -1020,7 +1020,22 @@ export default function EmployeeHome() {
       if (anchor) {
         const dist = distanceMeters(loc.lat, loc.lng, anchor.lat, anchor.lng);
         const anchorKey = `${currentStatus?.status}:${currentStatus?.changedAt}`;
+        // 2026-10-28: 근무지 체류/이탈을 서버에만 조용히 알린다(좌표 전송 없음) — 퇴근/정정 대조 근거 + 이탈 알림 푸시의 기준.
+        const presName = String((currentStatus?.status === 'RESIDENT_ONSITE' ? assignedClient : latestEffortClientName) ?? '').trim() || undefined;
+        const presKind: 'HQ' | 'CLIENT' = currentStatus?.status === 'HQ_WORKING' || !presName ? 'HQ' : 'CLIENT';
+        const sendPresence = (state: 'AT' | 'AWAY', awaySinceMs?: number) => {
+          apiFetch('/attendance/work-presence', {
+            method: 'POST',
+            body: JSON.stringify({
+              state,
+              anchorKind: presKind,
+              ...(presName ? { anchorName: presName.slice(0, 100) } : {}),
+              ...(awaySinceMs ? { awaySince: new Date(awaySinceMs).toISOString() } : {}),
+            }),
+          }).catch(() => {});
+        };
         if (dist > 300) {
+          sendPresence('AWAY', departureAwaySinceRef.current && departureAwaySinceRef.current.anchorKey === anchorKey ? departureAwaySinceRef.current.since : Date.now());
           if (!departureAwaySinceRef.current || departureAwaySinceRef.current.anchorKey !== anchorKey) {
             departureAwaySinceRef.current = { anchorKey, since: Date.now() };
           } else if (Date.now() - departureAwaySinceRef.current.since >= DEPARTURE_AWAY_THRESHOLD_MS) {
@@ -1052,6 +1067,7 @@ export default function EmployeeHome() {
           }
         } else {
           departureAwaySinceRef.current = null;
+          sendPresence('AT');
           // 2026-10-11: 아직 그 고객사 위치에 있음을 서버에 시각만 알려 둔다(좌표는 보내지 않음) —
           // 나중에 퇴근/자동 마무리 때 "마지막으로 고객사에 있었던 시각"의 근거가 된다.
           const st = currentStatus?.status;

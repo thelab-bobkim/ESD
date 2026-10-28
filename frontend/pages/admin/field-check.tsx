@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import { apiFetch, isAuthExpiredError } from '@/lib/api';
 import AdminHeader from '@/components/AdminHeader';
 import LocationHotspotsPanel from '@/components/LocationHotspotsPanel';
+import RecordConsistencyCard from '@/components/RecordConsistencyCard';
 import WorkLogQualityPanel from '@/components/WorkLogQualityPanel';
 
 /**
@@ -19,7 +20,7 @@ import WorkLogQualityPanel from '@/components/WorkLogQualityPanel';
  * 좌표는 화면에도 서버 응답에도 없다(거리·정확도·사유만).
  */
 
-type Tab = 'location' | 'clockout' | 'auto' | 'incomplete' | 'open' | 'gaps' | 'worklog' | 'hotspots';
+type Tab = 'location' | 'clockout' | 'auto' | 'incomplete' | 'open' | 'gaps' | 'worklog' | 'hotspots' | 'consistency';
 
 interface LocationRow { id: string; userName: string; status: string; changedAt: string; note: string | null; locationMatch: boolean | null; distanceMeters: number | null; accuracyMeters: number | null; siteType: string | null }
 interface ClockOutRow { id: string; userName: string; workDate: string; clockOutAt: string | null; place: string | null; area?: string | null; locationMatch: boolean | null; distanceMeters: number | null; note: string | null }
@@ -142,6 +143,7 @@ export default function AdminFieldCheckPage() {
     gaps: (gapsData?.unclosed.length ?? 0) + (gapsData?.noLog.length ?? 0),
     worklog: -1,
     hotspots: -1,
+    consistency: -1,
   };
   const TABS: { key: Tab; label: string }[] = [
     { key: 'location', label: '위치 예외' },
@@ -152,6 +154,7 @@ export default function AdminFieldCheckPage() {
     { key: 'gaps', label: '퇴근·일지 점검' },
     { key: 'worklog', label: '업무일지 점검' },
     { key: 'hotspots', label: '방문지 점검' },
+    { key: 'consistency', label: '기록 불일치' },
   ];
 
   return (
@@ -353,6 +356,8 @@ export default function AdminFieldCheckPage() {
       {tab === 'worklog' && <WorkLogQualityPanel from={from} to={to} onAuthExpired={() => router.push('/login')} />}
 
       {tab === 'hotspots' && <LocationHotspotsPanel onAuthExpired={() => router.push('/login')} />}
+
+      {tab === 'consistency' && <RecordConsistencyCard onAuthExpired={() => router.push('/login')} />}
 
       {tab === 'open' && (
         <div className="card">

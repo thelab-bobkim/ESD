@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api';
 import { isMeaningfulPlan, PLAN_RULE_MESSAGE } from '@/lib/work-log-rules';
 
@@ -34,21 +34,30 @@ function fmtClock(iso: string): string {
   return new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 }
 
-/** <input type="datetime-local"> 기본값 — 출근시각 + 9시간(대략적인 하루치 근무), 로컬시간 기준 */
-function defaultProposedClockOut(clockInIso: string): string {
-  const d = new Date(new Date(clockInIso).getTime() + 9 * 60 * 60 * 1000);
+
+/** ISO 시각을 datetime-local 입력칸 형식(로컬시간)으로 바꾼다. */
+function toLocalInput(iso: string): string {
+  const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubmitted: () => void }) {
-  const [proposedClockOutAt, setProposedClockOutAt] = useState(defaultProposedClockOut(row.clockInAt));
+  const [proposedClockOutAt, setProposedClockOutAt] = useState('');
   const [reason, setReason] = useState('');
   const [issues, setIssues] = useState('');
   const [tomorrowPlan, setTomorrowPlan] = useState('');
   const needsWorkLog = row.hasWorkLog === false;
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [presence, setPresence] = useState<{ anchorName: string | null; lastSeenAt: string | null; awaySince: string | null } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    apiFetch<{ anchorName: string | null; lastSeenAt: string | null; awaySince: string | null } | null>(`/attendance/my-presence?workDate=${String(row.workDate).slice(0, 10)}`)
+      .then((d) => { if (alive) setPresence(d ?? null); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [row.workDate]);
 
   if (row.latestRequest?.status === 'PENDING') {
     return (
@@ -60,6 +69,14 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
   }
 
   async function submit() {
+    if (!proposedClockOutAt) {
+      setError('실제 퇴근 시각을 직접 입력해주세요.');
+      return;
+    }
+    if (new Date(proposedClockOutAt).getTime() <= new Date(row.clockInAt).getTime()) {
+      setError('퇴근 시각이 출근 시각보다 늦어야 해요.');
+      return;
+    }
     if (reason.trim().length < 10) {
       setError('사유를 10자 이상 입력해주세요.');
       return;
@@ -110,7 +127,24 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
             value={proposedClockOutAt}
             onChange={(e) => setProposedClockOutAt(e.target.value)}
           />
+          <span style={{ fontSize: 12, color: '#fbbf24', marginLeft: 6 }}>기억나는 실제 시각을 직접 입력해주세요 (출근 {fmtClock(row.clockInAt)})</span>
         </label>
+        {presence && (presence.awaySince || presence.lastSeenAt) && (
+          <div style={{ flexBasis: '100%', fontSize: 12, color: '#fbbf24' }}>
+            📍 내 위치 기록: {presence.anchorName ? `${presence.anchorName} ` : ''}
+            {presence.lastSeenAt && <>마지막 체류 {fmtClock(presence.lastSeenAt)} </>}
+            {presence.awaySince && <>· 벗어남 {fmtClock(presence.awaySince)} </>}
+            <button
+              type="button"
+              className="secondary"
+              style={{ width: 'auto', margin: '0 0 0 6px', fontSize: 12, padding: '3px 8px' }}
+              onClick={() => setProposedClockOutAt(toLocalInput((presence.awaySince ?? presence.lastSeenAt) as string))}
+            >
+              이 시각으로 입력
+            </button>
+            <div style={{ opacity: 0.8 }}>참고용이에요. 앱을 연 시간에만 기록돼서 실제 퇴근과 다를 수 있어요.</div>
+          </div>
+        )}
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
         {REASON_CHIPS.map((chip) => (

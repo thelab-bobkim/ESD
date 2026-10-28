@@ -815,16 +815,16 @@ export default function AdminDashboard() {
                   ) : e.statusNote ? (
                     <div className="cc-alert-note">“{e.statusNote}”</div>
                   ) : e.effortClientName ? (
-                    <div className="cc-alert-note" style={{ color: '#94a3b8', fontStyle: 'italic' }}>
+                    <div className="cc-alert-note" style={{ color: '#64748b', fontStyle: 'italic' }}>
                       고객사: {e.effortClientName} (세부내용 아직 미입력 — 본인이 앱에서 마저 입력해야 위치확인도 완료돼요)
                     </div>
                   ) : e.status === 'CLIENT_MEETING' || e.status === 'CLIENT_WORK' ? (
-                    <div className="cc-alert-note" style={{ color: '#94a3b8', fontStyle: 'italic' }}>
+                    <div className="cc-alert-note" style={{ color: '#64748b', fontStyle: 'italic' }}>
                       등록만 되고 세부내용 미입력 상태예요 — 본인이 앱에서 마저 입력해야 위치확인도 완료돼요
                     </div>
                   ) : (
                     e.status === 'HQ_WORKING' && (
-                      <div className="cc-alert-note" style={{ color: '#94a3b8', fontStyle: 'italic' }}>
+                      <div className="cc-alert-note" style={{ color: '#64748b', fontStyle: 'italic' }}>
                         {hqLocationNote(e.locationCaptureStatus)}
                       </div>
                     )
