@@ -276,6 +276,23 @@ export async function applyAttendanceCorrection(
       },
     });
     await client.attendanceCorrectionRequest.update({ where: { id: correction.id }, data: { status: 'APPROVED' } });
+    // 2026-11-01: 퇴근 취소는 기존 퇴근 시각·위치를 지우므로, 지우기 전 값을 감사로그에 남겨 복구할 수 있게 한다.
+    const { recordAuditLog } = await import('./audit');
+    await recordAuditLog({
+      actionType: 'CORRECT',
+      targetType: 'attendance_clock_out_cancelled',
+      targetId: targetRecord.id,
+      beforeValue: {
+        clockOutAt: targetRecord.clockOutAt,
+        totalWorkedMinutes: targetRecord.totalWorkedMinutes,
+        clockOutLocation: targetRecord.clockOutLocation,
+        clockOutLocationStatus: targetRecord.clockOutLocationStatus,
+        earlyLeaveReason: targetRecord.earlyLeaveReason,
+        isCorrected: targetRecord.isCorrected,
+        correctionReason: targetRecord.correctionReason,
+      },
+      afterValue: { correctionRequestId: correction.id, reason: correction.reason },
+    }, client);
     return { updatedRecord, totalWorkedMinutes: null as number | null, correction };
   }
 
