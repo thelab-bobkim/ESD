@@ -76,6 +76,13 @@ export async function buildStatusBoard(userIds?: string[], forDate: Date = dateO
   });
   if (users.length === 0) return [];
   const ids = users.map((u) => u.id);
+  const reviewRows = await prisma.locationFlagReview.findMany({
+    where: { userId: { in: ids } },
+    select: { userId: true, statusChangedAt: true },
+  });
+  const reviewedKeys = new Set(
+    reviewRows.map((r) => `${r.userId}|${r.statusChangedAt.getTime()}`)
+  );
 
   // ── 하루치 일괄 조회 (정렬은 기존 findFirst의 orderBy와 동일하게) ──────────────────
   const [dayLogs, dayCheckins, dayAttendance, dayEfforts] = await Promise.all([
@@ -190,6 +197,9 @@ export async function buildStatusBoard(userIds?: string[], forDate: Date = dateO
         workType: u.workType,
         status: statusOnDay?.status ?? null,
         statusChangedAt: statusOnDay?.changedAt ?? null,
+        locationReviewed: statusOnDay
+          ? reviewedKeys.has(`${u.id}|${statusOnDay.changedAt.getTime()}`)
+          : false,
         statusSource: statusOnDay?.source ?? null,
         statusNote: statusOnDay?.note ?? null,
         effortClientName: fallbackEffort?.clientName || null,
@@ -327,6 +337,44 @@ dashboardRouter.post('/correct-status', requireRole('TEAM_LEAD', 'HR_ADMIN', 'SY
   });
 
   return res.json({ success: true, data: { id: newLog.id, status: newLog.status, changedAt: newLog.changedAt } });
+});
+
+const locationReviewSchema = z.object({
+  userId: z.string().min(1),
+  statusChangedAt: z.string().datetime(),
+});
+
+// 2026-10-30: 위치 미확인/불일치로 뜬 "확인 필요" 건을 관리자가 확인했다고 표시한다.
+// (직원, 상태 등록 시각)으로 저장하므로 직원이 새로 등록하면 다시 점검 대상이 된다.
+dashboardRouter.post('/location-review', requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN'), async (req, res) => {
+  const parsed = locationReviewSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, message: '입력값을 확인해주세요.' });
+  }
+  const { userId } = parsed.data;
+  const statusChangedAt = new Date(parsed.data.statusChangedAt);
+  const target = await prisma.user.findUnique({ where: { id: userId } });
+  if (!target) {
+    return res.status(404).json({ success: false, message: '대상 직원을 찾을 수 없습니다.' });
+  }
+  const departmentIds = await getApprovableDepartmentIds(req.authUser!);
+  if (departmentIds && !departmentIds.includes(target.departmentId)) {
+    return res.status(403).json({ success: false, message: '다른 부서 직원은 처리할 권한이 없습니다.' });
+  }
+  const actorUserId = req.authUser!.userId;
+  await prisma.locationFlagReview.upsert({
+    where: { userId_statusChangedAt: { userId, statusChangedAt } },
+    create: { userId, statusChangedAt, reviewedByUserId: actorUserId },
+    update: { reviewedByUserId: actorUserId },
+  });
+  await recordAuditLog({
+    actorUserId,
+    actionType: 'CORRECT',
+    targetType: 'location_flag_review',
+    targetId: userId,
+    afterValue: { statusChangedAt: parsed.data.statusChangedAt },
+  });
+  return res.json({ success: true, data: { userId } });
 });
 
 const daySchema = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });

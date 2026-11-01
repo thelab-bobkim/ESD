@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole, type AuthUser } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
+import { addApprovalEvidence } from './approval-evidence';
 import { applyAttendanceCorrection, checkMinWorkedMinutes } from '../../common/attendance-helpers';
 
 export const approvalRouter = createRouter();
@@ -38,7 +39,8 @@ approvalRouter.get('/requests', async (req, res) => {
     },
     orderBy: { requestedAt: 'desc' },
   });
-  return res.json({ success: true, data: requests });
+  const enriched = await addApprovalEvidence(requests);
+  return res.json({ success: true, data: enriched });
 });
 
 const decisionSchema = z.object({ comment: z.string().optional() });

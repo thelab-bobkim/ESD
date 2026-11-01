@@ -93,6 +93,7 @@ interface EmployeeRow {
   // 애매한 것인지" 관리자가 구분할 수 있게 배지에 같이 표시한다.
   locationAccuracyMeters: number | null;
   locationConsentGiven: boolean; privacyConsentGiven: boolean;
+  locationReviewed?: boolean;
   clockedOut: boolean; clockOutAt: string | null;
   // 2026-09-16: "출근" 버튼만 누르고 실제로 상태를 고른 적 없는 잠정 본사근무 기록인지 여부
   // (dashboard.routes.ts 참고) — true면 화면에서 "본사근무로 확정됨"처럼 보이지 않게 처리한다.
@@ -278,6 +279,18 @@ export default function AdminDashboard() {
     }
   }
 
+  async function markLocationReviewed(userId: string, statusChangedAt: string) {
+    try {
+      await apiFetch('/dashboard/location-review', {
+        method: 'POST',
+        body: JSON.stringify({ userId, statusChangedAt }),
+      });
+      load();
+    } catch {
+      window.alert('확인 완료 처리에 실패했어요. 잠시 후 다시 시도해주세요.');
+    }
+  }
+
   function openCorrectionModal(userId: string, name: string, currentStatus: string | null) {
     setCorrectionTarget({ userId, name });
     setCorrectionStatus(currentStatus && STATUS_META[currentStatus] ? currentStatus : STATUS_ORDER[0]);
@@ -460,6 +473,7 @@ export default function AdminDashboard() {
   const flaggedEmployees = useMemo(() => {
     return filteredEmployees.filter((e) => {
       if (e.clockedOut) return false;
+      if (e.locationReviewed) return false;
       if (!e.status || !LOCATION_CHECK_STATUSES.has(e.status)) return false;
       // "원격"으로 등록된 건, 그리고 야간작업/주말작업의 "내부업무"(고객사 없음) 등록건은 위치대조
       // 자체를 안 해서 locationMatch가 항상 null인 게 정상이다 — 이 경우까지 "확인 필요"로 띄우면
@@ -794,6 +808,17 @@ export default function AdminDashboard() {
                       ) : (
                         badge && <span className={`cc-alert-flag${flagClass ? ` ${flagClass}` : ''}`}>{badge.text.replace(/^\S+\s/, '')}</span>
                       )}
+                      {!e.isProvisional && e.statusChangedAt && (
+                        <button
+                          type="button"
+                          className="secondary"
+                          style={{ width: 'auto', margin: 0, padding: '2px 8px', fontSize: 11, flexShrink: 0 }}
+                          title="이 등록 건을 확인했어요 — 목록에서 뺍니다"
+                          onClick={() => markLocationReviewed(e.userId, e.statusChangedAt as string)}
+                        >
+                          ✅ 확인 완료
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="secondary"
@@ -832,6 +857,12 @@ export default function AdminDashboard() {
                   {/* 2026-09-17: 위 statusNote 등이 이미 "무슨 작업인지"는 보여주지만 "왜 위치가
                       미확인/불일치인지"는 알려주지 않았다 — 특히 고객사에 좌표가 없어서인 경우가
                       많아서(하루 10명 넘게 반복), 원인이 명확할 땐 구체적 조치를 바로 안내한다. */}
+                  {!e.isProvisional && e.locationMatch == null && e.locationCaptureStatus
+                    && (e.statusNote || e.effortClientName || e.status !== 'HQ_WORKING') && (
+                    <div className="cc-alert-note" style={{ color: '#64748b', fontStyle: 'italic' }}>
+                      위치 확인 결과: {hqLocationNote(e.locationCaptureStatus)}
+                    </div>
+                  )}
                   {!e.isProvisional && e.clientLocationDiagnosis && (
                     <div className="cc-alert-note" style={{ color: '#f08c00', fontWeight: 600, marginTop: 4 }}>
                       {e.clientLocationDiagnosis === 'NO_CLIENT_MATCH'

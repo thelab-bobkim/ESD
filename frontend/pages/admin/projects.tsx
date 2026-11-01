@@ -4,6 +4,7 @@ import AdminHeader from '@/components/AdminHeader';
 import ProjectBackfillPanel from '@/components/ProjectBackfillPanel';
 import ProjectInsightTabs from '@/components/ProjectInsightTabs';
 import ProjectUnlinkedPanel from '@/components/ProjectUnlinkedPanel';
+import CoreSitesPanel from '@/components/CoreSitesPanel';
 import { apiFetch, isAuthExpiredError } from '@/lib/api';
 
 type RefUser = { id: string; name: string; employeeNo: string; department: string };
@@ -163,6 +164,8 @@ export default function ProjectsPage() {
       <div className="stat-card"><div className="stat-label">완료</div><div className="stat-value">{projects.filter(p => p.status === 'COMPLETED').length}</div></div>
       <div className="stat-card"><div className="stat-label">지연 확인 필요</div><div className="stat-value">{projects.filter(p => p.endDate && p.status !== 'COMPLETED' && p.status !== 'CANCELLED' && new Date(p.endDate) < new Date()).length}</div></div>
     </div>
+
+    <CoreSitesPanel users={users} onAuthExpired={() => router.push('/login')} />
 
     <div className="card" style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>

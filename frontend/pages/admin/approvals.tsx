@@ -35,6 +35,13 @@ interface ApprovalRequestRow {
   requester: RequesterInfo;
   leaveConversionRequest: LeaveConversionInfo | null;
   attendanceCorrectionRequest: AttendanceCorrectionInfo | null;
+  evidence?: ApprovalEvidence | null;
+}
+interface ApprovalEvidence {
+  isDefault9h: boolean;
+  lastActivityBeforeAt: string | null;
+  lastActivityAfterAt: string | null;
+  warnings: string[];
 }
 
 function fmtDateTime(iso: string | null): string {
@@ -112,10 +119,20 @@ export default function ApprovalsPage() {
   // 대기중 항목을 한 번에 승인 — 새 벌크 API를 만들지 않고, 기존 단건 승인(approve)을 항목별로
   // 그대로 순서대로 호출한다(타입별 승인 부수효과를 그대로 재사용하기 위함). 실수 방지를 위해
   // 실행 전 개수를 보여주고 확인을 받는다.
+  const hasWarning = (r: ApprovalRequestRow) =>
+    Boolean(r.evidence && r.evidence.warnings.length > 0);
+  const pendingRows = requests.filter((r) => r.status === 'PENDING');
+  const safePendingCount = pendingRows.filter((r) => !hasWarning(r)).length;
+  const heldCount = pendingRows.length - safePendingCount;
+
   async function approveAll() {
-    const pendingIds = requests.filter((r) => r.status === 'PENDING').map((r) => r.id);
-    if (pendingIds.length === 0) return;
-    if (!window.confirm(`대기중인 ${pendingIds.length}건을 모두 승인할까요?`)) return;
+    const pendingIds = pendingRows.filter((r) => !hasWarning(r)).map((r) => r.id);
+    if (pendingIds.length === 0) {
+      setMessage(`경고가 있는 ${heldCount}건은 건별로 확인해 주세요.`);
+      return;
+    }
+    const held = heldCount > 0 ? `\n경고가 있는 ${heldCount}건은 제외됩니다.` : '';
+    if (!window.confirm(`경고 없는 ${pendingIds.length}건을 승인할까요?${held}`)) return;
     setBulkBusy(true);
     setMessage(null);
     let okCount = 0;
@@ -128,7 +145,9 @@ export default function ApprovalsPage() {
         failCount += 1;
       }
     }
-    setMessage(failCount > 0 ? `${okCount}건 승인, ${failCount}건 실패했습니다.` : `${okCount}건 모두 승인 처리되었습니다.`);
+    const heldNote = heldCount > 0 ? ` 경고가 있는 ${heldCount}건은 건별로 확인해 주세요.` : '';
+    const doneMsg = failCount > 0 ? `${okCount}건 승인, ${failCount}건 실패했습니다.` : `${okCount}건 승인 처리되었습니다.`;
+    setMessage(doneMsg + heldNote);
     setBulkBusy(false);
     load();
   }
@@ -166,8 +185,8 @@ export default function ApprovalsPage() {
           </button>
         ))}
         {tab === 'PENDING' && requests.some((r) => r.status === 'PENDING') && (
-          <button style={{ width: 'auto', marginLeft: 'auto' }} disabled={bulkBusy} onClick={approveAll}>
-            {bulkBusy ? '일괄 승인 중...' : `✅ 전체 승인 (${requests.filter((r) => r.status === 'PENDING').length}건)`}
+          <button style={{ width: 'auto', marginLeft: 'auto' }} disabled={bulkBusy || safePendingCount === 0} onClick={approveAll}>
+            {bulkBusy ? '일괄 승인 중...' : `✅ 경고 없는 건 승인 (${safePendingCount}건)`}
           </button>
         )}
       </div>
@@ -224,6 +243,19 @@ export default function ApprovalsPage() {
                   </>
                 )}
                 <div style={{ color: '#495057', marginTop: 4 }}>사유: {r.attendanceCorrectionRequest.reason}</div>
+                {r.evidence && (
+                  <div style={{ marginTop: 6, fontSize: 13, color: '#495057' }}>
+                    {r.evidence.lastActivityBeforeAt && (
+                      <div>신청 시각 이전 마지막 활동: {fmtDateTime(r.evidence.lastActivityBeforeAt)}</div>
+                    )}
+                    {r.evidence.lastActivityAfterAt && (
+                      <div>신청 시각 이후 마지막 활동: {fmtDateTime(r.evidence.lastActivityAfterAt)}</div>
+                    )}
+                    {r.evidence.warnings.map((w) => (
+                      <div key={w} style={{ color: '#e8590c', fontWeight: 600 }}>⚠️ {w}</div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 

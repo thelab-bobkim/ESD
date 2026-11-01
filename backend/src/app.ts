@@ -41,6 +41,7 @@ import { auditLocationRouter } from './modules/audit-location/audit-location.rou
 import { nightWorkMailRouter } from './modules/night-work-mail/night-work-mail.routes';
 import { dailyWorkLogRouter } from './modules/daily-work-log/daily-work-log.routes';
 import { projectsRouter } from './modules/projects/projects.routes';
+import { coreSitesRouter } from './modules/projects/core-sites.routes';
 
 export function createApp() {
   const app = express();
@@ -123,6 +124,7 @@ export function createApp() {
   app.use('/api/v1/audit-location', auditLocationRouter);
   app.use('/api/v1/night-work-mail', nightWorkMailRouter);
   app.use('/api/v1/daily-work-log', dailyWorkLogRouter);
+  app.use('/api/v1/projects', coreSitesRouter);
   app.use('/api/v1/projects', projectsRouter);
 
   // 공통 에러 핸들러 — createRouter()가 async 핸들러의 rejection을 next(err)로 넘겨주므로,

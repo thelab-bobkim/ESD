@@ -235,7 +235,15 @@ attendanceCorrectionRouter.post('/requests', async (req, res) => {
   const lastActivityAt = lastActivity?.changedAt ?? record.clockInAt;
   const activityGapMinutes = lastActivityAt ? (proposedClockOutAt.getTime() - lastActivityAt.getTime()) / 60000 : Infinity;
 
-  if (diffFromCutoffMinutes <= AUTO_APPROVE_WINDOW_MINUTES && activityGapMinutes <= AUTO_APPROVE_MAX_GAP_MINUTES) {
+  // 2026-10-28: 신청한 퇴근시각 이후(10분 여유)에 같은 날 활동 기록이 있으면
+  // 실제로는 더 늦게까지 일한 것이므로 자동승인하지 않고 사람이 확인하게 둔다.
+  const LATER_ACTIVITY_GRACE_MINUTES = 10;
+  const laterActivity = await prisma.statusChangeLog.findFirst({
+    where: { userId, changedAt: { gt: new Date(proposedClockOutAt.getTime() + LATER_ACTIVITY_GRACE_MINUTES * 60000), lt: recDayEnd } },
+    select: { changedAt: true },
+  });
+
+  if (diffFromCutoffMinutes <= AUTO_APPROVE_WINDOW_MINUTES && activityGapMinutes <= AUTO_APPROVE_MAX_GAP_MINUTES && !laterActivity) {
     const { ok } = await checkMinWorkedMinutes(record.clockInAt, proposedClockOutAt);
     if (ok) {
       await prisma.approvalRequest.update({

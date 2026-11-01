@@ -1069,3 +1069,16 @@ model WorkPresenceDay {
   @@index([workDate])
   @@map("work_presence_days")
 }
+
+// 2026-10-30: 상황판 "확인 필요" 건을 관리자가 확인했다고 표시한 기록.
+// (직원, 상태 등록 시각)이 같으면 같은 건이고, 직원이 새로 등록하면 다시 점검 대상이 된다.
+model LocationFlagReview {
+  id               String   @id @default(cuid())
+  userId           String   @map("user_id")
+  statusChangedAt  DateTime @map("status_changed_at")
+  reviewedByUserId String   @map("reviewed_by_user_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, statusChangedAt])
+  @@map("location_flag_reviews")
+}
