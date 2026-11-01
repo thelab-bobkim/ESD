@@ -4,6 +4,7 @@ import { apiFetch, isAuthExpiredError } from '@/lib/api';
 import MapPickerModal from '@/components/MapPickerModal';
 import AdminHeader from '@/components/AdminHeader';
 import DuplicateClientsCard from '@/components/DuplicateClientsCard';
+import MergeHistoryCard from '@/components/MergeHistoryCard';
 import LocationProposalsCard from '@/components/LocationProposalsCard';
 
 interface ClientRow {
@@ -288,7 +289,8 @@ export default function AdminClientsPage() {
       )}
 
       <LocationProposalsCard onChanged={load} />
-      <DuplicateClientsCard onMerged={load} />
+      <DuplicateClientsCard onMerged={() => { load(); window.dispatchEvent(new Event('tsb-merge-changed')); }} />
+      <MergeHistoryCard onChanged={load} />
 
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>

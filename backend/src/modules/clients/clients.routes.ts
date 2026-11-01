@@ -6,6 +6,8 @@ import { getPolicyString, setPolicyString, getPolicyJSON, setPolicyJSON } from '
 import { recordAuditLog } from '../../common/audit';
 import { findDuplicateGroups, normalizeAddress, looksLikeSameClient, haversineMeters } from './client-duplicates';
 import { loadProposals, saveProposals, groupProposals, clusterOf, PLACE_TYPE_LABELS } from './location-proposals';
+import { collectMergeSnapshot, listMergeHistory, MergeUndoError } from './client-merge-snapshot';
+import { undoClientMerge } from './client-merge-undo';
 import { sendPushToUser, isPushConfigured } from '../../common/push';
 
 // 공인IP 한 줄 또는 "x.x.x.x/nn" CIDR 대역 표기 — 인터넷 회선이 여러 개라 공인IP가 수십 개인
@@ -218,6 +220,22 @@ clientsRouter.get('/duplicates', async (_req, res) => {
   });
 });
 
+clientsRouter.get('/merge-history', async (_req, res) => {
+  return res.json({ success: true, data: await listMergeHistory() });
+});
+
+clientsRouter.post('/merge-undo', async (req, res) => {
+  const auditId = typeof req.body?.auditId === 'string' ? req.body.auditId : '';
+  try {
+    const data = await undoClientMerge(auditId, (req as any).authUser?.userId ?? null);
+    return res.json({ success: true, data });
+  } catch (e: any) {
+    if (e instanceof MergeUndoError) return res.status(409).json({ success: false, error: { code: e.code, message: e.message } });
+    console.error('[client-merge-undo]', e);
+    return res.status(500).json({ success: false, error: { code: 'UNDO_FAILED', message: '되돌리기에 실패했어요. 아무것도 바뀌지 않았어요.' } });
+  }
+});
+
 const mergeSchema = z.object({
   keepId: z.string().uuid(),
   removeIds: z.array(z.string().uuid()).min(1).max(20),
@@ -255,6 +273,7 @@ clientsRouter.post('/merge', async (req, res) => {
   // 남길 쪽에 좌표가 없는데 합칠 쪽에 있으면 그 좌표를 물려받는다 — 합친 뒤에 위치대조가 오히려 사라지면 안 된다.
   const donor = keep.latitude == null || keep.longitude == null ? removed.find((c) => c.latitude != null && c.longitude != null) : undefined;
   await prisma.$transaction(async (tx) => {
+    const snapshots: any[] = [];
     if (donor) {
       await tx.client.update({ where: { id: keepId }, data: { latitude: donor.latitude, longitude: donor.longitude } });
       summary.coordinatesCopied = true;
@@ -263,6 +282,7 @@ clientsRouter.post('/merge', async (req, res) => {
       (await tx.clientContact.findMany({ where: { clientId: keepId }, select: { id: true, name: true } })).map((c) => [c.name, c.id])
     );
     for (const r of removed) {
+      snapshots.push(await collectMergeSnapshot(tx, r, renameEffortLogs && r.name !== keep.name));
       const contacts = await tx.clientContact.findMany({ where: { clientId: r.id }, select: { id: true, name: true } });
       for (const c of contacts) {
         const sameNameId = keepContacts.get(c.name);
@@ -291,9 +311,10 @@ clientsRouter.post('/merge', async (req, res) => {
       targetType: 'client_merge',
       targetId: keepId,
       beforeValue: { removed: removed.map((c) => ({ id: c.id, name: c.name, address: c.address })) },
-      afterValue: { keep: { id: keep.id, name: keep.name }, renameEffortLogs, ...summary },
+      afterValue: { keep: { id: keep.id, name: keep.name }, renameEffortLogs, ...summary,
+        undo: { keepId: keep.id, keepBefore: { latitude: keep.latitude, longitude: keep.longitude }, coordinatesCopied: summary.coordinatesCopied, removed: snapshots } },
     }, tx);
-  });
+  }, { timeout: 60000 });
   return res.json({ success: true, data: { keep: { id: keep.id, name: keep.name }, removed: removed.map((c) => c.name), ...summary } });
 });
 
