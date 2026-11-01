@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { prisma } from '../../common/prisma';
 import { requireAuth, requireRole } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
+import { bumpTokenVersion } from '../../common/auth-revoke';
 
 export const usersRouter = createRouter();
 usersRouter.use(requireAuth, requireRole('TEAM_LEAD', 'HR_ADMIN', 'SYSTEM_ADMIN'));
@@ -103,10 +104,14 @@ const auditorGrantSchema = z.object({
  * 반드시 자기 인증앱으로 새로 등록하게 하려면 항상 같이 지워야 한다.
  */
 async function clearAuditorAccess(userId: string, auditorRoleId: string) {
-  await prisma.$transaction([
-    prisma.userRole.deleteMany({ where: { userId, roleId: auditorRoleId } }),
-    prisma.user.update({ where: { id: userId }, data: { auditorTotpSecret: null, auditorTotpEnabledAt: null } }),
-  ]);
+  // 2026-11-01 보안수정: 권한 회수와 "기존 토큰 무효화"를 한 트랜잭션으로 묶는다. 예전에는 userRole만
+  // 지워서 이미 발급된 감사인 토큰(OTP 통과분)이 만료(7일)까지 유효했다. 실제로 역할 행이 지워진 경우에만 올린다.
+  return prisma.$transaction(async (tx) => {
+    const deleted = await tx.userRole.deleteMany({ where: { userId, roleId: auditorRoleId } });
+    if (deleted.count > 0) await bumpTokenVersion(userId, tx);
+    await tx.user.update({ where: { id: userId }, data: { auditorTotpSecret: null, auditorTotpEnabledAt: null } });
+    return deleted.count;
+  });
 }
 
 usersRouter.post('/auditors', requireRole('SYSTEM_ADMIN'), async (req, res) => {
