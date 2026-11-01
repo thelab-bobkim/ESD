@@ -137,7 +137,37 @@ clientsRouter.delete('/:id', async (req, res) => {
       error: { code: 'CLIENT_HAS_HISTORY', message: '이 고객사에 도착체크 이력이 있어 삭제할 수 없습니다(근태기록 보존을 위함). 좌표만 비워두거나 이름을 정리하는 걸 권장드립니다.' },
     });
   }
-  await prisma.client.delete({ where: { id: req.params.id } });
+  // 2026-11-01: 프로젝트·공수 기록에서 쓰인 고객사는 삭제를 막는다(삭제하면 프로젝트 연결이 풀리고
+  // 담당자 연락처가 함께 사라지며, 공수 기록은 소속이 불분명해진다). 중복이면 '합치기'를 쓴다.
+  const projectCount = await prisma.project.count({ where: { clientId: client.id } });
+  if (projectCount > 0) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'CLIENT_HAS_PROJECTS', message: `이 고객사에 연결된 프로젝트가 ${projectCount}개 있어 삭제할 수 없습니다. 중복 고객사라면 '합치기'를 사용하세요.` },
+    });
+  }
+  const contacts = await prisma.clientContact.findMany({ where: { clientId: client.id } });
+  const effortByContact = contacts.length
+    ? await prisma.effortLog.count({ where: { contactId: { in: contacts.map((c) => c.id) } } })
+    : 0;
+  const effortByName = await prisma.effortLog.count({ where: { clientName: client.name } });
+  if (effortByContact + effortByName > 0) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'CLIENT_HAS_EFFORT', message: `이 고객사로 기록된 공수가 ${effortByContact + effortByName}건 있어 삭제할 수 없습니다. 중복 고객사라면 '합치기'를 사용하세요.` },
+    });
+  }
+  // 삭제 직전 상태(고객사 + 담당자 전체)를 감사로그에 남기고 같은 트랜잭션에서 삭제한다.
+  await prisma.$transaction(async (tx) => {
+    await recordAuditLog({
+      actorUserId: (req as any).authUser?.userId ?? null,
+      actionType: 'CORRECT',
+      targetType: 'client_deleted',
+      targetId: client.id,
+      beforeValue: { client, contacts },
+    }, tx);
+    await tx.client.delete({ where: { id: client.id } });
+  });
   return res.json({ success: true, data: { deleted: true } });
 });
 
