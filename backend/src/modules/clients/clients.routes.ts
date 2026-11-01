@@ -5,7 +5,7 @@ import { requireAuth, requireRole } from '../../common/guards/auth';
 import { getPolicyString, setPolicyString, getPolicyJSON, setPolicyJSON } from '../../common/policy-engine/policy-engine';
 import { recordAuditLog } from '../../common/audit';
 import { findDuplicateGroups, normalizeAddress, looksLikeSameClient, haversineMeters } from './client-duplicates';
-import { loadProposals, saveProposals, groupProposals, clusterOf } from './location-proposals';
+import { loadProposals, saveProposals, groupProposals, clusterOf, PLACE_TYPE_LABELS } from './location-proposals';
 import { sendPushToUser, isPushConfigured } from '../../common/push';
 
 // 공인IP 한 줄 또는 "x.x.x.x/nn" CIDR 대역 표기 — 인터넷 회선이 여러 개라 공인IP가 수십 개인
@@ -326,6 +326,8 @@ clientsRouter.get('/location-proposals', async (_req, res) => {
       proposedLng: c.centerLng,
       registeredLat: registered?.lat ?? null,
       registeredLng: registered?.lng ?? null,
+      placeType: c.representative.placeType ?? null,
+      placeName: c.representative.placeName ?? null,
     };
   });
   return res.json({ success: true, data });
@@ -356,6 +358,23 @@ clientsRouter.post('/location-proposals/:id/approve', async (req, res) => {
     await saveProposals(remaining);
     return res.status(404).json({ success: false, error: { code: 'CLIENT_NOT_FOUND', message: '그 고객사가 이미 삭제되어 신청을 정리했어요.' } });
   }
+  if ((req.body as any)?.mode === 'new') {
+    const rep = cluster.representative;
+    const label = PLACE_TYPE_LABELS[rep.placeType ?? ''] ?? '별도 장소';
+    const newName = `${client.name} (${label}${rep.placeName ? ' · ' + rep.placeName : ''})`;
+    const dup = await prisma.client.findFirst({ where: { name: { equals: newName, mode: 'insensitive' } } });
+    if (dup) return res.status(409).json({ success: false, error: { code: 'DUPLICATE_CLIENT', message: `'${newName}' 고객사가 이미 있어요. 그 고객사 위치를 확인해 주세요.` } });
+    const created = await prisma.client.create({ data: { name: newName, address: client.address, latitude: cluster.centerLat, longitude: cluster.centerLng } });
+    await saveProposals(remaining);
+    await recordAuditLog({
+      actorUserId: (req as any).authUser?.userId ?? null, actionType: 'CORRECT',
+      targetType: 'client_location_proposal_approved_new', targetId: created.id,
+      afterValue: { fromClient: client.name, newClient: newName, placeType: rep.placeType ?? null, userCount: cluster.userCount },
+    });
+    await notifyProposers([...new Set(cluster.members.map((m) => m.userId))], `'${newName}' 고객사가 새로 등록되었어요. 이 고객사로 다시 등록해 주세요.`);
+    return res.json({ success: true, data: { clientName: newName, latitude: cluster.centerLat, longitude: cluster.centerLng, userCount: cluster.userCount } });
+  }
+
   const before = { latitude: client.latitude, longitude: client.longitude };
   await prisma.client.update({ where: { id: client.id }, data: { latitude: cluster.centerLat, longitude: cluster.centerLng } });
   await saveProposals(remaining);

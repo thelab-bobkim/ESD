@@ -36,8 +36,11 @@ export interface LocationProposal {
   /** 신청 당시 등록 좌표까지의 거리(m) */
   distanceMeters: number;
   note: string | null;
+  placeType?: string | null;
+  placeName?: string | null;
 }
 
+export const PLACE_TYPE_LABELS: Record<string, string> = { IDC: 'IDC', BRANCH: '지사', HQ: '본사', OTHER: '기타' };
 export const roundCoord = (v: number) => Math.round(v * 1e4) / 1e4;
 
 export function purgeExpired(list: LocationProposal[], now: Date = new Date(), days = PROPOSAL_TTL_DAYS): LocationProposal[] {

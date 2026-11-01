@@ -8,10 +8,12 @@ import { apiFetch } from '@/lib/api';
  */
 interface Proposal {
   id: string; clientId: string; clientName: string; clientExists: boolean; address: string; createdAt: string;
-  userNames: string[]; userCount: number; requestCount: number; notes: string[];
+  userNames: string[]; userCount: number; requestCount: number; notes: string[]; placeType?: string | null; placeName?: string | null;
   distanceFromRegisteredMeters: number | null; proposedLat: number; proposedLng: number; registeredLat: number | null; registeredLng: number | null;
 }
 
+const PLACE_LABEL: Record<string, string> = { IDC: 'IDC·데이터센터', BRANCH: '지사·지점', HQ: '고객사 본사·사옥', OTHER: '기타' };
+const PLACE_SHORT: Record<string, string> = { IDC: 'IDC', BRANCH: '지사', HQ: '본사', OTHER: '기타' };
 function fmtDist(m: number | null): string {
   if (m == null) return '-';
   return m >= 1000 ? `${(m / 1000).toFixed(1)}km` : `${m}m`;
@@ -22,7 +24,7 @@ function kstDate(iso: string): string {
 
 export default function LocationProposalsCard({ onChanged }: { onChanged?: () => void }) {
   const [items, setItems] = useState<Proposal[] | null>(null);
-  const [confirm, setConfirm] = useState<{ id: string; action: 'approve' | 'reject' } | null>(null);
+  const [confirm, setConfirm] = useState<{ id: string; action: 'approve' | 'approveNew' | 'reject' } | null>(null);
   const [reason, setReason] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -35,7 +37,7 @@ export default function LocationProposalsCard({ onChanged }: { onChanged?: () =>
   }
   useEffect(load, []);
 
-  async function run(p: Proposal, action: 'approve' | 'reject') {
+  async function run(p: Proposal, action: 'approve' | 'reject', mode: 'overwrite' | 'new' = 'overwrite') {
     if (busyId) return;
     setBusyId(p.id);
     setError(null);
@@ -43,9 +45,9 @@ export default function LocationProposalsCard({ onChanged }: { onChanged?: () =>
     try {
       await apiFetch(`/clients/location-proposals/${p.id}/${action}`, {
         method: 'POST',
-        body: JSON.stringify(action === 'reject' ? { reason: reason.trim() || undefined } : {}),
+        body: JSON.stringify(action === 'reject' ? { reason: reason.trim() || undefined } : { mode }),
       });
-      setMessage(action === 'approve' ? `'${p.clientName}' 위치를 제안 위치로 바꿨어요. 신청한 직원에게 알림을 보냈어요.` : `'${p.clientName}' 신청을 반려했어요. 신청한 직원에게 알림을 보냈어요.`);
+      setMessage(action === 'approve' && mode === 'new' ? `'${p.clientName}' 아래에 새 장소를 고객사로 등록했어요. 신청한 직원에게 알림을 보냈어요.` : action === 'approve' ? `'${p.clientName}' 위치를 제안 위치로 바꿨어요. 신청한 직원에게 알림을 보냈어요.` : `'${p.clientName}' 신청을 반려했어요. 신청한 직원에게 알림을 보냈어요.`);
       load();
       onChanged?.();
     } catch (e) {
@@ -64,7 +66,7 @@ export default function LocationProposalsCard({ onChanged }: { onChanged?: () =>
       <h2>📨 고객사 위치 수정 신청 ({items.length}건)</h2>
       <p style={{ fontSize: 13, color: '#495057', lineHeight: 1.6, marginTop: 0 }}>
         직원이 현장에서 &quot;등록된 고객사 위치가 실제와 달라요&quot;라고 올린 신청입니다. 승인하면 제안 위치(신청한 직원들 위치의 평균)로 고객사 위치가 바뀌어요.
-        1명만 올린 신청이나 등록 위치와 많이 차이 나는 신청은 지도에서 직접 확인한 뒤 처리하세요. 같은 건물의 다른 지점이라면 반려하고 새 고객사로 등록하세요.
+        1명만 올린 신청이나 등록 위치와 많이 차이 나는 신청은 지도에서 직접 확인한 뒤 처리하세요. 제안 위치가 IDC·지사라면 &quot;별도 장소로 신규 등록&quot;을 권장해요(기존 본사 위치는 그대로 유지돼요).
       </p>
       {message && <div style={{ background: '#ebfbee', border: '1px solid #8ce99a', borderRadius: 8, padding: '10px 12px', marginBottom: 8, fontSize: 13, color: '#2b8a3e', fontWeight: 600 }}>{message}</div>}
       {error && <div className="error">{error}</div>}
@@ -77,6 +79,9 @@ export default function LocationProposalsCard({ onChanged }: { onChanged?: () =>
           <div key={p.id} style={{ border: '1px solid #e9ecef', borderRadius: 8, padding: 10, marginBottom: 10 }}>
             <div style={{ fontWeight: 700 }}>{p.clientName}{!p.clientExists && <span style={{ color: '#e03131', fontWeight: 400 }}> (삭제된 고객사)</span>}</div>
             <div style={{ fontSize: 12.5, color: '#868e96' }}>{p.address || '주소 없음'}</div>
+            <div style={{ marginTop: 6, fontSize: 13 }}>
+              {p.placeType ? (<>📍 직원이 알린 장소: <strong style={{ color: p.placeType === 'HQ' ? '#2b8a3e' : '#1971c2' }}>{PLACE_LABEL[p.placeType] ?? p.placeType}</strong>{p.placeName ? ` · ${p.placeName}` : ''}</>) : (<span style={{ color: '#e8590c' }}>장소 종류 없음 (이전 방식의 신청)</span>)}
+            </div>
             <div style={{ fontSize: 13, marginTop: 6, lineHeight: 1.7 }}>
               신청: <strong>{p.userCount}명</strong> ({p.userNames.join(', ')}) · {p.requestCount}건 · 최근 {kstDate(p.createdAt)}<br />
               등록 위치와의 차이: <strong style={{ color: far ? '#e03131' : undefined }}>{fmtDist(p.distanceFromRegisteredMeters)}</strong>
@@ -90,7 +95,10 @@ export default function LocationProposalsCard({ onChanged }: { onChanged?: () =>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
               {open === null && (
                 <>
-                  <button style={{ width: 'auto', margin: 0 }} disabled={!p.clientExists || !!busyId} onClick={() => setConfirm({ id: p.id, action: 'approve' })}>제안 위치로 변경(승인)</button>
+                  {(!!p.placeType && p.placeType !== 'HQ') && (
+                    <button style={{ width: 'auto', margin: 0 }} disabled={!p.clientExists || !!busyId} onClick={() => setConfirm({ id: p.id, action: 'approveNew' })}>별도 장소로 신규 등록 (권장)</button>
+                  )}
+                  <button className={(!!p.placeType && p.placeType !== 'HQ') ? 'secondary' : undefined} style={{ width: 'auto', margin: 0 }} disabled={!p.clientExists || !!busyId} onClick={() => setConfirm({ id: p.id, action: 'approve' })}>{(!!p.placeType && p.placeType !== 'HQ') ? '기존 위치 덮어쓰기' : '제안 위치로 변경(승인)'}</button>
                   <button className="secondary" style={{ width: 'auto', margin: 0 }} disabled={!!busyId} onClick={() => setConfirm({ id: p.id, action: 'reject' })}>반려</button>
                 </>
               )}
@@ -98,6 +106,15 @@ export default function LocationProposalsCard({ onChanged }: { onChanged?: () =>
                 <>
                   <span style={{ fontSize: 13 }}><strong>{p.clientName}</strong>의 등록 위치를 제안 위치로 바꿉니다. 이 고객사로 등록하는 모든 직원의 위치 대조 기준이 바뀌어요.</span>
                   <button style={{ width: 'auto', margin: 0 }} disabled={!!busyId} onClick={() => run(p, 'approve')}>{busyId === p.id ? '처리 중...' : '네, 변경합니다'}</button>
+                  <button className="secondary" style={{ width: 'auto', margin: 0 }} disabled={!!busyId} onClick={() => setConfirm(null)}>취소</button>
+                </>
+              )}
+              {open === 'approveNew' && (
+                <>
+                  <span style={{ fontSize: 13 }}>
+                    <strong>{p.clientName} ({PLACE_SHORT[p.placeType ?? ''] ?? '별도 장소'}{p.placeName ? ` · ${p.placeName}` : ''})</strong> 이름의 새 고객사를 만들고 제안 위치를 기준 좌표로 써요. 기존 &apos;{p.clientName}&apos; 위치는 그대로예요.
+                  </span>
+                  <button style={{ width: 'auto', margin: 0 }} disabled={!!busyId} onClick={() => run(p, 'approve', 'new')}>{busyId === p.id ? '처리 중...' : '네, 새로 등록합니다'}</button>
                   <button className="secondary" style={{ width: 'auto', margin: 0 }} disabled={!!busyId} onClick={() => setConfirm(null)}>취소</button>
                 </>
               )}

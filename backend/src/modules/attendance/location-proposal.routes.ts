@@ -23,6 +23,8 @@ const bodySchema = z.object({
   confirmedLocation: z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180) }),
   accuracyMeters: z.number().min(0).max(100000).optional(),
   note: z.string().trim().max(200).optional(),
+  placeType: z.enum(['IDC', 'BRANCH', 'HQ', 'OTHER']).optional(),
+  placeName: z.string().trim().max(60).optional(),
 });
 
 export function registerLocationProposalRoutes(router: any) {
@@ -31,7 +33,10 @@ export function registerLocationProposalRoutes(router: any) {
     if (!parsed.success) {
       return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: '신청 내용을 확인해 주세요. (고객사, 지금 위치)' } });
     }
-    const { clientId, clientName, status, location, confirmedLocation, accuracyMeters, note } = parsed.data;
+    const { clientId, clientName, status, location, confirmedLocation, accuracyMeters, note, placeType, placeName } = parsed.data;
+    if (placeType && placeType !== 'HQ' && !placeName) {
+      return res.status(400).json({ success: false, error: { code: 'PLACE_NAME_REQUIRED', message: '장소 이름을 적어 주세요. (예: 상암 IDC 3층 서버실)' } });
+    }
     const userId = req.authUser!.userId as string;
 
     if (accuracyMeters == null || accuracyMeters > PROPOSAL_MAX_ACCURACY_METERS) {
@@ -82,6 +87,8 @@ export function registerLocationProposalRoutes(router: any) {
       accuracyMeters: Math.round(accuracyMeters),
       distanceMeters: Math.round(haversineMeters(confirmedLocation.lat, confirmedLocation.lng, client.latitude, client.longitude)),
       note: note || null,
+      placeType: placeType ?? null,
+      placeName: placeName || null,
     };
     await saveProposals(upsertProposal(list, proposal));
     await recordAuditLog({

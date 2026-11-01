@@ -615,6 +615,8 @@ export default function EmployeeHome() {
   // 2026-10-13: 위치 불일치로 막힌 직원이 "지금 이 위치가 그 고객사의 실제 위치"라고 관리자에게 수정 신청하는 안내창.
   const [siteRequest, setSiteRequest] = useState<{ clientName: string; clientId?: string; status: string; gps: { lat: number; lng: number }; pin: { lat: number; lng: number }; accuracyMeters?: number } | null>(null);
   const [siteRequestNote, setSiteRequestNote] = useState('');
+  const [siteRequestPlaceType, setSiteRequestPlaceType] = useState('');
+  const [siteRequestPlaceName, setSiteRequestPlaceName] = useState('');
   const [siteRequestBusy, setSiteRequestBusy] = useState(false);
   const [siteRequestError, setSiteRequestError] = useState<string | null>(null);
   const [progressStage, setProgressStage] = useState('');
@@ -2165,6 +2167,8 @@ export default function EmployeeHome() {
     const gps = lc.body.location as { lat: number; lng: number } | undefined;
     if (!clientName || !gps) return;
     setSiteRequestNote('');
+    setSiteRequestPlaceType('');
+    setSiteRequestPlaceName('');
     setSiteRequestError(null);
     setSiteRequest({
       clientName,
@@ -2178,6 +2182,8 @@ export default function EmployeeHome() {
 
   async function submitSiteRequest() {
     if (!siteRequest || siteRequestBusy) return;
+    if (!siteRequestPlaceType) { setSiteRequestError('장소 종류를 선택해 주세요.'); return; }
+    if (siteRequestPlaceType !== 'HQ' && !siteRequestPlaceName.trim()) { setSiteRequestError('장소 이름을 적어 주세요. (예: 상암 IDC 3층 서버실)'); return; }
     setSiteRequestBusy(true);
     setSiteRequestError(null);
     try {
@@ -2191,6 +2197,8 @@ export default function EmployeeHome() {
           confirmedLocation: siteRequest.pin,
           accuracyMeters: siteRequest.accuracyMeters,
           note: siteRequestNote.trim() || undefined,
+          placeType: siteRequestPlaceType,
+          placeName: siteRequestPlaceName.trim() || undefined,
         }),
       });
       setSiteRequest(null);
@@ -2511,9 +2519,19 @@ export default function EmployeeHome() {
             <div className="board-empty" style={{ marginTop: 6, marginBottom: 0, lineHeight: 1.6 }}>
               지금 지도에서 고른 위치가 &apos;{siteRequest.clientName}&apos;의 실제 위치라고 관리자에게 알려요.
               관리자가 확인해 승인하면 고객사 위치가 바뀌고 알림을 드려요. 승인되기 전에는 이 위치로 등록되지 않아요.
-              다른 지점이거나 목록에 없는 곳이라면, 신청 대신 고객사를 새로 등록해 주세요.
+              본사가 아닌 IDC·지사라면 아래에서 장소 종류와 이름을 꼭 알려 주세요. 관리자가 별도 장소로 등록해 드려요.
             </div>
             {siteRequestError && <div className="error" style={{ marginTop: 8 }}>{siteRequestError}</div>}
+            <div style={{ marginTop: 10, fontSize: 13, fontWeight: 700 }}>이 위치는 어떤 곳인가요? (필수)</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+              {[['IDC', '🏢 IDC·데이터센터'], ['BRANCH', '🏬 지사·지점'], ['HQ', '🏛️ 고객사 본사·사옥'], ['OTHER', '✏️ 기타(직접 입력)']].map(([v, l]) => (
+                <button key={v} type="button" className={siteRequestPlaceType === v ? undefined : 'secondary'} style={{ width: 'auto', margin: 0, padding: '8px 12px' }} onClick={() => setSiteRequestPlaceType(v)}>{l}</button>
+              ))}
+            </div>
+            {siteRequestPlaceType && (
+              <input style={{ marginTop: 8 }} maxLength={60} value={siteRequestPlaceName} onChange={(e) => setSiteRequestPlaceName(e.target.value)}
+                placeholder={siteRequestPlaceType === 'OTHER' ? '어떤 장소인지 직접 적어 주세요 (예: 재해복구센터)' : siteRequestPlaceType === 'HQ' ? '장소 이름 (선택)' : '장소 이름 (예: 상암 IDC 3층 서버실)'} />
+            )}
             <input
               style={{ marginTop: 10 }}
               placeholder="관리자에게 남길 말 (선택, 예: 별관 1층 출입구)"
