@@ -58,6 +58,14 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
       .catch(() => {});
     return () => { alive = false; };
   }, [row.workDate]);
+  const [evidence, setEvidence] = useState<{ source: string; label: string; at: string }[]>([]);
+  useEffect(() => {
+    let alive = true;
+    apiFetch<{ source: string; label: string; at: string }[]>(`/attendance-correction/evidence?attendanceRecordId=${row.attendanceRecordId}`)
+      .then((d) => { if (alive) setEvidence(Array.isArray(d) ? d : []); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [row.attendanceRecordId]);
 
   if (row.latestRequest?.status === 'PENDING') {
     return (
@@ -129,6 +137,17 @@ function CorrectionRow({ row, onSubmitted }: { row: PendingCorrectionRow; onSubm
           />
           <span style={{ fontSize: 12, color: '#fbbf24', marginLeft: 6 }}>기억나는 실제 시각을 직접 입력해주세요 (출근 {fmtClock(row.clockInAt)})</span>
         </label>
+        {evidence.length > 0 && (
+          <div style={{ flexBasis: '100%', fontSize: 12, color: '#fbbf24' }}>
+            🔎 기록에서 찾은 시각:
+            {evidence.map((c) => (
+              <button key={c.source} type="button" className="secondary" style={{ width: 'auto', margin: '0 0 0 6px', fontSize: 12, padding: '3px 8px' }} onClick={() => setProposedClockOutAt(toLocalInput(c.at))}>
+                {c.label} {fmtClock(c.at)}
+              </button>
+            ))}
+            <div style={{ opacity: 0.8 }}>누르면 입력칸에 채워져요. 실제 퇴근 시각과 다르면 직접 고쳐주세요.</div>
+          </div>
+        )}
         {presence && (presence.awaySince || presence.lastSeenAt) && (
           <div style={{ flexBasis: '100%', fontSize: 12, color: '#fbbf24' }}>
             📍 내 위치 기록: {presence.anchorName ? `${presence.anchorName} ` : ''}

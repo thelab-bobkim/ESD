@@ -1,6 +1,7 @@
 import { createRouter } from '../../common/async-router';
 import { z } from 'zod';
 import { prisma } from '../../common/prisma';
+import { buildCorrectionEvidence } from './correction-evidence';
 import { requireAuth } from '../../common/guards/auth';
 import { recordAuditLog } from '../../common/audit';
 import { todayDateOnly, realDayWindow, applyAttendanceCorrection, checkMinWorkedMinutes, combineDateTime } from '../../common/attendance-helpers';
@@ -16,6 +17,13 @@ attendanceCorrectionRouter.use(requireAuth);
  * 다른 상태변경을 막고 "지난 근무일 퇴근 정정 신청"을 먼저 하도록 유도한다(강제 자동퇴근 금지 원칙 —
  * core_principles 참고 — 이므로 시스템이 임의로 시각을 채우지 않고 반드시 본인이 입력/신청해야 함).
  */
+attendanceCorrectionRouter.get('/evidence', async (req, res) => {
+  const id = typeof req.query.attendanceRecordId === 'string' ? req.query.attendanceRecordId : '';
+  const userId = (req as any).authUser?.userId as string | undefined;
+  const data = id && userId ? await buildCorrectionEvidence(userId, id) : [];
+  return res.json({ success: true, data });
+});
+
 attendanceCorrectionRouter.get('/pending', async (req, res) => {
   const userId = req.authUser!.userId;
   const today = todayDateOnly();
