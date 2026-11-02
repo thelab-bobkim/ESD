@@ -541,6 +541,8 @@ export default function AdminDashboard() {
   // 직원이 직접 누른 것만 인정한다. 조직도(직원) 동기화 버튼은 그대로 유지.
 
   const [expandedColumns, setExpandedColumns] = useState<Record<string, boolean>>({});
+  const [detailColumns, setDetailColumns] = useState<Record<string, boolean>>({});
+  const [showUnregistered, setShowUnregistered] = useState(false);
   function toggleColumn(code: string) {
     setExpandedColumns((prev) => ({ ...prev, [code]: !prev[code] }));
   }
@@ -896,9 +898,9 @@ export default function AdminDashboard() {
           .map((code) => {
             const meta = STATUS_META[code];
             const employees = grouped[code];
-            const isExpanded = expandedColumns[code] ?? (employees.length > 0 && employees.length <= 5);
+            const isExpanded = expandedColumns[code] ?? employees.length > 0;
             return (
-              <div className="board-column" id={`board-col-${code}`} key={code} style={{ borderTopColor: meta.color }}>
+              <div className={`board-column${employees.length === 0 ? ' is-empty' : ''}`} id={`board-col-${code}`} key={code} style={{ borderTopColor: meta.color, order: employees.length === 0 ? 1 : 0 }}>
                 <div
                   className="board-column-header"
                   style={{ cursor: employees.length > 0 ? 'pointer' : 'default' }}
@@ -916,7 +918,17 @@ export default function AdminDashboard() {
                     {employees.length}명 — 클릭하여 펼치기
                   </div>
                 )}
-                {isExpanded && employees.map((e) => (
+                {isExpanded && employees.length > 5 && (
+                  <>
+                    <div className="cc-pills">
+                      {employees.map((e) => (
+                        <span className={`cc-pill${e.locationMatch === false ? ' warn' : ''}`} key={e.userId} title={`${e.department}${e.statusNote ? ' · ' + e.statusNote : ''}`}>{e.name}</span>
+                      ))}
+                    </div>
+                    <button type="button" className="secondary cc-detail-btn" onClick={() => setDetailColumns((prev) => ({ ...prev, [code]: !prev[code] }))}>{detailColumns[code] ? '이름만 보기 ▴' : '자세히 보기 ▾'}</button>
+                  </>
+                )}
+                {isExpanded && !(employees.length > 5 && !detailColumns[code]) && employees.map((e) => (
                   <div className="employee-chip" key={e.userId}>
                     <div className="chip-row">
                       <div
@@ -984,6 +996,22 @@ export default function AdminDashboard() {
             );
           })}
       </div>
+
+      {grouped.UNKNOWN.length > 0 && (
+        <div className="cc-unreg">
+          <button type="button" className="cc-unreg-head" onClick={() => setShowUnregistered((v) => !v)}>
+            <span>❔ 상태 미등록 {grouped.UNKNOWN.length}명 <small style={{ fontWeight: 500, color: 'var(--dsti-text-muted)' }}>(오늘 아직 상태를 등록하지 않은 직원)</small></span>
+            <span>{showUnregistered ? '접기 ▴' : '명단 보기 ▾'}</span>
+          </button>
+          {showUnregistered && (
+            <div className="cc-pills">
+              {grouped.UNKNOWN.map((e) => (
+                <span className="cc-pill" key={e.userId}>{e.name}<small>{e.department}</small></span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {messageTarget && (
         <div

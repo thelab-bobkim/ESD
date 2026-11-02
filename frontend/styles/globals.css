@@ -623,3 +623,20 @@ body.tsb-dark-body { background: #090d18; }
 .toolbar select, .toolbar input[type="text"] { font-size: 15px; padding: 9px 12px; }
 .toolbar .refresh-info { font-size: 13px; }
 .cc-kpi-loc .l { white-space: nowrap; font-size: 11.5px; }
+
+/* 2026-11-02 상황판 3단계: 도넛 숨김, 빈 칸 압축, 이름 알약, 미등록 명단 */
+.macro-section .donut-wrap { display: none; }
+.macro-section { padding: 14px 18px; }
+.board { align-items: start; }
+.board-column.is-empty { min-height: 0; padding: 10px 14px; opacity: 0.75; }
+.board-column.is-empty .board-column-header { margin-bottom: 0; }
+.board-column.is-empty .board-empty { display: none; }
+.cc-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.cc-pill { background: var(--dsti-primary-soft); color: var(--dsti-text); border: 1px solid var(--dsti-border); border-radius: 999px; padding: 4px 11px; font-size: 15px; font-weight: 600; }
+.cc-pill small { font-size: 12px; font-weight: 500; color: var(--dsti-text-muted); margin-left: 5px; }
+.cc-pill.warn { background: rgba(245, 158, 11, 0.15); border-color: #d97706; }
+.tsb-dark .cc-pill { background: #151c34; }
+.board-column .cc-detail-btn { width: auto; margin: 10px 0 0; padding: 4px 12px; font-size: 13px; border-radius: 999px; }
+.cc-unreg { background: var(--dsti-surface); border: 1px solid var(--dsti-border); border-left: 6px solid #d97706; border-radius: 14px; padding: 10px 16px; margin-top: 16px; }
+.cc-unreg .cc-unreg-head { display: flex; justify-content: space-between; align-items: center; width: 100%; margin: 0; padding: 4px 0; background: transparent; border: 0; color: var(--dsti-text); font-size: 15px; font-weight: 700; cursor: pointer; }
+.cc-unreg .cc-pills { margin-top: 10px; }
