@@ -411,8 +411,16 @@ clientsRouter.post('/location-proposals/:id/approve', async (req, res) => {
   }
   if ((req.body as any)?.mode === 'new') {
     const rep = cluster.representative;
-    const label = PLACE_TYPE_LABELS[rep.placeType ?? ''] ?? '별도 장소';
-    const newName = `${client.name} (${label}${rep.placeName ? ' · ' + rep.placeName : ''})`;
+    // 2026-11-02: 장소 종류 없이 올라온 '이전 방식' 신청은 관리자가 종류/이름을 직접 입력해 신규 등록한다.
+    const bodyType = String((req.body as any)?.placeType ?? '');
+    const bodyName = String((req.body as any)?.placeName ?? '').trim().slice(0, 60);
+    const placeType: string | null = rep.placeType ?? (['IDC', 'BRANCH', 'OTHER'].includes(bodyType) ? bodyType : null);
+    const placeName: string | null = rep.placeName || bodyName || null;
+    if (!placeType || !placeName) {
+      return res.status(400).json({ success: false, error: { code: 'PLACE_INFO_REQUIRED', message: '장소 종류와 장소 이름을 입력해 주세요.' } });
+    }
+    const label = PLACE_TYPE_LABELS[placeType] ?? '별도 장소';
+    const newName = `${client.name} (${label} · ${placeName})`;
     const dup = await prisma.client.findFirst({ where: { name: { equals: newName, mode: 'insensitive' } } });
     if (dup) return res.status(409).json({ success: false, error: { code: 'DUPLICATE_CLIENT', message: `'${newName}' 고객사가 이미 있어요. 그 고객사 위치를 확인해 주세요.` } });
     const created = await prisma.client.create({ data: { name: newName, address: client.address, latitude: cluster.centerLat, longitude: cluster.centerLng } });
@@ -420,7 +428,7 @@ clientsRouter.post('/location-proposals/:id/approve', async (req, res) => {
     await recordAuditLog({
       actorUserId: (req as any).authUser?.userId ?? null, actionType: 'CORRECT',
       targetType: 'client_location_proposal_approved_new', targetId: created.id,
-      afterValue: { fromClient: client.name, newClient: newName, placeType: rep.placeType ?? null, userCount: cluster.userCount },
+      afterValue: { fromClient: client.name, newClient: newName, placeType, placeName, userCount: cluster.userCount },
     });
     await notifyProposers([...new Set(cluster.members.map((m) => m.userId))], `'${newName}' 고객사가 새로 등록되었어요. 이 고객사로 다시 등록해 주세요.`);
     return res.json({ success: true, data: { clientName: newName, latitude: cluster.centerLat, longitude: cluster.centerLng, userCount: cluster.userCount } });

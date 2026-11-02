@@ -26,6 +26,8 @@ export default function LocationProposalsCard({ onChanged }: { onChanged?: () =>
   const [items, setItems] = useState<Proposal[] | null>(null);
   const [confirm, setConfirm] = useState<{ id: string; action: 'approve' | 'approveNew' | 'reject' } | null>(null);
   const [reason, setReason] = useState('');
+  const [legacyType, setLegacyType] = useState('IDC');
+  const [legacyName, setLegacyName] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +47,7 @@ export default function LocationProposalsCard({ onChanged }: { onChanged?: () =>
     try {
       await apiFetch(`/clients/location-proposals/${p.id}/${action}`, {
         method: 'POST',
-        body: JSON.stringify(action === 'reject' ? { reason: reason.trim() || undefined } : { mode }),
+        body: JSON.stringify(action === 'reject' ? { reason: reason.trim() || undefined } : { mode, ...(mode === 'new' && !p.placeType ? { placeType: legacyType, placeName: legacyName.trim() } : {}) }),
       });
       setMessage(action === 'approve' && mode === 'new' ? `'${p.clientName}' 아래에 새 장소를 고객사로 등록했어요. 신청한 직원에게 알림을 보냈어요.` : action === 'approve' ? `'${p.clientName}' 위치를 제안 위치로 바꿨어요. 신청한 직원에게 알림을 보냈어요.` : `'${p.clientName}' 신청을 반려했어요. 신청한 직원에게 알림을 보냈어요.`);
       load();
@@ -95,10 +97,10 @@ export default function LocationProposalsCard({ onChanged }: { onChanged?: () =>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
               {open === null && (
                 <>
-                  {(!!p.placeType && p.placeType !== 'HQ') && (
-                    <button style={{ width: 'auto', margin: 0 }} disabled={!p.clientExists || !!busyId} onClick={() => setConfirm({ id: p.id, action: 'approveNew' })}>별도 장소로 신규 등록 (권장)</button>
+                  {p.placeType !== 'HQ' && (
+                    <button style={{ width: 'auto', margin: 0 }} disabled={!p.clientExists || !!busyId} onClick={() => { setLegacyName(''); setLegacyType('IDC'); setConfirm({ id: p.id, action: 'approveNew' }); }}>별도 장소로 신규 등록{p.placeType ? ' (권장)' : ''}</button>
                   )}
-                  <button className={(!!p.placeType && p.placeType !== 'HQ') ? 'secondary' : undefined} style={{ width: 'auto', margin: 0 }} disabled={!p.clientExists || !!busyId} onClick={() => setConfirm({ id: p.id, action: 'approve' })}>{(!!p.placeType && p.placeType !== 'HQ') ? '기존 위치 덮어쓰기' : '제안 위치로 변경(승인)'}</button>
+                  <button className={p.placeType !== 'HQ' ? 'secondary' : undefined} style={{ width: 'auto', margin: 0 }} disabled={!p.clientExists || !!busyId} onClick={() => setConfirm({ id: p.id, action: 'approve' })}>{p.placeType !== 'HQ' ? '기존 위치 덮어쓰기' : '제안 위치로 변경(승인)'}</button>
                   <button className="secondary" style={{ width: 'auto', margin: 0 }} disabled={!!busyId} onClick={() => setConfirm({ id: p.id, action: 'reject' })}>반려</button>
                 </>
               )}
@@ -112,9 +114,17 @@ export default function LocationProposalsCard({ onChanged }: { onChanged?: () =>
               {open === 'approveNew' && (
                 <>
                   <span style={{ fontSize: 13 }}>
-                    <strong>{p.clientName} ({PLACE_SHORT[p.placeType ?? ''] ?? '별도 장소'}{p.placeName ? ` · ${p.placeName}` : ''})</strong> 이름의 새 고객사를 만들고 제안 위치를 기준 좌표로 써요. 기존 &apos;{p.clientName}&apos; 위치는 그대로예요.
+                    <strong>{p.clientName} ({p.placeType ? (PLACE_SHORT[p.placeType] ?? '별도 장소') : PLACE_SHORT[legacyType]}{(p.placeName || legacyName.trim()) ? ` · ${p.placeName || legacyName.trim()}` : ''})</strong> 이름의 새 고객사를 만들고 제안 위치를 기준 좌표로 써요. 기존 &apos;{p.clientName}&apos; 위치는 그대로예요.
                   </span>
-                  <button style={{ width: 'auto', margin: 0 }} disabled={!!busyId} onClick={() => run(p, 'approve', 'new')}>{busyId === p.id ? '처리 중...' : '네, 새로 등록합니다'}</button>
+                  {!p.placeType && (
+                    <>
+                      <select style={{ margin: 0, width: 'auto' }} value={legacyType} onChange={(e) => setLegacyType(e.target.value)}>
+                        <option value="IDC">IDC·데이터센터</option><option value="BRANCH">지사·지점</option><option value="OTHER">기타</option>
+                      </select>
+                      <input style={{ margin: 0, width: 200 }} placeholder="장소 이름 (예: LG IDC)" maxLength={60} value={legacyName} onChange={(e) => setLegacyName(e.target.value)} />
+                    </>
+                  )}
+                  <button style={{ width: 'auto', margin: 0 }} disabled={!!busyId || (!p.placeType && !legacyName.trim())} onClick={() => run(p, 'approve', 'new')}>{busyId === p.id ? '처리 중...' : '네, 새로 등록합니다'}</button>
                   <button className="secondary" style={{ width: 'auto', margin: 0 }} disabled={!!busyId} onClick={() => setConfirm(null)}>취소</button>
                 </>
               )}
