@@ -576,88 +576,49 @@ export default function AdminDashboard() {
       {syncMessage && <div className="sync-mini-message">{syncMessage}</div>}
       {error && <div className="error">{error}</div>}
 
-      <div className="cc-stat-row">
-        <div className="cc-stat-card">
-          <div className="cc-stat-label">전체 인원</div>
-          <div className="cc-stat-value">{stats.total}<small>명 · {departments.length}개 부서</small></div>
-          <div className="cc-stat-foot">근무중 {stats.working} · 휴무·휴가 {stats.off} · 퇴근완료 {stats.clockedOut}</div>
-        </div>
-        <div className="cc-stat-card">
-          <div className="cc-stat-label">근무중</div>
-          <div className="cc-stat-value" style={{ color: '#22c55e' }}>{stats.working}<small>명 · {stats.workingRate}%</small></div>
-          <div className="stat-bar" style={{ height: 6, borderRadius: 4, background: '#1c2440', marginTop: 10, overflow: 'hidden' }}>
-            <div style={{ width: `${stats.workingRate}%`, height: '100%', background: '#22c55e', borderRadius: 4 }} />
+      <div className="cc-kpi-row">
+        <div className="cc-kpi ok">
+          <div className="cc-kpi-label">근무중</div>
+          <div className="cc-kpi-value">{stats.working}<small>/ {stats.total}명 · {stats.workingRate}%</small></div>
+          <div style={{ height: 6, borderRadius: 4, background: 'var(--dsti-border)', marginTop: 8, overflow: 'hidden' }}>
+            <div style={{ width: `${stats.workingRate}%`, height: '100%', background: '#16a34a', borderRadius: 4 }} />
           </div>
-          <div className="cc-stat-foot">상태 미확인 {stats.unknown}명</div>
+          <div className="cc-kpi-foot">휴무·휴가 {stats.off} · 퇴근완료 {stats.clockedOut}</div>
         </div>
-        <div className="cc-stat-card">
-          <div className="cc-stat-label">위치 확인 현황</div>
-          <div className="cc-loc-mini">
-            <div><span className="n" style={{ color: '#22c55e' }}>{locationStats.matched}</span><span className="l">확인됨</span></div>
-            <div><span className="n" style={{ color: '#ef4444' }}>{locationStats.mismatched}</span><span className="l">불일치</span></div>
-            <div><span className="n" style={{ color: '#f59e0b' }}>{locationStats.unconfirmed}</span><span className="l">미확인</span></div>
-            <div><span className="n" style={{ color: '#94a3b8' }}>{locationStats.noConsent}</span><span className="l">미동의</span></div>
-          </div>
-          <div className="cc-stat-foot">위치대조 대상 {locationStats.total}명 중</div>
+        <div className={`cc-kpi ${stats.unknown > 0 ? 'warn' : 'ok'}`}>
+          <div className="cc-kpi-label">상태 미등록</div>
+          <div className="cc-kpi-value">{stats.unknown === 0 ? '✓ ' : ''}{stats.unknown}<small>명</small></div>
+          <div className="cc-kpi-foot">오늘 아직 상태를 등록하지 않은 직원</div>
         </div>
-        <div className="cc-stat-card" style={{ borderColor: pendingApprovalCount ? '#3a2340' : undefined }}>
-          <div className="cc-stat-label">승인 대기</div>
-          <div className="cc-stat-value" style={{ color: pendingApprovalCount ? '#ef4444' : undefined }}>
-            {pendingApprovalCount ?? '-'}<small>건</small>
+        <div className={`cc-kpi ${locationStats.mismatched > 0 ? 'bad' : (locationStats.unconfirmed + locationStats.noConsent > 0 ? 'warn' : 'ok')}`}>
+          <div className="cc-kpi-label">위치 확인 현황</div>
+          <div className="cc-kpi-loc">
+            <div><span className="n" style={{ color: '#16a34a' }}>{locationStats.matched}</span><span className="l">확인됨</span></div>
+            <div><span className="n" style={{ color: '#dc2626' }}>{locationStats.mismatched}</span><span className="l">불일치</span></div>
+            <div><span className="n" style={{ color: '#d97706' }}>{locationStats.unconfirmed}</span><span className="l">확인불가</span></div>
+            <div><span className="n" style={{ color: '#64748b' }}>{locationStats.noConsent}</span><span className="l">미동의</span></div>
           </div>
-          <button
-            className="secondary"
-            style={{ marginTop: 10, width: '100%' }}
-            onClick={() => router.push('/admin/approvals')}
-          >
-            승인함 바로가기 →
-          </button>
+          <div className="cc-kpi-foot">위치대조 대상 {locationStats.total}명 중</div>
         </div>
-        <div className="cc-stat-card" style={{ borderColor: unsubscribedEmployees.length ? '#3a2340' : undefined }}>
-          <div className="cc-stat-label">🔕 알림 미설정</div>
-          <div className="cc-stat-value" style={{ color: unsubscribedEmployees.length ? '#f59e0b' : undefined }}>
-            {pushStatus ? unsubscribedEmployees.length : '-'}<small>{pushStatus ? `명 / ${pushStatus.length}명 중` : ''}</small>
-          </div>
-          <button
-            className="secondary"
-            style={{ marginTop: 10, width: '100%' }}
-            disabled={!pushStatus || unsubscribedEmployees.length === 0}
-            onClick={() => setShowPushList((v) => !v)}
-          >
-            {showPushList ? '목록 접기 ▴' : '명단 보기 ▾'}
-          </button>
+        <div className={`cc-kpi ${pendingApprovalCount === null ? '' : pendingApprovalCount > 0 ? 'bad' : 'ok'}`}>
+          <div className="cc-kpi-label">승인 대기</div>
+          <div className="cc-kpi-value">{pendingApprovalCount === 0 ? '✓ ' : ''}{pendingApprovalCount ?? '-'}<small>건</small></div>
+          <button className="secondary" style={{ marginTop: 8, width: '100%' }} onClick={() => router.push('/admin/approvals')}>승인함 바로가기 →</button>
         </div>
-        <div className="cc-stat-card" style={{ borderColor: unreadReplies && unreadReplies.length ? '#3a2340' : undefined }}>
-          <div className="cc-stat-label">💬 안 읽은 답장</div>
-          <div className="cc-stat-value" style={{ color: unreadReplies && unreadReplies.length ? '#3b82f6' : undefined }}>
-            {unreadReplies ? unreadReplies.reduce((sum, r) => sum + r.unreadCount, 0) : '-'}
-            <small>{unreadReplies ? `건 / ${unreadReplies.length}명` : ''}</small>
-          </div>
-          <button
-            className="secondary"
-            style={{ marginTop: 10, width: '100%' }}
-            disabled={!unreadReplies || unreadReplies.length === 0}
-            onClick={() => setShowUnreadReplies((v) => !v)}
-          >
-            {showUnreadReplies ? '목록 접기 ▴' : '명단 보기 ▾'}
-          </button>
+        <div className={`cc-kpi ${unreadReplies === null ? '' : unreadReplies.length > 0 ? 'info' : 'ok'}`}>
+          <div className="cc-kpi-label">💬 안 읽은 답장</div>
+          <div className="cc-kpi-value">{unreadReplies && unreadReplies.length === 0 ? '✓ ' : ''}{unreadReplies ? unreadReplies.reduce((sum, r) => sum + r.unreadCount, 0) : '-'}<small>{unreadReplies ? `건 / ${unreadReplies.length}명` : ''}</small></div>
+          <button className="secondary" style={{ marginTop: 8, width: '100%' }} disabled={!unreadReplies || unreadReplies.length === 0} onClick={() => setShowUnreadReplies((v) => !v)}>{showUnreadReplies ? '목록 접기 ▴' : '명단 보기 ▾'}</button>
         </div>
-        {/* 2026-09-18: 다우오피스 "전사 휴가현황" 스크래핑 결과. 직원의 실시간 상태(status)와는
-            완전히 분리된 별도 카드 — "안 읽은 답장" 옆에 배치해서 관리자가 한눈에 오늘 휴가자
-            수를 보고, 필요할 때만 명단을 펼쳐보게 한다. */}
-        <div className="cc-stat-card" style={{ borderColor: leaveToday && leaveToday.length ? '#3a2340' : undefined }}>
-          <div className="cc-stat-label">🌴 오늘의 휴가자</div>
-          <div className="cc-stat-value" style={{ color: leaveToday && leaveToday.length ? '#868e96' : undefined }}>
-            {leaveToday ? leaveToday.length : '-'}<small>{leaveToday ? '명' : ''}</small>
-          </div>
-          <button
-            className="secondary"
-            style={{ marginTop: 10, width: '100%' }}
-            disabled={!leaveToday || leaveToday.length === 0}
-            onClick={() => setShowLeaveToday((v) => !v)}
-          >
-            {showLeaveToday ? '목록 접기 ▴' : '명단 보기 ▾'}
-          </button>
+      </div>
+      <div className="cc-sub-strip">
+        <div className="cc-sub-item">
+          <span>🔕 알림 미설정 <b>{pushStatus ? unsubscribedEmployees.length : '-'}</b>{pushStatus ? `명 / ${pushStatus.length}명 중` : ''}</span>
+          <button type="button" className="secondary" disabled={!pushStatus || unsubscribedEmployees.length === 0} onClick={() => setShowPushList((v) => !v)}>{showPushList ? '접기 ▴' : '명단 ▾'}</button>
+        </div>
+        <div className="cc-sub-item">
+          <span>🌴 오늘의 휴가자 <b>{leaveToday ? leaveToday.length : '-'}</b>{leaveToday ? '명' : ''}</span>
+          <button type="button" className="secondary" disabled={!leaveToday || leaveToday.length === 0} onClick={() => setShowLeaveToday((v) => !v)}>{showLeaveToday ? '접기 ▴' : '명단 ▾'}</button>
         </div>
       </div>
 
@@ -840,16 +801,16 @@ export default function AdminDashboard() {
                   ) : e.statusNote ? (
                     <div className="cc-alert-note">“{e.statusNote}”</div>
                   ) : e.effortClientName ? (
-                    <div className="cc-alert-note" style={{ color: '#64748b', fontStyle: 'italic' }}>
+                    <div className="cc-alert-note" style={{ color: '#4b5563' }}>
                       고객사: {e.effortClientName} (세부내용 아직 미입력 — 본인이 앱에서 마저 입력해야 위치확인도 완료돼요)
                     </div>
                   ) : e.status === 'CLIENT_MEETING' || e.status === 'CLIENT_WORK' ? (
-                    <div className="cc-alert-note" style={{ color: '#64748b', fontStyle: 'italic' }}>
+                    <div className="cc-alert-note" style={{ color: '#4b5563' }}>
                       등록만 되고 세부내용 미입력 상태예요 — 본인이 앱에서 마저 입력해야 위치확인도 완료돼요
                     </div>
                   ) : (
                     e.status === 'HQ_WORKING' && (
-                      <div className="cc-alert-note" style={{ color: '#64748b', fontStyle: 'italic' }}>
+                      <div className="cc-alert-note" style={{ color: '#4b5563' }}>
                         {hqLocationNote(e.locationCaptureStatus)}
                       </div>
                     )
@@ -859,7 +820,7 @@ export default function AdminDashboard() {
                       많아서(하루 10명 넘게 반복), 원인이 명확할 땐 구체적 조치를 바로 안내한다. */}
                   {!e.isProvisional && e.locationMatch == null && e.locationCaptureStatus
                     && (e.statusNote || e.effortClientName || e.status !== 'HQ_WORKING') && (
-                    <div className="cc-alert-note" style={{ color: '#64748b', fontStyle: 'italic' }}>
+                    <div className="cc-alert-note" style={{ color: '#4b5563' }}>
                       위치 확인 결과: {hqLocationNote(e.locationCaptureStatus)}
                     </div>
                   )}
@@ -991,7 +952,7 @@ export default function AdminDashboard() {
                     {code !== 'CLOCKED_OUT' && e.isProvisional && (
                       <div className="meta" style={{ color: '#7048e8', fontWeight: 600 }}>⏳ 확인 대기중(출근 버튼만 누름 — 상태 미확정)</div>
                     )}
-                    {code !== 'CLOCKED_OUT' && !e.isProvisional && e.statusNote && <div className="meta" style={{ color: 'var(--dsti-text)', fontStyle: 'italic' }}>“{e.statusNote}”</div>}
+                    {code !== 'CLOCKED_OUT' && !e.isProvisional && e.statusNote && <div className="meta" style={{ color: 'var(--dsti-text)' }}>“{e.statusNote}”</div>}
                     {code === 'CLOCKED_OUT' && e.status && STATUS_META[e.status] && (
                       <div className="meta">마지막 상태: {STATUS_META[e.status].icon} {STATUS_META[e.status].label}</div>
                     )}

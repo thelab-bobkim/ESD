@@ -584,3 +584,42 @@ body.tsb-dark-body { background: #090d18; }
 /* 직원 화면: 상태 아이콘 카드를 출퇴근 카드 위로 배치 */
 .employee-left-col { display: flex; flex-direction: column; }
 .employee-left-col > .status-card { order: -1; }
+
+/* 2026-11-02: 전사 상황판 상단 핵심 카드 (가시성 개선) */
+.cc-kpi-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+@media (max-width: 1100px) { .cc-kpi-row { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .cc-kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } }
+.cc-kpi { --kpi-c: #94a3b8; background: var(--dsti-surface); border: 1px solid var(--dsti-border); border-left: 6px solid var(--kpi-c); border-radius: 14px; padding: 14px 16px; min-width: 0; }
+.cc-kpi-label { font-size: 14px; font-weight: 800; color: var(--dsti-text); }
+.cc-kpi-value { font-size: 34px; font-weight: 900; line-height: 1.1; margin-top: 6px; color: var(--kpi-c); }
+.cc-kpi-value small { font-size: 14px; font-weight: 700; color: var(--dsti-text-muted); margin-left: 4px; }
+.cc-kpi-foot { font-size: 13px; color: var(--dsti-text-muted); margin-top: 6px; line-height: 1.4; }
+.cc-kpi.ok { --kpi-c: #16a34a; }
+.cc-kpi.warn { --kpi-c: #d97706; background: rgba(245, 158, 11, 0.09); }
+.cc-kpi.bad { --kpi-c: #dc2626; background: rgba(239, 68, 68, 0.09); }
+.cc-kpi.info { --kpi-c: #2563eb; background: rgba(59, 130, 246, 0.08); }
+.tsb-dark .cc-kpi.ok { --kpi-c: #4ade80; }
+.tsb-dark .cc-kpi.warn { --kpi-c: #fbbf24; }
+.tsb-dark .cc-kpi.bad { --kpi-c: #f87171; }
+.tsb-dark .cc-kpi.info { --kpi-c: #60a5fa; }
+.cc-kpi-loc { display: flex; gap: 6px; margin-top: 8px; }
+.cc-kpi-loc div { flex: 1; text-align: center; padding: 4px 2px; border-radius: 8px; background: var(--dsti-bg); }
+.cc-kpi-loc .n { font-size: 22px; font-weight: 900; display: block; }
+.cc-kpi-loc .l { font-size: 12px; color: var(--dsti-text-muted); }
+.cc-sub-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.cc-sub-item { display: flex; align-items: center; gap: 10px; background: var(--dsti-surface); border: 1px solid var(--dsti-border); border-radius: 999px; padding: 6px 8px 6px 16px; font-size: 14px; color: var(--dsti-text); }
+.cc-sub-item b { font-size: 17px; margin: 0 2px; }
+.cc-sub-item button { width: auto; margin: 0; padding: 4px 12px; border-radius: 999px; font-size: 13px; }
+
+/* 2026-11-02 상황판 가독성: 직원 카드/칸 제목/검색창 글자 키움, 회색 진하게 */
+.employee-chip { font-size: 15px; padding: 11px 13px; }
+.employee-chip .name { font-size: 16px; }
+.employee-chip .meta { font-size: 13.5px; color: #4b5563; margin-top: 3px; line-height: 1.4; }
+.tsb-dark .employee-chip .meta { color: #b6bfd4; }
+.board-column-header { font-size: 15px; }
+.board-column-header .count { font-size: 13px; }
+.board-empty { font-size: 13px; color: var(--dsti-text-muted); }
+.board-column { max-height: 560px; }
+.toolbar select, .toolbar input[type="text"] { font-size: 15px; padding: 9px 12px; }
+.toolbar .refresh-info { font-size: 13px; }
+.cc-kpi-loc .l { white-space: nowrap; font-size: 11.5px; }
