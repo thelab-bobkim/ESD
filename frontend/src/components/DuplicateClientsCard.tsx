@@ -108,7 +108,7 @@ export default function DuplicateClientsCard({ onMerged }: { onMerged: () => voi
         return (
           <div key={g.key} style={{ border: '1px solid #e9ecef', borderRadius: 8, padding: 10, marginBottom: 10 }}>
             <div style={{ fontSize: 12.5, marginBottom: 6, color: g.confidence === 'HIGH' ? '#e03131' : '#e8590c', fontWeight: 600 }}>
-              {g.confidence === 'HIGH' ? '거의 확실한 중복 (이름이 포함 관계이거나 좌표가 같음)' : '확인 필요 — 주소만 같아요. 같은 건물의 다른 회사일 수 있으니 확실할 때만 합치세요.'}
+              {g.confidence === 'HIGH' ? '거의 확실한 중복 (이름이 같거나 포함 관계)' : '확인 필요 — 주소만 같아요. IDC·데이터센터처럼 한 건물에 여러 회사가 있는 경우일 수 있으니, 같은 회사일 때만 합치세요.'}
             </div>
             <div className="table-scroll">
               <table style={{ minWidth: 640 }}>

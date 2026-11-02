@@ -73,12 +73,18 @@ describe('중복 고객사 판별 (순수 함수)', () => {
     expect(g).toHaveLength(1);
     expect(g[0].confidence).toBe('LOW');
   });
-  it('이름이 달라도 좌표가 50m 안이면 HIGH', () => {
+  it('이름이 달라도 좌표가 같으면(IDC 등 같은 건물 입주사) HIGH 가 아니라 LOW 로 둔다', () => {
     const g = findDuplicateGroups([
       { id: 'a', name: '가나다전자', address: '서울 강남구 테헤란로 1', latitude: 37.5, longitude: 127.0 },
       { id: 'b', name: '마바사소프트', address: '서울 강남구 테헤란로 1', latitude: 37.50001, longitude: 127.00001 },
     ]);
+    expect(g[0].confidence).toBe('LOW');
+  });
+  it('IDC 입주사와 같은 이름 중복이 섞이면 같은 이름끼리만 합치기를 추천한다', () => {
+    const at = { address: '경기 성남시 분당구 판교역로 230', latitude: 37.4, longitude: 127.1 };
+    const g = findDuplicateGroups([{ id: 'a', name: '이파피루스', ...at }, { id: 'b', name: '헬리오센', ...at }, { id: 'c', name: '헬리오센', ...at }]);
     expect(g[0].confidence).toBe('HIGH');
+    expect(['b', 'c']).toContain(g[0].suggestedKeepId);
   });
   it('SAMPLE_ 고객사와 주소가 비었거나 너무 짧은 고객사는 비교하지 않는다', () => {
     expect(findDuplicateGroups([

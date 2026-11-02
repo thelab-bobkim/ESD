@@ -14,7 +14,7 @@ export interface DupClient {
 export interface DuplicateGroup {
   /** 정규화된 주소 */
   key: string;
-  /** HIGH: 이름이 서로 포함되거나 좌표가 사실상 같음(거의 확실한 중복) / LOW: 주소만 같음(같은 건물의 다른 회사일 수 있음) */
+  /** HIGH: 이름이 같거나 서로 포함됨(거의 확실한 중복 — 좌표가 같은 것만으로는 판단하지 않음: IDC 입주사) / LOW: 주소만 같음(같은 건물의 다른 회사일 수 있음) */
   confidence: 'HIGH' | 'LOW';
   clients: DupClient[];
   /** 남기기를 권하는 쪽(가장 구체적인 이름). 최종 선택은 관리자가 한다. */
@@ -63,14 +63,14 @@ export function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: 
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function sameSpot(a: DupClient, b: DupClient): boolean {
+export function sameSpot(a: DupClient, b: DupClient): boolean {
   if (a.latitude == null || a.longitude == null || b.latitude == null || b.longitude == null) return false;
   return haversineMeters(a.latitude, a.longitude, b.latitude, b.longitude) <= 50;
 }
 
-/** 두 고객사가 "같은 곳의 중복 등록"으로 보이는지(이름 관계 또는 같은 좌표). */
+/** 두 고객사가 "같은 곳의 중복 등록"으로 보이는지(이름이 같거나 포함 관계). 좌표만 같은 경우는 IDC 같은 한 건물의 다른 회사일 수 있어 제외한다. */
 export function looksLikeSameClient(a: DupClient, b: DupClient): boolean {
-  return namesRelated(a.name, b.name) || sameSpot(a, b);
+  return namesRelated(a.name, b.name);
 }
 
 export function findDuplicateGroups(clients: DupClient[]): DuplicateGroup[] {
@@ -93,7 +93,8 @@ export function findDuplicateGroups(clients: DupClient[]): DuplicateGroup[] {
       }
     }
     // 가장 구체적인(긴) 이름을 남기기 권장 — 같으면 좌표가 있는 쪽, 그다음 이름순으로 안정적으로 정한다.
-    const suggested = [...list].sort((a, b) => {
+    const pool = high ? list.filter((c) => list.some((o) => o !== c && looksLikeSameClient(c, o))) : list;
+    const suggested = [...pool].sort((a, b) => {
       const d = normalizeName(b.name).length - normalizeName(a.name).length;
       if (d !== 0) return d;
       const ca = a.latitude != null ? 1 : 0;
